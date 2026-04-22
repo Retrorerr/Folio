@@ -2,7 +2,7 @@
 
 Folio is a desktop-first PDF and EPUB reader with built-in text-to-speech, synchronized playback, and a library experience designed for long-form reading.
 
-![Folio hero](frontend/src/assets/hero.png)
+![Folio interface preview](docs/media/folio-ui-showcase.png)
 
 ## Overview
 
