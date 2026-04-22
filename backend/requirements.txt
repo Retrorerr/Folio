@@ -1,0 +1,10 @@
+kokoro-onnx
+pymupdf
+fastapi
+uvicorn
+python-multipart
+soundfile
+huggingface_hub
+ebooklib
+beautifulsoup4
+lxml

@@ -1,0 +1,128 @@
+/* ============================================
+   READER — design tokens
+   Warm literary reading-room
+   ============================================ */
+
+:root {
+  /* Type */
+  --font-serif: "Newsreader", "Iowan Old Style", "Palatino", Georgia, serif;
+  --font-display: "Instrument Serif", "Newsreader", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Scale */
+  --radius-sm: 6px;
+  --radius: 12px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.1, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 180ms;
+  --dur: 320ms;
+  --dur-slow: 560ms;
+}
+
+/* ============ Sepia (default) ============ */
+.theme-sepia {
+  --paper:      #f3e7cf;   /* main page bg */
+  --paper-2:    #ede0c4;   /* surrounding */
+  --paper-3:    #e4d4b1;   /* cards / hover */
+  --paper-edge: #d8c69c;   /* page edge shadow */
+  --rule:       #c9b58b;   /* dividers */
+  --ink:        #2a1d10;   /* primary text */
+  --ink-2:      #5a4730;   /* secondary text */
+  --ink-3:      #86704f;   /* tertiary */
+  --ember:      #b5471a;   /* accent - warm burnt sienna */
+  --ember-soft: #d9693b;
+  --ember-wash: rgba(181, 71, 26, 0.12);
+  --gold:       #a9832d;
+  --shadow-1:   0 1px 2px rgba(62, 40, 18, 0.08);
+  --shadow-2:   0 6px 24px -8px rgba(62, 40, 18, 0.22);
+  --shadow-3:   0 24px 60px -16px rgba(62, 40, 18, 0.35);
+  --grain-opacity: 0.5;
+  color-scheme: light;
+}
+
+/* ============ Light (cooler paper) ============ */
+.theme-light {
+  --paper:      #f7f4ed;
+  --paper-2:    #efece3;
+  --paper-3:    #e6e2d6;
+  --paper-edge: #d6d1c0;
+  --rule:       #c9c3b0;
+  --ink:        #1a1612;
+  --ink-2:      #5a544a;
+  --ink-3:      #8b8474;
+  --ember:      #a33c14;
+  --ember-soft: #cf5a2f;
+  --ember-wash: rgba(163, 60, 20, 0.1);
+  --gold:       #9c7a25;
+  --shadow-1:   0 1px 2px rgba(30, 24, 14, 0.06);
+  --shadow-2:   0 6px 24px -8px rgba(30, 24, 14, 0.18);
+  --shadow-3:   0 24px 60px -16px rgba(30, 24, 14, 0.28);
+  --grain-opacity: 0.35;
+  color-scheme: light;
+}
+
+/* ============ Dark (deep walnut) ============ */
+.theme-dark {
+  --paper:      #1a1510;
+  --paper-2:    #221b14;
+  --paper-3:    #2e251a;
+  --paper-edge: #0e0a06;
+  --rule:       #3a2f21;
+  --ink:        #ede1cb;
+  --ink-2:      #b6a586;
+  --ink-3:      #867654;
+  --ember:      #e38b5a;
+  --ember-soft: #f1a877;
+  --ember-wash: rgba(227, 139, 90, 0.15);
+  --gold:       #d4b36b;
+  --shadow-1:   0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2:   0 6px 24px -8px rgba(0, 0, 0, 0.6);
+  --shadow-3:   0 24px 60px -16px rgba(0, 0, 0, 0.8);
+  --grain-opacity: 0.25;
+  color-scheme: dark;
+}
+
+/* ============ base ============ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  font-family: var(--font-serif);
+  background: var(--paper);
+  font-feature-settings: "ss01", "kern", "liga";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+.app-shell {
+  color: var(--ink);
+  background: var(--paper);
+}
+
+/* paper grain via SVG noise, applied at root */
+.grain::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: multiply;
+  z-index: 1;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.15  0 0 0 0 0.1  0 0 0 0 0.05  0 0 0 0.08 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.theme-dark.grain::before {
+  mix-blend-mode: screen;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.8  0 0 0 0 0.7  0 0 0 0 0.5  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: none; }
+::selection { background: var(--ember-wash); color: var(--ink); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; border: 2px solid var(--paper); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }

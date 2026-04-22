@@ -1,0 +1,371 @@
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { Icons } from './icons'
+
+const BARS = 64
+const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2]
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec))
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+export default function Pill({
+  isPlaying, isGenerating, textLoading, modelLoaded, modelLoading,
+  play, pause, stop, skipSentence,
+  currentPage, pageCount, goToPage,
+  speed, setSpeed, volume, setVolume,
+  voice,
+  currentSentence, sentenceCount, pageData,
+  sleepTimer, setSleepTimer,
+  preloadState,
+  readingPage,
+  jumpToReader,
+  book,
+}) {
+  // Show the LIVE button whenever the reader is actively playing — clicking
+  // it always snaps the view to the exact sentence the reader is reading,
+  // which is what makes it feel like a livestream "GO LIVE" affordance.
+  const showJumpToReader = isPlaying && readingPage != null && jumpToReader
+  const [expanded, setExpanded] = useState(false)
+  const [pulse, setPulse] = useState(0)
+  const [dismissedKey, setDismissedKey] = useState(null)
+  const pillRef = useRef(null)
+  const pageKey = `${book?.id || 'none'}:${currentPage}`
+  const preloadDismissed = dismissedKey === pageKey
+
+  const handleKeyDown = useCallback((e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
+    switch (e.code) {
+      case 'Space':
+        e.preventDefault()
+        isPlaying ? pause() : play()
+        break
+      case 'ArrowRight':
+        e.preventDefault()
+        skipSentence(1)
+        break
+      case 'ArrowLeft':
+        e.preventDefault()
+        skipSentence(-1)
+        break
+      case 'PageDown':
+        e.preventDefault()
+        goToPage(currentPage + 1)
+        break
+      case 'PageUp':
+        e.preventDefault()
+        goToPage(currentPage - 1)
+        break
+    }
+  }, [isPlaying, play, pause, skipSentence, goToPage, currentPage])
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleKeyDown])
+
+  useEffect(() => {
+    if (!expanded) return
+    const onDown = (e) => {
+      if (pillRef.current && !pillRef.current.contains(e.target)) setExpanded(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false) }
+    const t = setTimeout(() => {
+      document.addEventListener('mousedown', onDown)
+      document.addEventListener('keydown', onKey)
+    }, 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [expanded])
+
+  useEffect(() => {
+    if (!isPlaying) return
+    const id = setInterval(() => setPulse((p) => p + 1), 120)
+    return () => clearInterval(id)
+  }, [isPlaying])
+
+  const heights = useMemo(() => (
+    Array.from({ length: BARS }).map((_, i) => {
+      const a = Math.sin(i * 0.4) * 0.5 + 0.5
+      const b = Math.sin(i * 0.19 + 1.2) * 0.3 + 0.5
+      return Math.max(0.08, Math.min(1, a * 0.6 + b * 0.4))
+    })
+  ), [])
+
+  // Progress across current page
+  const progress = sentenceCount > 0 ? Math.min(1, (currentSentence + 1) / sentenceCount) : 0
+  const currentIndex = Math.floor(progress * BARS)
+
+  // Book-wide progress for timeline
+  const bookProgress = pageCount > 0 ? (currentPage + progress) / pageCount : 0
+  const totalMinsEstimate = pageCount * 2
+  const elapsedMins = bookProgress * totalMinsEstimate
+
+  // Teleprompter text for current sentence
+  const currentText = pageData?.sentences?.[currentSentence]?.words?.map(w => w.text).join(' ') || ''
+
+  const togglePlay = () => { isPlaying ? pause() : play() }
+  const cycleSpeed = () => {
+    const idx = SPEEDS.findIndex(s => Math.abs(s - speed) < 0.01)
+    setSpeed(SPEEDS[(idx + 1) % SPEEDS.length])
+  }
+  const cycleSleep = () => {
+    const stops = [null, 5, 15, 30, 60]
+    const cur = sleepTimer === null ? null : Math.ceil(sleepTimer)
+    const i = stops.findIndex(s => s === cur)
+    setSleepTimer(stops[(i + 1) % stops.length])
+  }
+  const sleepMinutes = sleepTimer !== null ? Math.ceil(sleepTimer) : null
+
+  const statusLabel = () => {
+    if (!modelLoaded) return modelLoading ? 'Loading model…' : 'Model not ready'
+    if (textLoading) return 'Extracting text (OCR)…'
+    if (isGenerating) return 'Generating audio…'
+    if (sentenceCount === 0) return 'No text on this page'
+    return null
+  }
+  const status = statusLabel()
+
+  // Chapter preload state — fused into the pill's play button + subtitle line.
+  // The play button gets a progress ring while preloading, pulses when ready,
+  // and is gated until the whole chapter is cached.
+  const pl = preloadState || { state: 'idle', ready: 0, total: 0 }
+  const plPct = pl.total > 0 ? Math.round((pl.ready / pl.total) * 100) : 0
+  const plActive = !isPlaying && pl.state !== 'idle' && !(pl.state === 'ready' && preloadDismissed)
+  const plReady = pl.state === 'ready'
+  const preloadLabel =
+    pl.state === 'verifying' ? 'Verifying cache…'
+    : pl.state === 'preloading' ? `Preloading ${plPct}% · ${pl.ready}/${pl.total}`
+    : 'Ready to read'
+  // r=20 in a 48×48 viewBox so the ring hugs the 40px play button
+  const ringR = 20
+  const ringC = 2 * Math.PI * ringR
+  const ringOffset = ringC * (1 - (pl.total > 0 ? pl.ready / pl.total : 0))
+
+  const primaryClick = () => {
+    if (plActive) {
+      if (!plReady) return
+      setDismissedKey(pageKey)
+      play()
+      return
+    }
+    togglePlay()
+  }
+
+  const metaLine = plActive
+    ? preloadLabel
+    : (status || `${voice?.toUpperCase?.() || ''} · PAGE ${currentPage + 1}/${pageCount}`)
+
+  return (
+    <div className="pill-wrap">
+      <div
+        ref={pillRef}
+        className={`pill ${expanded ? 'expanded' : ''}`}
+        onClick={() => { if (!expanded) setExpanded(true) }}
+      >
+        {!expanded ? (
+          <>
+            <div className={`pill-cover ${isPlaying ? 'rotating' : ''}`} />
+            <div className="pill-meta">
+              <div className="t">{book?.title || 'Kokoro Reader'}</div>
+              <div className={`a ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>{metaLine}</div>
+            </div>
+
+            <div className="pill-waveform">
+              {heights.slice(0, 28).map((h, i) => {
+                const live = isPlaying ? (0.7 + 0.3 * Math.sin((pulse + i) * 0.7)) : 1
+                const passed = (i / 28) < progress
+                return (
+                  <div
+                    key={i}
+                    className="wave-bar"
+                    style={{ height: `${h * live * 100}%`, opacity: passed ? 1 : 0.28 }}
+                  />
+                )
+              })}
+            </div>
+
+            <div className="pill-controls" onClick={(e) => e.stopPropagation()}>
+              <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)">
+                <Icons.Rewind size={16} />
+              </button>
+              <button
+                className={`pill-btn play ${isPlaying ? 'is-playing' : ''} ${plActive ? `preload-${pl.state}` : ''}`}
+                onClick={primaryClick}
+                disabled={plActive && !plReady}
+                title={plActive ? preloadLabel : 'Play/Pause (Space)'}
+              >
+                {plActive && !plReady && (
+                  <span className="preload-ring" aria-hidden="true">
+                    <svg viewBox="0 0 48 48" width="48" height="48">
+                      <circle cx="24" cy="24" r={ringR} className="ring-track" />
+                      <circle
+                        cx="24" cy="24" r={ringR}
+                        className="ring-fill"
+                        style={{
+                          strokeDasharray: ringC,
+                          strokeDashoffset: pl.state === 'preloading' ? ringOffset : 0,
+                        }}
+                      />
+                    </svg>
+                  </span>
+                )}
+                {isPlaying ? <Icons.Pause size={18} /> : <Icons.Play size={18} />}
+              </button>
+              <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)">
+                <Icons.Forward size={16} />
+              </button>
+              {showJumpToReader && (
+                <button
+                  className="pill-btn jump-to-reader"
+                  onClick={(e) => { e.stopPropagation(); jumpToReader() }}
+                  title="Go to where the reader is reading (LIVE)"
+                  aria-label="Go to reader's position"
+                >
+                  <span className="live-dot" aria-hidden="true" />
+                  <span className="live-label">LIVE</span>
+                </button>
+              )}
+              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); setExpanded(true) }} title="Expand">
+                <Icons.ChevronDown size={16} style={{ transform: 'rotate(180deg)' }} />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="pill-expanded-head">
+              <div className={`pill-cover ${isPlaying ? 'rotating' : ''}`} />
+              <div className="meta">
+                <div className={`eyebrow ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>
+                  {plActive ? preloadLabel.toUpperCase() : (status ? status.toUpperCase() : `NOW PLAYING · PAGE ${currentPage + 1} OF ${pageCount}`)}
+                </div>
+                <h3>{book?.title || 'Kokoro Reader'}</h3>
+                <div className="a">{book?.author ? `by ${book.author}` : ''}{voice ? ` · read by ${voice}` : ''}</div>
+              </div>
+              <button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpanded(false) }}>
+                <Icons.ChevronDown size={18} />
+              </button>
+            </div>
+
+            <div className="teleprompter">
+              {currentText ? (
+                <span className="now">{currentText}</span>
+              ) : (
+                <span style={{ color: 'var(--ink-3)' }}>{status || 'Ready.'}</span>
+              )}
+            </div>
+
+            <div>
+              <div className="pill-wave-lg">
+                {heights.map((h, i) => {
+                  const passed = i <= currentIndex
+                  const live = isPlaying && passed ? (0.7 + 0.3 * Math.sin((pulse + i) * 0.5)) : 1
+                  return (
+                    <div
+                      key={i}
+                      className={`wave-bar-lg ${passed ? 'passed' : 'future'}`}
+                      style={{ height: `${h * live * 100}%` }}
+                    />
+                  )
+                })}
+              </div>
+              <div className="pill-timeline">
+                <span className="current">{fmtTime(elapsedMins * 60)}</span>
+                <span>Sentence {sentenceCount ? currentSentence + 1 : 0} / {sentenceCount}</span>
+                <span>-{fmtTime((totalMinsEstimate - elapsedMins) * 60)}</span>
+              </div>
+            </div>
+
+            <div className="pill-expanded-controls">
+              <button className="pill-btn" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 0} title="Previous page">
+                <Icons.SkipBack size={18} />
+              </button>
+              <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence">
+                <Icons.Rewind size={18} />
+              </button>
+              <button
+                className={`pill-btn play ${isPlaying ? 'is-playing' : ''} ${plActive ? `preload-${pl.state}` : ''}`}
+                onClick={primaryClick}
+                disabled={plActive && !plReady}
+                title={plActive ? preloadLabel : 'Play/Pause'}
+              >
+                {plActive && !plReady && (
+                  <span className="preload-ring" aria-hidden="true">
+                    <svg viewBox="0 0 56 56" width="56" height="56">
+                      <circle cx="28" cy="28" r="24" className="ring-track" />
+                      <circle
+                        cx="28" cy="28" r="24"
+                        className="ring-fill"
+                        style={{
+                          strokeDasharray: 2 * Math.PI * 24,
+                          strokeDashoffset: pl.state === 'preloading' ? (2 * Math.PI * 24) * (1 - (pl.total > 0 ? pl.ready / pl.total : 0)) : 0,
+                        }}
+                      />
+                    </svg>
+                  </span>
+                )}
+                {isPlaying ? <Icons.Pause size={22} /> : <Icons.Play size={22} />}
+              </button>
+              <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence">
+                <Icons.Forward size={18} />
+              </button>
+              <button className="pill-btn" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= pageCount - 1} title="Next page">
+                <Icons.SkipForward size={18} />
+              </button>
+              {showJumpToReader && (
+                <button
+                  className="pill-btn jump-to-reader"
+                  onClick={jumpToReader}
+                  title="Go to where the reader is reading (LIVE)"
+                  aria-label="Go to reader's position"
+                >
+                  <span className="live-dot" aria-hidden="true" />
+                  <span className="live-label">LIVE</span>
+                </button>
+              )}
+              <button className="pill-btn" onClick={stop} title="Stop">
+                <Icons.Stop size={16} />
+              </button>
+            </div>
+
+            <div className="pill-secondary-row" onClick={(e) => e.stopPropagation()}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div className="pill-voice">
+                  <div className="voice-avatar">{(voice || '?')[0].toUpperCase()}</div>
+                  <span>{voice}</span>
+                </div>
+              </div>
+
+              <button className="pill-chip" onClick={cycleSpeed}>
+                <span className="v">{speed.toFixed(2)}×</span> <span style={{ opacity: 0.6 }}>SPEED</span>
+              </button>
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <button
+                  className={`pill-chip${sleepMinutes !== null ? ' active' : ''}`}
+                  onClick={cycleSleep}
+                  title="Cycle sleep timer"
+                >
+                  <Icons.Sleep size={12} /> {sleepMinutes !== null ? `${sleepMinutes}M` : 'SLEEP'}
+                </button>
+                <label className="pill-chip" style={{ cursor: 'pointer' }}>
+                  <Icons.Volume size={12} />
+                  <input
+                    type="range" min="0" max="1" step="0.05" value={volume}
+                    onChange={(e) => setVolume(parseFloat(e.target.value))}
+                    style={{ width: 64 }}
+                  />
+                </label>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
