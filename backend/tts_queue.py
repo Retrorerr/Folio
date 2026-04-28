@@ -34,8 +34,13 @@ class TTSQueue:
             if job is None:
                 job = QueueJob(key=key, fn=fn)
                 self._jobs[key] = job
-            elif job.status in {"done", "error"}:
+            elif job.status == "done":
                 return job
+            elif job.status == "error":
+                job.event = threading.Event()
+                job.status = "pending"
+                job.result = None
+                job.error = None
 
             job.fn = fn
             job.ticket += 1

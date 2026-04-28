@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { Icons } from './icons'
-
-const API = ''
+import { apiFetch } from '../api'
+import { kokoroVoices, normalizeKokoroVoice } from '../kokoroVoices'
 
 export default function Sidebar({
   book, reflow, currentPage, currentSentence, goToPage,
   addBookmark, removeBookmark,
   voice, setVoice,
-  engine, setEngine,
   theme, setTheme,
   motion, setMotion,
   wheelPaging, setWheelPaging,
@@ -27,9 +26,26 @@ export default function Sidebar({
     </button>
   )
 
+  // Close the expanded panel when the user clicks/taps anywhere outside the
+  // sidebar (panel + icon rail). Toggling via a rail button still works
+  // because rail clicks are inside the sidebar root.
+  const railRef = useRef(null)
+  const panelRef = useRef(null)
+  useEffect(() => {
+    if (!tab) return
+    const onPointerDown = (e) => {
+      const t = e.target
+      if (railRef.current?.contains(t)) return
+      if (panelRef.current?.contains(t)) return
+      setTab(null)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [tab, setTab])
+
   return (
     <>
-      <div className="icon-rail">
+      <div className="icon-rail" ref={railRef}>
         <div className="rail-brand" onClick={onHome} title="Library">F</div>
         {railBtn('chapters', Icons.Chapters, 'Chapters')}
         {railBtn('bookmarks', Icons.Bookmark, 'Bookmarks')}
@@ -42,7 +58,7 @@ export default function Sidebar({
       </div>
 
       {tab && (
-        <div className="sidebar-panel">
+        <div className="sidebar-panel" ref={panelRef}>
           {tab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
           {tab === 'bookmarks' && (
             <BookmarkPanel
@@ -68,7 +84,6 @@ export default function Sidebar({
               wheelPaging={wheelPaging} setWheelPaging={setWheelPaging}
               highlightStyle={highlightStyle} setHighlightStyle={setHighlightStyle}
               voice={voice} setVoice={setVoice}
-              engine={engine} setEngine={setEngine}
             />
           )}
         </div>
@@ -204,7 +219,7 @@ function SearchPanel({ book, currentPage, onNavigateSearchResult }) {
           q: trimmed,
           limit: '40',
         })
-        const response = await fetch(`${API}/api/book/${book.id}/search?${params.toString()}`, {
+        const response = await apiFetch(`/api/book/${book.id}/search?${params.toString()}`, {
           signal: controller.signal,
         })
         if (!response.ok) throw new Error('Search failed')
@@ -322,22 +337,14 @@ function highlightQuery(text, query) {
 function SettingsPanel({
   theme, setTheme, motion, setMotion, wheelPaging, setWheelPaging,
   highlightStyle, setHighlightStyle,
-  voice, setVoice, engine, setEngine,
+  voice, setVoice,
 }) {
-  const [voices, setVoices] = useState([])
   const [cacheInfo, setCacheInfo] = useState(null)
   const [clearingCache, setClearingCache] = useState(false)
   const [cacheMessage, setCacheMessage] = useState('')
 
   useEffect(() => {
-    fetch(`${API}/api/tts/voices?engine=${engine}`)
-      .then(r => r.ok ? r.json() : [])
-      .then(setVoices)
-      .catch(() => {})
-  }, [engine])
-
-  useEffect(() => {
-    fetch(`${API}/api/cache/info`)
+    apiFetch('/api/cache/info')
       .then(r => r.ok ? r.json() : null)
       .then(setCacheInfo)
       .catch(() => {})
@@ -347,9 +354,9 @@ function SettingsPanel({
     setClearingCache(true)
     setCacheMessage('')
     try {
-      const clearRes = await fetch(`${API}/api/cache/clear`, { method: 'POST' })
+      const clearRes = await apiFetch('/api/cache/clear', { method: 'POST' })
       const clearData = clearRes.ok ? await clearRes.json() : null
-      const r = await fetch(`${API}/api/cache/info`)
+      const r = await apiFetch('/api/cache/info')
       if (r.ok) setCacheInfo(await r.json())
       if (clearData) {
         const skipped = clearData.skipped || 0
@@ -389,21 +396,31 @@ function SettingsPanel({
         </div>
 
         <div className="settings-group">
-          <div className="label">TTS engine</div>
-          <div className="control-row">
-            <span className="k">Engine</span>
-            <select value={engine} onChange={(e) => setEngine(e.target.value)}
-              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--rule)', background: 'var(--paper)', color: 'var(--ink)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-              <option value="kokoro">Kokoro (Fast)</option>
-              <option value="orpheus">Orpheus (Quality)</option>
-            </select>
-          </div>
-          <div className="control-row">
-            <span className="k">Voice</span>
-            <select value={voice} onChange={(e) => setVoice(e.target.value)}
-              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--rule)', background: 'var(--paper)', color: 'var(--ink)', fontFamily: 'var(--font-mono)', fontSize: 11, maxWidth: 140 }}>
-              {voices.map(v => <option key={v} value={v}>{v}</option>)}
-            </select>
+          <div className="label">Narrator</div>
+          <div className="voice-picker" role="radiogroup" aria-label="Kokoro voice">
+            {kokoroVoices.map((item) => {
+              const active = normalizeKokoroVoice(voice) === item.id
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`voice-card ${active ? 'active' : ''}`}
+                  onClick={() => setVoice(item.id)}
+                  role="radio"
+                  aria-checked={active}
+                >
+                  <span className="voice-card-head">
+                    <span className="voice-mark">{item.name.slice(0, 1)}</span>
+                    <span className="voice-title">
+                      <span className="voice-name">{item.name}</span>
+                      <span className="voice-id">{item.id}</span>
+                    </span>
+                    <span className="voice-tag">{item.tagline}</span>
+                  </span>
+                  <span className="voice-description">{item.description}</span>
+                </button>
+              )
+            })}
           </div>
         </div>
 

@@ -1,14 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { apiFetch, apiUrl } from '../api'
+import { defaultKokoroVoice, normalizeKokoroVoice } from '../kokoroVoices'
 
-const API = ''
+const READ_AHEAD_SENTENCES = 6
+const DEFAULT_SPEED = 0.95
 
 export default function useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition }) {
+  const bookId = book?.id
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentSentence, setCurrentSentence] = useState(0)
   const [currentWordIdx, setCurrentWordIdx] = useState(-1)
-  const [speed, setSpeed] = useState(book?.speed || 1.0)
-  const [voice, setVoice] = useState(book?.voice || 'af_heart')
-  const [engine, setEngine] = useState(book?.engine || 'orpheus')
+  const [speed, setSpeed] = useState(book?.speed ?? DEFAULT_SPEED)
+  const [voice, setVoice] = useState(normalizeKokoroVoice(book?.voice || defaultKokoroVoice))
   const [volume, setVolume] = useState(() => parseFloat(localStorage.getItem('volume') ?? '1.0'))
   const [sleepTimer, setSleepTimer] = useState(null)
   const [preloadState, setPreloadState] = useState({ state: 'idle', ready: 0, total: 0, failed: [] })
@@ -22,35 +25,35 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const pageDataRef = useRef(pageData)
   const isPlayingRef = useRef(false)
   const playbackSessionRef = useRef(0)
+  const playbackSettingsKeyRef = useRef(null)
   const settingsHydratedRef = useRef(false)
   const audioCacheRef = useRef(new Map())
+  const readAheadRef = useRef(new Set())
   const preloadAbortRef = useRef(null)
-  const preloadReadyRef = useRef(false)
   const pauseRef = useRef(() => {})
 
   useEffect(() => { currentPageRef.current = currentPage }, [currentPage])
   useEffect(() => { pageDataRef.current = pageData }, [pageData])
   useEffect(() => { currentSentenceRef.current = currentSentence }, [currentSentence])
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
-  useEffect(() => { preloadReadyRef.current = preloadState.state === 'ready' }, [preloadState.state])
   useEffect(() => { pauseRef.current = () => {} }, [])
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume
   }, [volume])
 
   useEffect(() => {
-    if (!book) return
-    setSpeed(book.speed || 1.0)
-    setVoice(book.voice || 'af_heart')
-    setEngine(book.engine || 'orpheus')
+    if (!bookId) return
+    setSpeed(book.speed ?? DEFAULT_SPEED)
+    setVoice(normalizeKokoroVoice(book.voice || defaultKokoroVoice))
     setCurrentSentence(book.last_position?.sentence_idx || 0)
     currentSentenceRef.current = book.last_position?.sentence_idx || 0
     settingsHydratedRef.current = true
-  }, [book])
+  }, [book, bookId])
 
   useEffect(() => {
     audioCacheRef.current.clear()
-  }, [book?.id, voice, speed, engine])
+    readAheadRef.current.clear()
+  }, [book?.id, voice, speed])
 
   useEffect(() => {
     if (!book || !settingsHydratedRef.current) return
@@ -58,23 +61,13 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     const params = new URLSearchParams({
       voice,
       speed: String(speed),
-      engine,
     })
-    fetch(`${API}/api/book/${book.id}/settings?${params.toString()}`, {
+    apiFetch(`/api/book/${book.id}/settings?${params.toString()}`, {
       method: 'POST',
       signal: controller.signal,
     }).catch(() => {})
     return () => controller.abort()
-  }, [book, voice, speed, engine])
-
-  useEffect(() => {
-    audioCacheRef.current.clear()
-    if (engine === 'orpheus') {
-      setVoice((v) => (v.startsWith('af_') || v.startsWith('am_') || v.startsWith('bf_') ? 'tara' : v))
-    } else {
-      setVoice((v) => (['tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'].includes(v) ? 'af_heart' : v))
-    }
-  }, [engine])
+  }, [book, voice, speed])
 
   useEffect(() => {
     if (sleepTimerRef.current) clearInterval(sleepTimerRef.current)
@@ -108,8 +101,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [pageData, currentSentence, currentWordIdx])
 
   const getCacheKey = useCallback((page, sentence) => {
-    return `${book?.id}|${engine}|${voice}|${speed}|${page}|${sentence}`
-  }, [book?.id, engine, voice, speed])
+    return `${book?.id}|kokoro|${voice}|${speed}|${page}|${sentence}`
+  }, [book?.id, voice, speed])
 
   const fetchSentenceAudio = useCallback(async (page, sentence) => {
     if (!book) return null
@@ -123,17 +116,16 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       sentence: String(sentence),
       voice,
       speed: String(speed),
-      engine,
     })
 
-    const promise = fetch(`${API}/api/tts/generate?${params.toString()}`)
+    const promise = apiFetch(`/api/tts/generate?${params.toString()}`)
       .then(async (res) => {
         if (!res.ok) {
           audioCacheRef.current.delete(key)
           return null
         }
         const data = await res.json()
-        const info = { url: `${API}/api/audio/${data.filename}`, duration_ms: data.duration_ms }
+        const info = { url: apiUrl(`/api/audio/${data.filename}`), duration_ms: data.duration_ms }
         audioCacheRef.current.set(key, info)
         return info
       })
@@ -144,15 +136,35 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
     audioCacheRef.current.set(key, promise)
     return promise
-  }, [book, getCacheKey, voice, speed, engine])
+  }, [book, getCacheKey, voice, speed])
 
-  // === Chapter preload gate ===
-  // Every time the chapter/voice/speed/engine changes, check the cache.
-  // If the chapter isn't fully cached, POST to start generation and poll
-  // status every 500ms. `preloadState.state` drives the Pill's preload
-  // button. Playback is gated on `state === 'ready'`.
+  const queueReadAhead = useCallback((page, sentence) => {
+    if (!book) return
+    const key = `${book.id}|kokoro|${voice}|${speed}|${page}|${sentence}|${READ_AHEAD_SENTENCES}`
+    if (readAheadRef.current.has(key)) return
+    readAheadRef.current.add(key)
+
+    const params = new URLSearchParams({
+      book_id: book.id,
+      page: String(page),
+      sentence: String(sentence),
+      count: String(READ_AHEAD_SENTENCES),
+      voice,
+      speed: String(speed),
+    })
+
+    apiFetch(`/api/tts/buffer?${params.toString()}`, {
+      method: 'POST',
+      cache: 'no-store',
+    }).catch(() => {
+      readAheadRef.current.delete(key)
+    })
+  }, [book, voice, speed])
+
+  // Check whether the current chapter/page is already cached, but do not start
+  // generation. Preload is intentionally user-triggered from the pill.
   useEffect(() => {
-    if (!book) {
+    if (!bookId) {
       setPreloadState({ state: 'idle', ready: 0, total: 0, failed: [] })
       return
     }
@@ -160,17 +172,15 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     const controller = new AbortController()
     preloadAbortRef.current = controller
     let cancelled = false
-    let timer = null
 
     const qs = () => new URLSearchParams({
       page: String(currentPage),
       voice,
       speed: String(speed),
-      engine,
     }).toString()
 
     const fetchStatus = async () => {
-      const r = await fetch(`${API}/api/book/${book.id}/preload-chapter/status?${qs()}`, {
+      const r = await apiFetch(`/api/book/${bookId}/preload-chapter/status?${qs()}`, {
         signal: controller.signal,
         cache: 'no-store',
       })
@@ -183,48 +193,95 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       return await r.json()
     }
 
-    const poll = async () => {
-      if (cancelled) return
-      try {
-        const d = await fetchStatus()
-        if (cancelled) return
-        setPreloadState({ state: d.state, ready: d.ready, total: d.total, failed: d.failed || [] })
-        if (d.state !== 'ready') timer = setTimeout(poll, 500)
-      } catch {
-        if (!cancelled) timer = setTimeout(poll, 1500)
-      }
-    }
-
     setPreloadState({ state: 'verifying', ready: 0, total: 0, failed: [] })
     ;(async () => {
       try {
         const d = await fetchStatus()
         if (cancelled) return
-        if (d.state === 'ready') {
-          setPreloadState({ state: 'ready', ready: d.ready, total: d.total, failed: d.failed || [] })
-          return
-        }
-        await fetch(`${API}/api/book/${book.id}/preload-chapter?${qs()}`, {
-          method: 'POST',
-          signal: controller.signal,
-          cache: 'no-store',
-        }).catch(() => {})
-        if (cancelled) return
-        setPreloadState({ state: 'preloading', ready: d.ready, total: d.total, failed: d.failed || [] })
-        poll()
+        setPreloadState({
+          state: d.state === 'ready' ? 'ready' : d.state === 'error' ? 'error' : 'idle',
+          ready: d.ready,
+          total: d.total,
+          failed: d.failed || [],
+        })
       } catch {
         // Backend unreachable or endpoint 404 (e.g. backend not yet restarted).
-        // Keep retrying so the UI recovers automatically once it comes back.
-        if (!cancelled) timer = setTimeout(poll, 1500)
+        if (!cancelled) setPreloadState({ state: 'idle', ready: 0, total: 0, failed: [] })
       }
     })()
 
     return () => {
       cancelled = true
       controller.abort()
-      if (timer) clearTimeout(timer)
     }
-  }, [book?.id, currentPage, voice, speed, engine])
+  }, [bookId, currentPage, voice, speed])
+
+  const preloadChapter = useCallback(async () => {
+    if (!bookId) return
+    if (preloadAbortRef.current) preloadAbortRef.current.abort()
+
+    const controller = new AbortController()
+    preloadAbortRef.current = controller
+    const page = currentPageRef.current
+
+    const qs = () => new URLSearchParams({
+      page: String(page),
+      voice,
+      speed: String(speed),
+    }).toString()
+
+    const fetchStatus = async () => {
+      const r = await apiFetch(`/api/book/${bookId}/preload-chapter/status?${qs()}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      })
+      if (!r.ok) throw new Error(`status ${r.status}`)
+      const ct = r.headers.get('content-type') || ''
+      if (!ct.includes('application/json')) throw new Error(`non-json ${ct}`)
+      return await r.json()
+    }
+
+    const applyStatus = (d, active = false) => {
+      setPreloadState({
+        state: d.state === 'ready' ? 'ready' : d.state === 'error' ? 'error' : (active ? 'preloading' : 'idle'),
+        ready: d.ready,
+        total: d.total,
+        failed: d.failed || [],
+      })
+    }
+
+    setPreloadState((prev) => ({ state: 'verifying', ready: prev.ready || 0, total: prev.total || 0, failed: prev.failed || [] }))
+    try {
+      const initial = await fetchStatus()
+      if (controller.signal.aborted) return
+      if (initial.state === 'ready') {
+        applyStatus(initial)
+        return
+      }
+
+      const queued = await apiFetch(`/api/book/${bookId}/preload-chapter?${qs()}`, {
+        method: 'POST',
+        signal: controller.signal,
+        cache: 'no-store',
+      })
+      if (!queued.ok) throw new Error(`preload ${queued.status}`)
+      if (controller.signal.aborted) return
+      applyStatus(initial, true)
+
+      while (!controller.signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        if (controller.signal.aborted) return
+        const next = await fetchStatus()
+        if (controller.signal.aborted) return
+        applyStatus(next, next.state !== 'ready')
+        if (next.state === 'ready' || next.state === 'error') return
+      }
+    } catch {
+      if (!controller.signal.aborted) {
+        setPreloadState((prev) => ({ ...prev, state: prev.ready >= prev.total && prev.total > 0 ? 'ready' : 'idle' }))
+      }
+    }
+  }, [bookId, voice, speed])
 
   const getPageData = useCallback(async (page) => {
     if (page === currentPageRef.current && pageDataRef.current) {
@@ -283,8 +340,6 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
   const startPlayback = useCallback(async (startPage, startSentence) => {
     if (!book) return
-    // Gate: chapter must be fully preloaded before playback starts.
-    if (!preloadReadyRef.current) return
 
     const sessionId = ++playbackSessionRef.current
     isPlayingRef.current = true
@@ -323,12 +378,15 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       lastReaderPage = page
 
       setCurrentWordIdx(0)
-      const audioInfo = await fetchSentenceAudio(page, sentence)
+      const audioPromise = fetchSentenceAudio(page, sentence)
+      queueReadAhead(page, sentence)
+      const audioInfo = await audioPromise
       if (playbackSessionRef.current !== sessionId) return
       if (!audioInfo) {
-        // Permanent failure for this sentence — skip.
-        position = await findNextReadablePosition(page, sentence + 1)
-        continue
+        setIsPlaying(false)
+        isPlayingRef.current = false
+        setCurrentWordIdx(-1)
+        return
       }
 
       const result = await playAudio(audioInfo, sessionId)
@@ -349,13 +407,73 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       }
       position = await findNextReadablePosition(page, sentence + 1)
     }
-  }, [book, findNextReadablePosition, goToPage, playAudio, fetchSentenceAudio, savePosition])
+  }, [book, findNextReadablePosition, goToPage, playAudio, fetchSentenceAudio, queueReadAhead, savePosition])
+
+  useEffect(() => {
+    if (!bookId || !settingsHydratedRef.current) return
+
+    const settingsKey = `${bookId}|kokoro|${voice}|${speed}`
+    if (playbackSettingsKeyRef.current === null || playbackSettingsKeyRef.current === settingsKey) {
+      playbackSettingsKeyRef.current = settingsKey
+      return
+    }
+    playbackSettingsKeyRef.current = settingsKey
+
+    if (!isPlayingRef.current) return
+
+    const resumePage = readingPage ?? currentPageRef.current
+    const resumeSentence = currentSentenceRef.current
+
+    playbackSessionRef.current += 1
+    isPlayingRef.current = false
+    setIsPlaying(false)
+    setCurrentWordIdx(-1)
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    if (wordTimerRef.current) {
+      clearInterval(wordTimerRef.current)
+      wordTimerRef.current = null
+    }
+
+    const restartTimer = setTimeout(() => {
+      startPlayback(resumePage, resumeSentence)
+    }, 0)
+
+    return () => clearTimeout(restartTimer)
+  }, [bookId, voice, speed, readingPage, startPlayback])
 
   const play = useCallback(() => {
     if (isPlayingRef.current) return
-    if (!preloadReadyRef.current) return
     startPlayback(currentPageRef.current, currentSentenceRef.current)
   }, [startPlayback])
+
+  const seekToSentence = useCallback(async (page, sentence) => {
+    if (!book || page == null || sentence == null || sentence < 0) return
+    const shouldResume = isPlayingRef.current
+
+    playbackSessionRef.current += 1
+    isPlayingRef.current = false
+    setIsPlaying(false)
+    if (audioRef.current) audioRef.current.pause()
+    if (wordTimerRef.current) clearInterval(wordTimerRef.current)
+
+    if (page !== currentPageRef.current) {
+      await goToPage(page)
+    }
+
+    currentSentenceRef.current = sentence
+    setCurrentSentence(sentence)
+    setCurrentWordIdx(-1)
+    setReadingPage(page)
+
+    await savePosition(page, sentence)
+
+    if (shouldResume) {
+      startPlayback(page, sentence)
+    }
+  }, [book, goToPage, savePosition, startPlayback])
 
   const pause = useCallback(() => {
     playbackSessionRef.current += 1
@@ -394,12 +512,11 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     const audio = audioRef.current
     const wordTimer = wordTimerRef.current
     const sleepTimerId = sleepTimerRef.current
-    const preloadAbort = preloadAbortRef.current
     return () => {
       if (audio) audio.pause()
       if (wordTimer) clearInterval(wordTimer)
       if (sleepTimerId) clearInterval(sleepTimerId)
-      if (preloadAbort) preloadAbort.abort()
+      if (preloadAbortRef.current) preloadAbortRef.current.abort()
     }
   }, [])
 
@@ -414,15 +531,15 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     setVoice,
     volume,
     setVolume,
-    engine,
-    setEngine,
     sleepTimer,
     setSleepTimer,
     preloadState,
+    preloadChapter,
     readingPage,
     play,
     pause,
     stop,
+    seekToSentence,
     skipSentence,
   }
 }

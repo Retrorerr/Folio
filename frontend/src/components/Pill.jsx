@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { Icons } from './icons'
 
 const BARS = 64
-const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2]
+const SPEEDS = [0.75, 0.85, 0.95, 1, 1.1, 1.2, 1.35]
 
 function fmtTime(sec) {
   sec = Math.max(0, Math.round(sec))
@@ -20,6 +20,7 @@ export default function Pill({
   currentSentence, sentenceCount, pageData,
   sleepTimer, setSleepTimer,
   preloadState,
+  preloadChapter,
   readingPage,
   jumpToReader,
   book,
@@ -30,10 +31,7 @@ export default function Pill({
   const showJumpToReader = isPlaying && readingPage != null && jumpToReader
   const [expanded, setExpanded] = useState(false)
   const [pulse, setPulse] = useState(0)
-  const [dismissedKey, setDismissedKey] = useState(null)
   const pillRef = useRef(null)
-  const pageKey = `${book?.id || 'none'}:${currentPage}`
-  const preloadDismissed = dismissedKey === pageKey
 
   const handleKeyDown = useCallback((e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
@@ -136,24 +134,36 @@ export default function Pill({
   // and is gated until the whole chapter is cached.
   const pl = preloadState || { state: 'idle', ready: 0, total: 0 }
   const plPct = pl.total > 0 ? Math.round((pl.ready / pl.total) * 100) : 0
-  const plActive = !isPlaying && pl.state !== 'idle' && !(pl.state === 'ready' && preloadDismissed)
+  const plFailed = pl.failed?.length || 0
+  const plBusy = pl.state === 'verifying' || pl.state === 'preloading'
+  const plActive = plBusy
   const plReady = pl.state === 'ready'
   const preloadLabel =
     pl.state === 'verifying' ? 'Verifying cache…'
     : pl.state === 'preloading' ? `Preloading ${plPct}% · ${pl.ready}/${pl.total}`
+    : pl.state === 'error' ? `${plFailed || 'Some'} failed`
     : 'Ready to read'
   // r=20 in a 48×48 viewBox so the ring hugs the 40px play button
-  const ringR = 20
-  const ringC = 2 * Math.PI * ringR
-  const ringOffset = ringC * (1 - (pl.total > 0 ? pl.ready / pl.total : 0))
+  const preloadButtonLabel =
+    pl.state === 'verifying' ? 'Checking cache...'
+    : pl.state === 'preloading' ? `Preloading ${plPct}% - ${pl.ready}/${pl.total}`
+    : pl.state === 'ready' ? 'Chapter preloaded'
+    : pl.state === 'error' ? 'Retry preload chapter'
+    : pl.total > 0 && pl.ready > 0 ? `Preload chapter - ${pl.ready}/${pl.total} cached`
+    : 'Preload chapter'
+  const preloadShortLabel =
+    pl.state === 'verifying' ? 'Check'
+    : pl.state === 'preloading' ? `${plPct}%`
+    : pl.state === 'ready' ? 'Ready'
+    : pl.state === 'error' ? 'Retry'
+    : 'Preload'
+
+  const handlePreload = (e) => {
+    e.stopPropagation()
+    if (!plBusy) preloadChapter?.()
+  }
 
   const primaryClick = () => {
-    if (plActive) {
-      if (!plReady) return
-      setDismissedKey(pageKey)
-      play()
-      return
-    }
     togglePlay()
   }
 
@@ -195,30 +205,24 @@ export default function Pill({
                 <Icons.Rewind size={16} />
               </button>
               <button
-                className={`pill-btn play ${isPlaying ? 'is-playing' : ''} ${plActive ? `preload-${pl.state}` : ''}`}
+                className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
                 onClick={primaryClick}
-                disabled={plActive && !plReady}
-                title={plActive ? preloadLabel : 'Play/Pause (Space)'}
+                title="Play/Pause (Space)"
               >
-                {plActive && !plReady && (
-                  <span className="preload-ring" aria-hidden="true">
-                    <svg viewBox="0 0 48 48" width="48" height="48">
-                      <circle cx="24" cy="24" r={ringR} className="ring-track" />
-                      <circle
-                        cx="24" cy="24" r={ringR}
-                        className="ring-fill"
-                        style={{
-                          strokeDasharray: ringC,
-                          strokeDashoffset: pl.state === 'preloading' ? ringOffset : 0,
-                        }}
-                      />
-                    </svg>
-                  </span>
-                )}
                 {isPlaying ? <Icons.Pause size={18} /> : <Icons.Play size={18} />}
               </button>
               <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)">
                 <Icons.Forward size={16} />
+              </button>
+              <button
+                className={`pill-preload-control preload-${pl.state}`}
+                onClick={handlePreload}
+                disabled={plBusy || plReady}
+                title={preloadButtonLabel}
+                aria-label="Preload chapter"
+              >
+                <Icons.Download size={14} />
+                <span>{preloadShortLabel}</span>
               </button>
               {showJumpToReader && (
                 <button
@@ -289,26 +293,10 @@ export default function Pill({
                 <Icons.Rewind size={18} />
               </button>
               <button
-                className={`pill-btn play ${isPlaying ? 'is-playing' : ''} ${plActive ? `preload-${pl.state}` : ''}`}
+                className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
                 onClick={primaryClick}
-                disabled={plActive && !plReady}
-                title={plActive ? preloadLabel : 'Play/Pause'}
+                title="Play/Pause"
               >
-                {plActive && !plReady && (
-                  <span className="preload-ring" aria-hidden="true">
-                    <svg viewBox="0 0 56 56" width="56" height="56">
-                      <circle cx="28" cy="28" r="24" className="ring-track" />
-                      <circle
-                        cx="28" cy="28" r="24"
-                        className="ring-fill"
-                        style={{
-                          strokeDasharray: 2 * Math.PI * 24,
-                          strokeDashoffset: pl.state === 'preloading' ? (2 * Math.PI * 24) * (1 - (pl.total > 0 ? pl.ready / pl.total : 0)) : 0,
-                        }}
-                      />
-                    </svg>
-                  </span>
-                )}
                 {isPlaying ? <Icons.Pause size={22} /> : <Icons.Play size={22} />}
               </button>
               <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence">
@@ -346,6 +334,14 @@ export default function Pill({
               </button>
 
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <button
+                  className={`pill-chip preload-chip preload-${pl.state}`}
+                  onClick={handlePreload}
+                  disabled={plBusy || plReady}
+                  title={preloadButtonLabel}
+                >
+                  <Icons.Download size={12} /> {preloadShortLabel.toUpperCase()}
+                </button>
                 <button
                   className={`pill-chip${sleepMinutes !== null ? ' active' : ''}`}
                   onClick={cycleSleep}

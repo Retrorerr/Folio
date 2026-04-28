@@ -29,7 +29,7 @@ Most reading tools treat listening as an afterthought. Folio is built around a d
 ## Highlights
 
 - **Two reading modes**: paged PDF reading and chapter-based EPUB reflow
-- **Integrated TTS playback**: on-device Kokoro voices and Orpheus playback support
+- **Integrated TTS playback**: on-device Kokoro voices with a curated narrator list
 - **Reader-following audio**: playback advances through sentences and can keep the view synced
 - **Preloaded chapter audio**: prepares a chapter before playback for smoother listening
 - **Search and navigation**: full-book search, bookmarks, chapter navigation, and recent titles
@@ -42,7 +42,7 @@ Most reading tools treat listening as an afterthought. Folio is built around a d
 - Backend: FastAPI, Uvicorn
 - PDF processing: PyMuPDF
 - EPUB parsing: EbookLib, Beautiful Soup, lxml
-- TTS: `kokoro-onnx`, ONNX Runtime, optional Orpheus flow
+- TTS: `kokoro-onnx`, ONNX Runtime
 - Packaging style: local desktop workflow via `launcher.pyw`
 
 ## Demo-Friendly Feature Set
@@ -88,7 +88,17 @@ git lfs pull
 python -m pip install -r backend/requirements.txt
 ```
 
-### 3. Install frontend dependencies
+### 3. Download Kokoro model assets
+
+Folio expects the full-quality English Kokoro v1.0 ONNX model at `backend/models/kokoro-v1.0.onnx` and the voice file at `backend/models/voices-v1.0.bin`:
+
+```powershell
+python backend/setup_kokoro_models.py
+```
+
+The setup command first tries the GitHub `kokoro-onnx` v1.0 model release, then falls back to the Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX` `onnx/model.onnx` source for the model. Regardless of source, the local model is saved as `kokoro-v1.0.onnx`.
+
+### 4. Install frontend dependencies
 
 ```powershell
 cd frontend
@@ -96,7 +106,7 @@ npm install
 cd ..
 ```
 
-### 4. Build the frontend
+### 5. Build the frontend
 
 ```powershell
 cd frontend
@@ -104,7 +114,7 @@ npm run build
 cd ..
 ```
 
-### 5. Launch Folio
+### 6. Launch Folio
 
 For the desktop-style flow on Windows:
 
@@ -131,16 +141,41 @@ npm run dev
 - The backend serves the production frontend build from `frontend/dist`
 - Runtime book data, uploads, generated audio, and local state are intentionally excluded from git
 - Large model binaries in `backend/models` are tracked with Git LFS
+- For Tauri packaging, keep the app bundle read-only and point runtime paths at app data with `KOKORO_READER_DATA_DIR`, `KOKORO_READER_UPLOAD_DIR`, and `KOKORO_READER_AUDIO_CACHE_DIR`
+- `KOKORO_READER_MODELS_DIR` and `KOKORO_READER_FRONTEND_DIR` can relocate bundled model assets and the built frontend
+- The frontend can call an external backend origin by setting `VITE_API_BASE`; the default remains same-origin for the current FastAPI-served build
 
 ## Notes On Models
 
-Folio stores the large local speech models with Git LFS. After cloning, always run:
+Folio uses Kokoro-only local speech generation. The normal reader model is the full-quality English Kokoro v1.0 ONNX model:
+
+```text
+backend/models/kokoro-v1.0.onnx
+```
+
+Keep `backend/models/voices-v1.0.bin` beside it. If you manually download Hugging Face's `model.onnx`, run `python backend/setup_kokoro_models.py` so it is normalized to `kokoro-v1.0.onnx`.
+
+Folio does not silently download models on startup. If the full-quality model is missing, startup/status logs tell you to run:
+
+```powershell
+python backend/setup_kokoro_models.py
+```
+
+The old `backend/models/kokoro-v1.0.int8.onnx` file is only used as an emergency fallback when the full-quality model is missing or cannot load/run.
+
+Some large local speech models are tracked with Git LFS. After cloning, you can still run:
 
 ```powershell
 git lfs pull
 ```
 
-Without that step, the model files in `backend/models` will only exist as LFS pointers and playback will not work correctly.
+Without that step, any LFS-tracked files in `backend/models` will only exist as pointers and playback will not work correctly.
+
+To compare the quality model against the int8 emergency fallback, run:
+
+```powershell
+python backend/tts_benchmark.py --compare --output-dir backend/tts_debug_wavs_compare
+```
 
 ## Current Scope
 

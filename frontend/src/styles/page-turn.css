@@ -1,0 +1,313 @@
+/* Page-turn animation overlay for fixed two-page spreads. */
+.pt-spread {
+  --pt-paper: var(--paper-2);
+  --pt-shadow-strong: rgba(40, 24, 8, 0.55);
+  --pt-shadow-mid: rgba(40, 24, 8, 0.25);
+  --pt-shadow-soft: rgba(40, 24, 8, 0.05);
+  --pt-cast-strong: rgba(40, 24, 8, 0.45);
+  --pt-cast-mid: rgba(40, 24, 8, 0.18);
+  --pt-cast-soft: rgba(40, 24, 8, 0.05);
+  --pt-sheen-strong: rgba(255, 245, 225, 0.55);
+  --pt-sheen-mid: rgba(255, 245, 225, 0.45);
+  --pt-edge-light: rgba(255, 240, 210, 0.7);
+  --pt-edge-dark: rgba(120, 80, 40, 0.4);
+  --pt-duration: 720ms;
+  --pt-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  transform-style: preserve-3d;
+}
+
+.theme-dark .pt-spread {
+  --pt-paper: var(--paper-2);
+  --pt-shadow-strong: rgba(0, 0, 0, 0.6);
+  --pt-shadow-mid: rgba(0, 0, 0, 0.3);
+  --pt-shadow-soft: rgba(0, 0, 0, 0.1);
+  --pt-cast-strong: rgba(0, 0, 0, 0.6);
+  --pt-cast-mid: rgba(0, 0, 0, 0.3);
+  --pt-cast-soft: rgba(0, 0, 0, 0.1);
+  --pt-sheen-strong: rgba(180, 224, 235, 0.28);
+  --pt-sheen-mid: rgba(162, 226, 211, 0.22);
+  --pt-edge-light: rgba(192, 232, 224, 0.36);
+  --pt-edge-dark: rgba(37, 54, 66, 0.5);
+}
+
+.pt-page {
+  position: relative;
+  background: var(--pt-paper);
+  overflow: hidden;
+}
+
+.pt-spread:has(.pt-flipper-next) .pt-page.pt-recto,
+.pt-spread:has(.pt-flipper-prev) .pt-page.pt-verso {
+  filter: brightness(0.985);
+}
+
+.pt-flipper {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  transform-style: preserve-3d;
+  z-index: 5;
+  pointer-events: none;
+  will-change: transform;
+}
+.pt-flipper-next {
+  left: 50%;
+  transform-origin: left center;
+  animation: pt-flip-next var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-prev {
+  left: 0;
+  transform-origin: right center;
+  animation: pt-flip-prev var(--pt-duration) var(--pt-easing) forwards;
+}
+
+@keyframes pt-flip-next {
+  0%   { transform: translateZ(0) rotateY(0deg); }
+  50%  { transform: translateZ(10px) rotateY(-90deg); }
+  100% { transform: translateZ(0) rotateY(-180deg); }
+}
+@keyframes pt-flip-prev {
+  0%   { transform: translateZ(0) rotateY(0deg); }
+  50%  { transform: translateZ(10px) rotateY(90deg); }
+  100% { transform: translateZ(0) rotateY(180deg); }
+}
+
+.pt-face {
+  position: absolute;
+  inset: 0;
+  background: var(--pt-paper);
+  display: flex;
+  flex-direction: column;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  overflow: hidden;
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.05),
+    0 20px 40px -12px rgba(62, 40, 18, 0.22),
+    0 40px 80px -20px rgba(62, 40, 18, 0.15);
+}
+
+.pt-page-text {
+  position: absolute;
+  left: 56px;
+  top: 120px;
+  width: 568px;
+  height: 564px;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.pt-page-text .reflow-flow {
+  pointer-events: none;
+}
+.theme-dark .pt-face {
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.3),
+    0 20px 40px -12px rgba(0, 0, 0, 0.5),
+    0 40px 80px -20px rgba(0, 0, 0, 0.35);
+}
+
+.pt-flipper-next .pt-front,
+.pt-flipper-prev .pt-front {
+  transform: rotateY(0deg);
+}
+.pt-flipper-next .pt-back {
+  transform: rotateY(180deg);
+}
+.pt-flipper-prev .pt-back {
+  transform: rotateY(-180deg);
+}
+
+.pt-sheen,
+.pt-shade,
+.pt-edge {
+  position: absolute;
+  pointer-events: none;
+}
+.pt-sheen,
+.pt-shade {
+  inset: 0;
+  opacity: 0;
+}
+.pt-sheen {
+  mix-blend-mode: screen;
+}
+.pt-shade {
+  mix-blend-mode: multiply;
+}
+.pt-edge {
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  opacity: 0;
+}
+
+.pt-flipper-next .pt-front .pt-sheen {
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 245, 225, 0) 25%, var(--pt-sheen-strong) 50%, rgba(255, 245, 225, 0) 75%, transparent 100%);
+  animation: pt-sheen-front var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-next .pt-back .pt-sheen {
+  background: linear-gradient(260deg, transparent 0%, rgba(255, 245, 225, 0) 25%, var(--pt-sheen-mid) 50%, rgba(255, 245, 225, 0) 75%, transparent 100%);
+  animation: pt-sheen-back var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-prev .pt-front .pt-sheen {
+  background: linear-gradient(260deg, transparent 0%, rgba(255, 245, 225, 0) 25%, var(--pt-sheen-strong) 50%, rgba(255, 245, 225, 0) 75%, transparent 100%);
+  animation: pt-sheen-front var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-prev .pt-back .pt-sheen {
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 245, 225, 0) 25%, var(--pt-sheen-mid) 50%, rgba(255, 245, 225, 0) 75%, transparent 100%);
+  animation: pt-sheen-back var(--pt-duration) var(--pt-easing) forwards;
+}
+
+@keyframes pt-sheen-front {
+  0% { opacity: 0; }
+  25% { opacity: 0.9; }
+  50% { opacity: 0; }
+}
+@keyframes pt-sheen-back {
+  50% { opacity: 0; }
+  75% { opacity: 0.7; }
+  100% { opacity: 0; }
+}
+
+.pt-flipper-next .pt-shade-front {
+  background: linear-gradient(90deg, var(--pt-shadow-strong) 0%, var(--pt-shadow-mid) 35%, var(--pt-shadow-soft) 70%, transparent 100%);
+  animation: pt-shade-front var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-next .pt-shade-back {
+  background: linear-gradient(270deg, var(--pt-shadow-strong) 0%, var(--pt-shadow-mid) 35%, var(--pt-shadow-soft) 70%, transparent 100%);
+  animation: pt-shade-back var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-prev .pt-shade-front {
+  background: linear-gradient(270deg, var(--pt-shadow-strong) 0%, var(--pt-shadow-mid) 35%, var(--pt-shadow-soft) 70%, transparent 100%);
+  animation: pt-shade-front var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-prev .pt-shade-back {
+  background: linear-gradient(90deg, var(--pt-shadow-strong) 0%, var(--pt-shadow-mid) 35%, var(--pt-shadow-soft) 70%, transparent 100%);
+  animation: pt-shade-back var(--pt-duration) var(--pt-easing) forwards;
+}
+
+@keyframes pt-shade-front {
+  0% { opacity: 0; }
+  20% { opacity: 0.15; }
+  50% { opacity: 0.85; }
+  60% { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes pt-shade-back {
+  0% { opacity: 0; }
+  40% { opacity: 0; }
+  50% { opacity: 0.85; }
+  75% { opacity: 0.35; }
+  100% { opacity: 0; }
+}
+
+.pt-cast,
+.pt-cast-receiving {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+}
+.pt-cast-next {
+  left: 50%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--pt-cast-strong) 0%, var(--pt-cast-mid) 30%, var(--pt-cast-soft) 60%, transparent 100%);
+  animation: pt-cast var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-cast-prev {
+  left: 0;
+  transform-origin: right center;
+  background: linear-gradient(270deg, var(--pt-cast-strong) 0%, var(--pt-cast-mid) 30%, var(--pt-cast-soft) 60%, transparent 100%);
+  animation: pt-cast var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-recv-next {
+  left: 0;
+  transform-origin: right center;
+  background: linear-gradient(270deg, var(--pt-cast-strong) 0%, var(--pt-cast-mid) 30%, var(--pt-cast-soft) 60%, transparent 100%);
+  animation: pt-cast-receiving var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-recv-prev {
+  left: 50%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--pt-cast-strong) 0%, var(--pt-cast-mid) 30%, var(--pt-cast-soft) 60%, transparent 100%);
+  animation: pt-cast-receiving var(--pt-duration) var(--pt-easing) forwards;
+}
+
+@keyframes pt-cast {
+  0% { opacity: 0; transform: scaleX(0.05); }
+  10% { opacity: 0.3; transform: scaleX(0.2); }
+  35% { opacity: 0.7; transform: scaleX(0.7); }
+  50% { opacity: 0.55; transform: scaleX(1); }
+  65% { opacity: 0.2; transform: scaleX(0.6); }
+  100% { opacity: 0; transform: scaleX(0.05); }
+}
+@keyframes pt-cast-receiving {
+  0% { opacity: 0; transform: scaleX(0.05); }
+  50% { opacity: 0.55; transform: scaleX(1); }
+  70% { opacity: 0.7; transform: scaleX(0.7); }
+  90% { opacity: 0.25; transform: scaleX(0.2); }
+  100% { opacity: 0; transform: scaleX(0.05); }
+}
+
+.pt-flipper-next .pt-front .pt-edge {
+  right: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 240, 210, 0) 30%, var(--pt-edge-light) 70%, var(--pt-edge-dark) 100%);
+  animation: pt-edge-glow var(--pt-duration) var(--pt-easing) forwards;
+}
+.pt-flipper-prev .pt-front .pt-edge {
+  left: 0;
+  background: linear-gradient(270deg, transparent 0%, rgba(255, 240, 210, 0) 30%, var(--pt-edge-light) 70%, var(--pt-edge-dark) 100%);
+  animation: pt-edge-glow var(--pt-duration) var(--pt-easing) forwards;
+}
+@keyframes pt-edge-glow {
+  0% { opacity: 0; }
+  20% { opacity: 0.85; }
+  45% { opacity: 0.95; }
+  55% { opacity: 0; }
+  100% { opacity: 0; }
+}
+
+/* Single-page mode: no flipper. A subtle fade + horizontal nudge masks the
+   instant content swap when the user navigates between sub-pages. */
+.sp-turning .reflow-viewport {
+  animation: sp-fade 320ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sp-turning-next .pt-page {
+  animation: sp-shift-next 320ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.sp-turning-prev .pt-page {
+  animation: sp-shift-prev 320ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes sp-fade {
+  0%   { opacity: 1; transform: translateX(0); }
+  35%  { opacity: 0; transform: translateX(-10px); }
+  36%  { opacity: 0; transform: translateX(10px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes sp-shift-next {
+  0%   { transform: translateX(0); box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 20px 40px -12px rgba(62,40,18,0.22), 0 40px 80px -20px rgba(62,40,18,0.15); }
+  45%  { transform: translateX(-3px); box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 26px 48px -10px rgba(62,40,18,0.32), 0 48px 96px -20px rgba(62,40,18,0.22); }
+  100% { transform: translateX(0); }
+}
+@keyframes sp-shift-prev {
+  0%   { transform: translateX(0); box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 20px 40px -12px rgba(62,40,18,0.22), 0 40px 80px -20px rgba(62,40,18,0.15); }
+  45%  { transform: translateX(3px); box-shadow: 0 1px 0 rgba(0,0,0,0.05), 0 26px 48px -10px rgba(62,40,18,0.32), 0 48px 96px -20px rgba(62,40,18,0.22); }
+  100% { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pt-flipper,
+  .pt-flipper *,
+  .pt-cast,
+  .pt-cast-receiving,
+  .sp-turning .reflow-viewport,
+  .sp-turning .pt-page {
+    animation-duration: 1ms !important;
+  }
+}

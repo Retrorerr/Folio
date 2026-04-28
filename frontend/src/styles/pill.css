@@ -31,11 +31,11 @@
   overflow: hidden;
 }
 .theme-dark .pill {
-  background: #0b0804;
+  background: #0b1014;
   box-shadow:
     0 20px 48px -12px rgba(0,0,0,0.8),
-    0 0 0 1px rgba(255, 220, 170, 0.08),
-    inset 0 1px 0 rgba(255, 220, 170, 0.06);
+    0 0 0 1px rgba(162, 226, 211, 0.1),
+    inset 0 1px 0 rgba(230, 237, 243, 0.06);
 }
 .pill:hover {
   transform: translateY(-2px);
@@ -175,6 +175,55 @@
 }
 .pill-btn.play svg { margin-left: 2px; }
 .pill-btn.play.is-playing svg { margin-left: 0; }
+
+.pill-preload-control {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.pill-preload-control:hover:not(:disabled) {
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.pill-preload-control:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.pill-preload-control.preload-preloading,
+.pill-preload-control.preload-verifying,
+.preload-chip.preload-preloading,
+.preload-chip.preload-verifying {
+  color: var(--ember-soft);
+  border-color: color-mix(in srgb, var(--ember-soft) 34%, transparent);
+}
+.pill-preload-control.preload-ready,
+.preload-chip.preload-ready {
+  color: var(--gold);
+  background: rgba(212, 168, 96, 0.14);
+  border-color: rgba(212, 168, 96, 0.34);
+}
+.pill-preload-control.preload-preloading svg,
+.pill-preload-control.preload-verifying svg,
+.preload-chip.preload-preloading svg,
+.preload-chip.preload-verifying svg {
+  animation: preload-icon-pulse 1.2s ease-in-out infinite;
+}
+@keyframes preload-icon-pulse {
+  0%, 100% { opacity: 0.45; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(1px); }
+}
 
 /* ====== expanded layout ====== */
 .pill-expanded-head {
@@ -368,7 +417,7 @@
 }
 .pill-btn.play .ring-track {
   fill: none;
-  stroke: rgba(255, 220, 170, 0.14);
+  stroke: color-mix(in srgb, var(--ember-soft) 24%, transparent);
   stroke-width: 2.5;
 }
 .pill-btn.play .ring-fill {

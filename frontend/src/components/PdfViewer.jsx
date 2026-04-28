@@ -2,9 +2,10 @@ import { useRef, useState, useEffect, useCallback } from 'react'
 
 export default function PdfViewer({
   pageImageUrl, facingPageImageUrl, facingPageNum, pageData,
-  currentSentence, currentWordIdx, currentPage, pageCount,
+  currentSentence, currentWordIdx, activePage, currentPage, pageCount,
   zoom, setZoom, highlightStyle = 'dim',
   searchTarget,
+  onSentenceSelect,
 }) {
   const scrollRef = useRef()
   const imgRef = useRef()
@@ -71,10 +72,11 @@ export default function PdfViewer({
     ? (imgDisplayWidth || imgNatural.w) / pageData.render_width
     : 1
   const searchSentenceIdx = searchTarget?.page === currentPage ? searchTarget.sentenceIdx : null
+  const activeSentenceIdx = activePage === currentPage ? currentSentence : null
 
   const renderSentenceOverlay = (sent, sIdx, variant) => (
     sent.words.map((word, wIdx) => {
-      const isCurWord = variant === 'playback' && wIdx === currentWordIdx
+      const isCurWord = variant === 'playback' && activeSentenceIdx === currentSentence && wIdx === currentWordIdx
       return (
         <div
           key={`${variant}-${sIdx}-${wIdx}`}
@@ -90,6 +92,28 @@ export default function PdfViewer({
         />
       )
     })
+  )
+
+  const renderSentenceHitboxes = (sent, sIdx) => (
+    sent.words.map((word, wIdx) => (
+      <button
+        type="button"
+        key={`hitbox-${sIdx}-${wIdx}`}
+        className="word-hitbox"
+        onClick={(e) => {
+          e.stopPropagation()
+          onSentenceSelect?.(currentPage, sIdx)
+        }}
+        title="Read from this sentence"
+        style={{
+          position: 'absolute',
+          left: word.x * scaleX,
+          top: word.y * scaleX,
+          width: word.w * scaleX,
+          height: word.h * scaleX,
+        }}
+      />
+    ))
   )
 
   const renderSheet = (side, src, pageNum) => {
@@ -113,15 +137,24 @@ export default function PdfViewer({
             }}>{pageNum == null ? '' : 'Loading…'}</div>
           )}
 
-          {isActive && pageData && pageData.sentences.map((sent, sIdx) => {
-            if (sIdx !== currentSentence && sIdx !== searchSentenceIdx) return null
-            return (
-              <div key={`sentence-${sIdx}`}>
-                {sIdx === searchSentenceIdx && renderSentenceOverlay(sent, sIdx, 'search')}
-                {sIdx === currentSentence && renderSentenceOverlay(sent, sIdx, 'playback')}
-              </div>
-            )
-          })}
+          {isActive && pageData && (
+            <>
+              {pageData.sentences.map((sent, sIdx) => (
+                <div key={`hitbox-sentence-${sIdx}`}>
+                  {renderSentenceHitboxes(sent, sIdx)}
+                </div>
+              ))}
+              {pageData.sentences.map((sent, sIdx) => {
+                if (sIdx !== activeSentenceIdx && sIdx !== searchSentenceIdx) return null
+                return (
+                  <div key={`sentence-${sIdx}`}>
+                    {sIdx === searchSentenceIdx && renderSentenceOverlay(sent, sIdx, 'search')}
+                    {sIdx === activeSentenceIdx && renderSentenceOverlay(sent, sIdx, 'playback')}
+                  </div>
+                )
+              })}
+            </>
+          )}
         </div>
       </div>
     )

@@ -15,44 +15,6 @@
   100% { background-position: -200% 0; }
 }
 
-/* PDF viewer paper-themed shell */
-.pdf-paper {
-  flex: 1;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 40px 24px 180px;
-  position: relative;
-}
-.pdf-page-sheet {
-  background: var(--paper-2);
-  padding: 32px;
-  border-radius: 4px;
-  box-shadow:
-    0 1px 0 rgba(0,0,0,0.05),
-    0 20px 40px -12px rgba(62, 40, 18, 0.22),
-    0 40px 80px -20px rgba(62, 40, 18, 0.15);
-  position: relative;
-  max-width: 100%;
-}
-.theme-dark .pdf-page-sheet {
-  box-shadow:
-    0 1px 0 rgba(0,0,0,0.3),
-    0 20px 40px -12px rgba(0,0,0,0.5),
-    0 40px 80px -20px rgba(0,0,0,0.35);
-}
-.pdf-page-sheet img {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  user-select: none;
-  -webkit-user-drag: none;
-}
-.theme-dark .pdf-page-sheet img {
-  filter: invert(0.92) hue-rotate(180deg);
-}
-
 /* Word / sentence highlight overlays painted on top of the page image */
 .word-highlight {
   border-radius: 2px;
@@ -127,7 +89,7 @@
   z-index: 4;
 }
 
-/* status badges (GPU / Orpheus / errors) in welcome + topbar */
+/* status badges (GPU / model / errors) in welcome + topbar */
 .status-badges {
   display: flex;
   gap: 8px;
@@ -147,31 +109,62 @@
 .gpu-badge.gpu-on { color: var(--ember); border-color: var(--ember); background: var(--ember-wash); }
 .gpu-badge.small { padding: 2px 8px; font-size: 9px; }
 
-/* Sleep chip row inside expanded pill */
-.pill-sleep-row {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-/* Skipped because pill has own styles */
-
 /* Reflow viewer: facing page spread with column-pagination overlay */
-.reflow-sheet { padding: 64px 56px 56px !important; }
+.reflow-sheet {
+  width: 680px;
+  flex: 0 0 680px;
+  height: 780px;
+  min-height: 780px;
+  max-height: 780px;
+  padding: 64px 56px 56px !important;
+  overflow: hidden;
+}
 .reflow-sheet .reflow-slot { flex: 1; }
 
-.spread.reflow-spread { position: relative; }
+.spread.reflow-spread {
+  position: relative;
+  max-width: none;
+  justify-content: center;
+  align-items: start;
+}
+.reflow-spread.pages-2 {
+  width: 1360px;
+  grid-template-columns: 680px 680px;
+}
+.reflow-spread.pages-1 {
+  width: 680px;
+  grid-template-columns: 680px;
+}
+.reflow-spread.pages-1::before {
+  display: none;
+}
+.reflow-spread.pages-1 .page-sheet {
+  border-radius: 3px;
+  padding: 64px 56px 56px !important;
+}
+.reflow-spread.pages-1 .page-sheet::after {
+  display: none;
+}
+.reflow-spread.pages-1 .page-sheet.recto {
+  display: none;
+}
+.reflow-spread.pages-2 .page-sheet.recto {
+  display: flex;
+}
 
 /* The column-flow viewport floats over both sheets, aligned to their body area */
 .reflow-viewport {
   position: absolute;
   left: 56px;
-  right: 56px;
   top: 120px;
-  bottom: 80px;
+  width: 568px;
+  height: 564px;
   overflow: hidden;
   pointer-events: none;
   z-index: 2;
+}
+.reflow-spread.pages-2 .reflow-viewport {
+  width: 1248px;
 }
 .reflow-flow {
   font-family: var(--font-body, 'Cormorant Garamond', serif);
@@ -219,22 +212,6 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ember) 35%, transparent);
   border-radius: 3px;
 }
-.reflow-sheet .page-body { font-size: 18px; line-height: 1.62; }
-.reflow-sheet .page-body p { margin-bottom: 0; text-indent: 1.6em; }
-.reflow-sheet .page-body p.first { text-indent: 0; }
-.reflow-sheet .page-body p + p { margin-top: 0; }
-/* Only drop-cap the very first paragraph */
-.reflow-sheet .page-body .drop-cap {
-  float: left;
-  font-family: var(--font-display);
-  font-size: 78px;
-  line-height: 0.85;
-  color: var(--ember);
-  padding: 6px 10px 0 0;
-  margin-top: 4px;
-  font-style: normal;
-}
-
 @media (max-width: 820px) {
   .zoom-controls {
     right: 14px;

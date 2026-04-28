@@ -7,6 +7,7 @@ import ReflowViewer from './components/ReflowViewer'
 import Pill from './components/Pill'
 import Sidebar from './components/Sidebar'
 import { Icons } from './components/icons'
+import { apiFetch } from './api'
 import './App.css'
 
 const THEMES = ['sepia', 'light', 'dark']
@@ -30,14 +31,12 @@ export default function App() {
   const [gpuEnabled, setGpuEnabled] = useState(null)
   const [modelLoaded, setModelLoaded] = useState(false)
   const [modelLoading, setModelLoading] = useState(false)
-  const [orpheusLoaded, setOrpheusLoaded] = useState(false)
-  const [orpheusLoading, setOrpheusLoading] = useState(false)
   const settingsHydrated = useRef(false)
 
   const saveSetting = useCallback((key, value) => {
     if (!settingsHydrated.current) return
     localStorage.setItem(key, value)
-    fetch('/api/settings', {
+    apiFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [key]: value }),
@@ -55,16 +54,15 @@ export default function App() {
     let cancelled = false
     const poll = async () => {
       try {
-        const r = await fetch('/api/status')
+        const r = await apiFetch('/api/status')
         const d = await r.json()
         setGpuEnabled(d.gpu)
         setModelLoaded(d.model_loaded)
         setModelLoading(d.model_loading)
-        setOrpheusLoaded(d.orpheus_loaded)
-        setOrpheusLoading(d.orpheus_loading)
-        if (!d.model_loaded && !cancelled) setTimeout(poll, 2000)
       } catch {
         // Ignore transient backend startup failures while polling status.
+      } finally {
+        if (!cancelled) setTimeout(poll, 2000)
       }
     }
     poll()
@@ -121,7 +119,7 @@ export default function App() {
     if (!motion) return
     setTurning(direction)
     clearTimeout(turnTimeoutRef.current)
-    turnTimeoutRef.current = setTimeout(() => setTurning(null), 900)
+    turnTimeoutRef.current = setTimeout(() => setTurning(null), 720)
   }, [motion])
   const lastPageRef = useRef(currentPage)
   useEffect(() => {
@@ -144,7 +142,7 @@ export default function App() {
   }, [isEpub])
 
   useEffect(() => {
-    fetch('/api/settings')
+    apiFetch('/api/settings')
       .then(r => r.ok ? r.json() : {})
       .then(s => {
         if (s.theme !== undefined && THEMES.includes(s.theme)) { setTheme(s.theme); localStorage.setItem('theme', s.theme) }
@@ -188,9 +186,6 @@ export default function App() {
           {gpuEnabled ? 'GPU Accelerated' : 'CPU Mode'}
         </span>
       )}
-      <span className={`gpu-badge ${orpheusLoaded ? 'gpu-on' : 'gpu-off'}`}>
-        {orpheusLoaded ? 'Orpheus Ready' : orpheusLoading ? 'Loading Orpheus…' : 'Orpheus Not Loaded'}
-      </span>
     </>
   )
 
@@ -224,8 +219,6 @@ export default function App() {
           voice={audio.voice}
           setVoice={audio.setVoice}
           speed={audio.speed}
-          engine={audio.engine}
-          setEngine={audio.setEngine}
           theme={theme}
           setTheme={setTheme}
           motion={motion}
@@ -289,11 +282,15 @@ export default function App() {
               setChapterIdx={goToPage}
               runningHead={book.title}
               currentSentence={audio.currentSentence}
+              activeChapterIdx={audio.readingPage ?? currentPage}
               onProgress={setReflowProgress}
               navRef={reflowNavRef}
               onPageTurn={triggerTurn}
+              pageTurn={turning}
+              motion={motion}
               wheelPaging={wheelPaging}
               searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+              onSentenceSelect={(page, sentence) => audio.seekToSentence(page, sentence)}
             />
           ) : (
             <PdfViewer
@@ -303,16 +300,18 @@ export default function App() {
               pageData={pageData}
               currentSentence={audio.currentSentence}
               currentWordIdx={audio.currentWordIdx}
+              activePage={audio.readingPage ?? currentPage}
               currentPage={currentPage}
               pageCount={book.page_count}
               zoom={zoom}
               setZoom={setZoom}
               highlightStyle={highlightStyle}
               searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+              onSentenceSelect={(page, sentence) => audio.seekToSentence(page, sentence)}
             />
           )}
 
-          {motion && turning && (
+          {motion && turning && book.format !== 'epub' && (
             <>
               <div className={`flipper flipper-${turning}`} style={{ pointerEvents: 'none' }}>
                 <div className="flip-face flip-front"><div className="flip-face-inner" /><div className="flip-shade flip-shade-front" /></div>
@@ -347,8 +346,8 @@ export default function App() {
         isPlaying={audio.isPlaying}
         isGenerating={audio.isGenerating}
         textLoading={textLoading}
-        modelLoaded={audio.engine === 'orpheus' ? orpheusLoaded : modelLoaded}
-        modelLoading={audio.engine === 'orpheus' ? orpheusLoading : modelLoading}
+        modelLoaded={modelLoaded}
+        modelLoading={modelLoading}
         play={audio.play}
         pause={audio.pause}
         stop={audio.stop}
@@ -367,6 +366,7 @@ export default function App() {
         sleepTimer={audio.sleepTimer}
         setSleepTimer={audio.setSleepTimer}
         preloadState={audio.preloadState}
+        preloadChapter={audio.preloadChapter}
         readingPage={audio.readingPage}
         jumpToReader={jumpToReader}
         book={book}

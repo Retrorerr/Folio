@@ -65,20 +65,20 @@
   color-scheme: light;
 }
 
-/* ============ Dark (deep walnut) ============ */
+/* ============ Dark (graphite) ============ */
 .theme-dark {
-  --paper:      #1a1510;
-  --paper-2:    #221b14;
-  --paper-3:    #2e251a;
-  --paper-edge: #0e0a06;
-  --rule:       #3a2f21;
-  --ink:        #ede1cb;
-  --ink-2:      #b6a586;
-  --ink-3:      #867654;
-  --ember:      #e38b5a;
-  --ember-soft: #f1a877;
-  --ember-wash: rgba(227, 139, 90, 0.15);
-  --gold:       #d4b36b;
+  --paper:      #111417;
+  --paper-2:    #171b20;
+  --paper-3:    #222932;
+  --paper-edge: #090c10;
+  --rule:       #303946;
+  --ink:        #e6edf3;
+  --ink-2:      #b7c4cf;
+  --ink-3:      #7f8f9f;
+  --ember:      #7cc7b2;
+  --ember-soft: #a2e2d3;
+  --ember-wash: rgba(124, 199, 178, 0.16);
+  --gold:       #c8b86a;
   --shadow-1:   0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-2:   0 6px 24px -8px rgba(0, 0, 0, 0.6);
   --shadow-3:   0 24px 60px -16px rgba(0, 0, 0, 0.8);
@@ -115,7 +115,7 @@ body {
 }
 .theme-dark.grain::before {
   mix-blend-mode: screen;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.8  0 0 0 0 0.7  0 0 0 0 0.5  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.55  0 0 0 0 0.68  0 0 0 0 0.8  0 0 0 0.045 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
 button, input, select { font: inherit; color: inherit; }

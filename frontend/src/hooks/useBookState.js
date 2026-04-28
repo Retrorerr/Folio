@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-
-const API = ''
+import { apiFetch } from '../api'
 
 export default function useBookState() {
   const [book, setBook] = useState(null)
@@ -16,7 +15,7 @@ export default function useBookState() {
 
   const fetchRecent = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/api/recent`)
+      const res = await apiFetch('/api/recent')
       if (res.ok) setRecentBooks(await res.json())
     } catch {
       // Keep the last-known recent list if the backend is temporarily unavailable.
@@ -28,7 +27,7 @@ export default function useBookState() {
   const openBook = useCallback(async (filepath) => {
     setLoading(true)
     try {
-      const res = await fetch(`${API}/api/book/open?filepath=${encodeURIComponent(filepath)}`, { method: 'POST' })
+      const res = await apiFetch(`/api/book/open?filepath=${encodeURIComponent(filepath)}`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setBook(data)
@@ -45,7 +44,7 @@ export default function useBookState() {
     try {
       const form = new FormData()
       form.append('file', file)
-      const res = await fetch(`${API}/api/book/open-upload`, { method: 'POST', body: form })
+      const res = await apiFetch('/api/book/open-upload', { method: 'POST', body: form })
       if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
       setBook(data)
@@ -72,7 +71,7 @@ export default function useBookState() {
     // Load image first (fast), then text (may need OCR, slow)
     try {
       if (!isEpub) {
-        const imgRes = await fetch(`${API}/api/book/${book.id}/page/${pageNum}/image`)
+        const imgRes = await apiFetch(`/api/book/${book.id}/page/${pageNum}/image`)
         if (imgRes.ok && loadRequestRef.current === requestId) {
           const blob = await imgRes.blob()
           setPageImageUrl((prev) => {
@@ -86,7 +85,7 @@ export default function useBookState() {
       }
       // Kick off facing page image in parallel (don't block text load)
       if (facingValid) {
-        fetch(`${API}/api/book/${book.id}/page/${facingNum}/image`).then(async (r) => {
+        apiFetch(`/api/book/${book.id}/page/${facingNum}/image`).then(async (r) => {
           if (!r.ok || loadRequestRef.current !== requestId) return
           const b = await r.blob()
           setFacingPageImageUrl((prev) => {
@@ -99,7 +98,7 @@ export default function useBookState() {
         setFacingPageImageUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
         setFacingPageNum(null)
       }
-      const textRes = await fetch(`${API}/api/book/${book.id}/page/${pageNum}/text`)
+      const textRes = await apiFetch(`/api/book/${book.id}/page/${pageNum}/text`)
       if (textRes.ok && loadRequestRef.current === requestId) {
         loadedPageData = await textRes.json()
         setPageData(loadedPageData)
@@ -124,7 +123,7 @@ export default function useBookState() {
 
   const savePosition = useCallback(async (page, sentenceIdx) => {
     if (!book) return
-    await fetch(`${API}/api/book/${book.id}/position`, {
+    await apiFetch(`/api/book/${book.id}/position`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page, sentence_idx: sentenceIdx }),
@@ -133,7 +132,7 @@ export default function useBookState() {
 
   const addBookmark = useCallback(async (page, sentenceIdx, label = '') => {
     if (!book) return
-    await fetch(`${API}/api/book/${book.id}/bookmark`, {
+    await apiFetch(`/api/book/${book.id}/bookmark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page, sentence_idx: sentenceIdx, label }),
@@ -147,7 +146,7 @@ export default function useBookState() {
 
   const removeBookmark = useCallback(async (idx) => {
     if (!book) return
-    await fetch(`${API}/api/book/${book.id}/bookmark/${idx}`, { method: 'DELETE' })
+    await apiFetch(`/api/book/${book.id}/bookmark/${idx}`, { method: 'DELETE' })
     setBook(prev => prev ? {
       ...prev,
       bookmarks: prev.bookmarks.filter((_, i) => i !== idx),
@@ -155,7 +154,7 @@ export default function useBookState() {
   }, [book])
 
   const deleteBook = useCallback(async (bookId, deleteFile = false) => {
-    await fetch(`${API}/api/book/${bookId}?delete_file=${deleteFile}`, { method: 'DELETE' })
+    await apiFetch(`/api/book/${bookId}?delete_file=${deleteFile}`, { method: 'DELETE' })
     fetchRecent()
   }, [fetchRecent])
 

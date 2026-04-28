@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class BookMeta(BaseModel):
     id: str
@@ -9,8 +9,7 @@ class BookMeta(BaseModel):
     toc: list[dict]  # [{"title": str, "page": int}]
     format: str = "pdf"  # "pdf" | "epub"
     voice: str = "af_heart"
-    speed: float = 1.0
-    engine: str = "kokoro"
+    speed: float = 0.95
 
 class Position(BaseModel):
     page: int
@@ -30,10 +29,9 @@ class BookState(BaseModel):
     toc: list[dict]
     format: str = "pdf"
     voice: str = "af_heart"
-    speed: float = 1.0
-    engine: str = "kokoro"  # "kokoro" or "orpheus"
-    last_position: Position = Position(page=0, sentence_idx=0)
-    bookmarks: list[Bookmark] = []
+    speed: float = 0.95
+    last_position: Position = Field(default_factory=lambda: Position(page=0, sentence_idx=0))
+    bookmarks: list[Bookmark] = Field(default_factory=list)
 
 class WordInfo(BaseModel):
     text: str

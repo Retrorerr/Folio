@@ -14,13 +14,14 @@ from contextlib import asynccontextmanager
 import pdf_service
 import reflow_service
 import tts_service
-import orpheus_service
 from models import BookState, Position, Bookmark
+from paths import DATA_DIR, FRONTEND_DIR, UPLOAD_DIR
 from tts_queue import TTSQueue
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend", "dist")
+DATA_DIR = str(DATA_DIR)
+FRONTEND_DIR = str(FRONTEND_DIR)
+UPLOAD_DIR = str(UPLOAD_DIR)
 logger = logging.getLogger(__name__)
 
 BOOKS: dict[str, dict] = {}
@@ -77,8 +78,7 @@ def _resolve_filepath(filepath: str) -> str:
     reference the old absolute path."""
     if os.path.exists(filepath):
         return filepath
-    uploads_dir = os.path.join(BASE_DIR, "uploads")
-    candidate = os.path.join(uploads_dir, os.path.basename(filepath))
+    candidate = os.path.join(UPLOAD_DIR, os.path.basename(filepath))
     if os.path.exists(candidate):
         return candidate
     return filepath
@@ -228,6 +228,7 @@ def _get_search_index(book_id: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    tts_service.log_runtime_environment()
     yield
     for book_id in list(BOOKS):
         _save_state(book_id)
@@ -252,8 +253,7 @@ def get_status():
         "voices": len(tts_service.get_available_voices()) if tts_service.is_model_loaded() else 0,
         "model_loaded": tts_service.is_model_loaded(),
         "model_loading": tts_service.is_model_loading(),
-        "orpheus_loaded": orpheus_service.is_model_loaded(),
-        "orpheus_loading": orpheus_service.is_model_loading(),
+        "tts_runtime": tts_service.get_runtime_info(),
     }
 
 
@@ -341,7 +341,7 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
             logger.exception("Failed to remove state file for book %s", book_id)
     if delete_file and filepath:
         resolved = _resolve_filepath(filepath)
-        uploads_dir = os.path.abspath(os.path.join(BASE_DIR, "uploads"))
+        uploads_dir = os.path.abspath(UPLOAD_DIR)
         abs_fp = os.path.abspath(resolved)
         if abs_fp.startswith(uploads_dir + os.sep) and os.path.exists(abs_fp):
             # Only delete if no other book state still references this file
@@ -368,7 +368,7 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
 
 @app.post("/api/book/open-upload")
 async def open_book_upload(file: UploadFile = File(...)):
-    upload_dir = os.path.join(BASE_DIR, "uploads")
+    upload_dir = UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
     safe_name = os.path.basename(file.filename) if file.filename else "upload.pdf"
     filepath = os.path.join(upload_dir, safe_name)
@@ -489,15 +489,18 @@ def search_book(
     }
 
 
-def _generate_audio(text, voice, speed, book_id, engine="kokoro"):
-    """Route TTS generation to the right engine."""
-    if engine == "orpheus":
-        return orpheus_service.generate_sentence_audio(text, voice=voice, speed=speed, book_id=book_id)
+def _generate_audio(text, voice, speed, book_id):
     return tts_service.generate_sentence_audio(text, voice=voice, speed=speed, book_id=book_id)
 
 
-def _job_key(book_id: str, page: int, sentence: int, voice: str, speed: float, engine: str) -> str:
-    return f"{engine}|{book_id}|{page}|{sentence}|{voice}|{speed}"
+def _job_key(book_id: str, page: int, sentence: int, voice: str, speed: float) -> str:
+    speed = tts_service.validate_speed(speed)
+    return f"kokoro|{book_id}|{page}|{sentence}|{tts_service.normalize_voice(voice)}|{speed}"
+
+
+def _audio_cache_path(book_id: str, text: str, voice: str, speed: float) -> str:
+    key = tts_service._cache_key(text, voice, speed)
+    return os.path.join(tts_service.CACHE_DIR, f"{book_id}_{key}.wav")
 
 
 def _get_sentence(book_id: str, page: int, sentence: int):
@@ -526,13 +529,13 @@ def _get_sentence(book_id: str, page: int, sentence: int):
     return doc, page_text, sent
 
 
-def _submit_tts_job(book_id: str, page: int, sentence: int, voice: str, speed: float, engine: str, priority: int):
+def _submit_tts_job(book_id: str, page: int, sentence: int, voice: str, speed: float, priority: int):
     _doc, _page_text, sent = _get_sentence(book_id, page, sentence)
-    job_key = _job_key(book_id, page, sentence, voice, speed, engine)
+    job_key = _job_key(book_id, page, sentence, voice, speed)
     job = TTS_MANAGER.submit(
         key=job_key,
         priority=priority,
-        fn=lambda: _generate_audio(sent.text, voice, speed, book_id, engine),
+        fn=lambda: _generate_audio(sent.text, voice, speed, book_id),
     )
     return job, sent
 
@@ -581,15 +584,54 @@ def generate_tts(
     page: int = Query(...),
     sentence: int = Query(...),
     voice: str = Query("af_heart"),
-    speed: float = Query(1.0),
-    engine: str = Query("kokoro"),
+    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
 ):
-    job, _sent = _submit_tts_job(book_id, page, sentence, voice, speed, engine, priority=0)
+    job, _sent = _submit_tts_job(book_id, page, sentence, voice, speed, priority=0)
     filename, duration_ms = TTS_MANAGER.wait(job)
     return {"filename": filename, "duration_ms": duration_ms}
 
 
-def _chapter_sentence_refs(book_id: str, page: int, voice: str, speed: float, engine: str):
+@app.post("/api/tts/buffer")
+def buffer_tts(
+    book_id: str = Query(...),
+    page: int = Query(...),
+    sentence: int = Query(...),
+    count: int = Query(6, ge=1, le=24),
+    voice: str = Query("af_heart"),
+    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+):
+    """Queue the next N sentences after the current reader position.
+
+    This is intentionally fire-and-forget: playback should never wait for the
+    buffer endpoint, and the current sentence keeps priority 0 via /generate.
+    """
+    refs = _iter_sentence_window(book_id, page, sentence, count, include_current=False)
+    queued: list[dict] = []
+    skipped: list[dict] = []
+
+    for offset, (page_num, sentence_idx) in enumerate(refs, start=1):
+        job_key = _job_key(book_id, page_num, sentence_idx, voice, speed)
+        status = TTS_MANAGER.status(job_key)
+        if status in {"pending", "running"}:
+            skipped.append({"page": page_num, "sentence": sentence_idx, "reason": status})
+            continue
+
+        _doc, _page_text, sent = _get_sentence(book_id, page_num, sentence_idx)
+        if os.path.exists(_audio_cache_path(book_id, sent.text, voice, speed)):
+            skipped.append({"page": page_num, "sentence": sentence_idx, "reason": "cached"})
+            continue
+
+        TTS_MANAGER.submit(
+            key=job_key,
+            priority=offset,
+            fn=lambda text=sent.text: _generate_audio(text, voice, speed, book_id),
+        )
+        queued.append({"page": page_num, "sentence": sentence_idx})
+
+    return {"requested": len(refs), "queued": queued, "skipped": skipped}
+
+
+def _chapter_sentence_refs(book_id: str, page: int, voice: str, speed: float):
     """Return [(sentence_idx, text, expected_cache_filepath)] for every non-empty
     sentence on `page` (which is a chapter index for EPUB, a page index for PDF)."""
     if book_id not in BOOKS:
@@ -607,12 +649,7 @@ def _chapter_sentence_refs(book_id: str, page: int, voice: str, speed: float, en
         text = (text or "").strip()
         if not text:
             continue
-        if engine == "orpheus":
-            key = orpheus_service._cache_key(text, voice, speed)
-        else:
-            key = tts_service._cache_key(text, voice, speed)
-        filename = f"{book_id}_{key}.wav"
-        filepath = os.path.join(tts_service.CACHE_DIR, filename)
+        filepath = _audio_cache_path(book_id, text, voice, speed)
         refs.append((idx, text, filepath))
     return refs
 
@@ -622,13 +659,12 @@ def preload_chapter(
     book_id: str,
     page: int = Query(...),
     voice: str = Query("af_heart"),
-    speed: float = Query(1.0),
-    engine: str = Query("kokoro"),
+    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
 ):
     """Queue every sentence in the chapter/page for TTS generation at top priority."""
-    refs = _chapter_sentence_refs(book_id, page, voice, speed, engine)
+    refs = _chapter_sentence_refs(book_id, page, voice, speed)
     for offset, (sentence_idx, _text, _path) in enumerate(refs):
-        _submit_tts_job(book_id, page, sentence_idx, voice, speed, engine, priority=offset)
+        _submit_tts_job(book_id, page, sentence_idx, voice, speed, priority=offset)
     return {"total": len(refs)}
 
 
@@ -637,23 +673,30 @@ def preload_chapter_status(
     book_id: str,
     page: int = Query(...),
     voice: str = Query("af_heart"),
-    speed: float = Query(1.0),
-    engine: str = Query("kokoro"),
+    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
 ):
     """Probe the audio cache for every sentence in the chapter. Cheap — no generation."""
-    refs = _chapter_sentence_refs(book_id, page, voice, speed, engine)
+    refs = _chapter_sentence_refs(book_id, page, voice, speed)
     ready = 0
     failed: list[int] = []
+    active = 0
     for sentence_idx, _text, filepath in refs:
         if os.path.exists(filepath):
             ready += 1
             continue
-        job_key = _job_key(book_id, page, sentence_idx, voice, speed, engine)
-        if TTS_MANAGER.status(job_key) == "error":
+        job_key = _job_key(book_id, page, sentence_idx, voice, speed)
+        status = TTS_MANAGER.status(job_key)
+        if status == "error":
             failed.append(sentence_idx)
-            ready += 1  # permanent failure counts as "done" so the gate can open
+        elif status in {"pending", "running"}:
+            active += 1
     total = len(refs)
-    state = "ready" if total == 0 or ready >= total else "preloading"
+    if total == 0 or ready >= total:
+        state = "ready"
+    elif failed and active == 0:
+        state = "error"
+    else:
+        state = "preloading"
     return {"state": state, "ready": ready, "total": total, "failed": failed}
 
 
@@ -666,10 +709,8 @@ def get_audio(filename: str):
 
 
 @app.get("/api/tts/voices")
-def get_voices(engine: str = Query("kokoro")):
+def get_voices():
     try:
-        if engine == "orpheus":
-            return orpheus_service.get_available_voices()
         return tts_service.get_available_voices()
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -705,7 +746,11 @@ def remove_bookmark(book_id: str, idx: int):
 
 
 @app.post("/api/book/{book_id}/settings")
-def update_settings(book_id: str, voice: str = Query(None), speed: float = Query(None), engine: str = Query(None)):
+def update_settings(
+    book_id: str,
+    voice: str = Query(None),
+    speed: float = Query(None, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
     state = BOOKS[book_id]["state"]
@@ -713,8 +758,6 @@ def update_settings(book_id: str, voice: str = Query(None), speed: float = Query
         state.voice = voice
     if speed is not None:
         state.speed = speed
-    if engine is not None:
-        state.engine = engine
     _save_state(book_id)
     return {"ok": True}
 
