@@ -5,6 +5,7 @@ export default function PdfViewer({
   currentSentence, currentWordIdx, activePage, currentPage, pageCount,
   zoom, setZoom, highlightStyle = 'dim',
   searchTarget,
+  followAlongMode = false,
   onSentenceSelect,
 }) {
   const scrollRef = useRef()
@@ -73,6 +74,7 @@ export default function PdfViewer({
     : 1
   const searchSentenceIdx = searchTarget?.page === currentPage ? searchTarget.sentenceIdx : null
   const activeSentenceIdx = activePage === currentPage ? currentSentence : null
+  const displayZoom = zoom * (followAlongMode ? 1.08 : 1)
 
   const renderSentenceOverlay = (sent, sIdx, variant) => (
     sent.words.map((word, wIdx) => {
@@ -161,8 +163,8 @@ export default function PdfViewer({
   }
 
   return (
-    <div className={`page-scroll hl-${highlightStyle}`} ref={scrollRef}>
-      <div className="spread" style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}>
+    <div className={`page-scroll hl-${highlightStyle} ${followAlongMode ? 'follow-along-scroll' : ''}`} ref={scrollRef}>
+      <div className="spread" style={{ transform: `scale(${displayZoom})`, transformOrigin: 'top center' }}>
         {renderSheet('verso', versoSrc, versoNum)}
         {renderSheet('recto', rectoSrc, rectoNum)}
       </div>

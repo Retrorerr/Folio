@@ -74,10 +74,15 @@ export default function useBookState() {
         const imgRes = await apiFetch(`/api/book/${book.id}/page/${pageNum}/image`)
         if (imgRes.ok && loadRequestRef.current === requestId) {
           const blob = await imgRes.blob()
-          setPageImageUrl((prev) => {
-            if (prev) URL.revokeObjectURL(prev)
-            return URL.createObjectURL(blob)
-          })
+          // Re-check the request ID *after* awaiting blob(): if the user opened
+          // a different book / page in the interim, dropping the blob now keeps
+          // us from clobbering the newer image with the stale one.
+          if (loadRequestRef.current === requestId) {
+            setPageImageUrl((prev) => {
+              if (prev) URL.revokeObjectURL(prev)
+              return URL.createObjectURL(blob)
+            })
+          }
         }
       }
       if (loadRequestRef.current === requestId) {
@@ -88,6 +93,8 @@ export default function useBookState() {
         apiFetch(`/api/book/${book.id}/page/${facingNum}/image`).then(async (r) => {
           if (!r.ok || loadRequestRef.current !== requestId) return
           const b = await r.blob()
+          // Same race-vs-stale-blob guard as the primary image branch.
+          if (loadRequestRef.current !== requestId) return
           setFacingPageImageUrl((prev) => {
             if (prev) URL.revokeObjectURL(prev)
             return URL.createObjectURL(b)
@@ -100,8 +107,14 @@ export default function useBookState() {
       }
       const textRes = await apiFetch(`/api/book/${book.id}/page/${pageNum}/text`)
       if (textRes.ok && loadRequestRef.current === requestId) {
-        loadedPageData = await textRes.json()
-        setPageData(loadedPageData)
+        const json = await textRes.json()
+        // Re-check after the JSON parse — if the user navigated away while the
+        // body was streaming in, we drop this payload rather than overwriting
+        // the newer page's data.
+        if (loadRequestRef.current === requestId) {
+          loadedPageData = json
+          setPageData(loadedPageData)
+        }
       }
     } finally {
       if (loadRequestRef.current === requestId) {
@@ -159,6 +172,9 @@ export default function useBookState() {
   }, [fetchRecent])
 
   const closeBook = useCallback(() => {
+    // Bump the request id so any in-flight image/text fetches can't clobber
+    // state after we've cleared it.
+    loadRequestRef.current += 1
     if (pageImageUrl) URL.revokeObjectURL(pageImageUrl)
     if (facingPageImageUrl) URL.revokeObjectURL(facingPageImageUrl)
     setBook(null)
@@ -169,6 +185,16 @@ export default function useBookState() {
     setCurrentPage(0)
     fetchRecent()
   }, [pageImageUrl, facingPageImageUrl, fetchRecent])
+
+  // Revoke any outstanding object URLs on hook unmount — closeBook handles the
+  // "user closed the book" path, but a hard reload / navigation away from the
+  // app would otherwise leak the most recent blobs until the page is gone.
+  useEffect(() => {
+    return () => {
+      if (pageImageUrl) URL.revokeObjectURL(pageImageUrl)
+      if (facingPageImageUrl) URL.revokeObjectURL(facingPageImageUrl)
+    }
+  }, [pageImageUrl, facingPageImageUrl])
 
   return {
     book, pageData, pageImageUrl, facingPageImageUrl, facingPageNum, currentPage, loading, textLoading, recentBooks,

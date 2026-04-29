@@ -36,7 +36,9 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   useEffect(() => { pageDataRef.current = pageData }, [pageData])
   useEffect(() => { currentSentenceRef.current = currentSentence }, [currentSentence])
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
-  useEffect(() => { pauseRef.current = () => {} }, [])
+  // pauseRef is initialized via useRef(() => {}) above and rewired below in the
+  // [pause]-keyed effect. The previous empty-deps "reset to noop" was dead code
+  // that briefly clobbered the wired callback during re-renders.
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume
   }, [volume])
@@ -156,6 +158,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     apiFetch(`/api/tts/buffer?${params.toString()}`, {
       method: 'POST',
       cache: 'no-store',
+    }).then((res) => {
+      // Drop the key on any non-success so a transient backend hiccup doesn't
+      // permanently block re-queueing this window.
+      if (!res.ok) readAheadRef.current.delete(key)
     }).catch(() => {
       readAheadRef.current.delete(key)
     })
@@ -403,9 +409,18 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       if (playbackSessionRef.current !== sessionId) return
 
       if (sentence % 3 === 0) {
-        await savePosition(page, sentence)
+        // Fire-and-forget: don't block the next-sentence latency on a slow
+        // backend write. Errors are swallowed because position is also saved
+        // on pause/stop and on every navigation.
+        Promise.resolve(savePosition(page, sentence)).catch(() => {})
       }
       position = await findNextReadablePosition(page, sentence + 1)
+    }
+
+    if (playbackSessionRef.current === sessionId && isPlayingRef.current) {
+      setIsPlaying(false)
+      isPlayingRef.current = false
+      setCurrentWordIdx(-1)
     }
   }, [book, findNextReadablePosition, goToPage, playAudio, fetchSentenceAudio, queueReadAhead, savePosition])
 
@@ -509,14 +524,19 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [pause, startPlayback])
 
   useEffect(() => {
-    const audio = audioRef.current
-    const wordTimer = wordTimerRef.current
-    const sleepTimerId = sleepTimerRef.current
+    // Read refs *inside* the cleanup so unmount sees the live audio element /
+    // timers, not the (null) values captured at mount.
     return () => {
-      if (audio) audio.pause()
-      if (wordTimer) clearInterval(wordTimer)
-      if (sleepTimerId) clearInterval(sleepTimerId)
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.src = ''
+        audioRef.current = null
+      }
+      if (wordTimerRef.current) clearInterval(wordTimerRef.current)
+      if (sleepTimerRef.current) clearInterval(sleepTimerRef.current)
       if (preloadAbortRef.current) preloadAbortRef.current.abort()
+      audioCacheRef.current.clear()
+      readAheadRef.current.clear()
     }
   }, [])
 

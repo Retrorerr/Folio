@@ -14,7 +14,20 @@ export default function Sidebar({
   tab, setTab,
   onNavigateSearchResult,
   onHome,
+  hidden = false,
 }) {
+  const [renderedTab, setRenderedTab] = useState(tab)
+
+  useEffect(() => {
+    let timer
+    if (tab) {
+      timer = setTimeout(() => setRenderedTab(tab), 0)
+    } else {
+      timer = setTimeout(() => setRenderedTab(null), 340)
+    }
+    return () => clearTimeout(timer)
+  }, [tab])
+
   const railBtn = (key, Ico, label) => (
     <button
       key={key}
@@ -45,6 +58,7 @@ export default function Sidebar({
 
   return (
     <>
+      <div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${tab ? 'is-open' : ''} ${renderedTab && !tab ? 'is-closing' : ''}`}>
       <div className="icon-rail" ref={railRef}>
         <div className="rail-brand" onClick={onHome} title="Library">F</div>
         {railBtn('chapters', Icons.Chapters, 'Chapters')}
@@ -57,10 +71,10 @@ export default function Sidebar({
         </button>
       </div>
 
-      {tab && (
-        <div className="sidebar-panel" ref={panelRef}>
-          {tab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
-          {tab === 'bookmarks' && (
+      {renderedTab && (
+        <div className={`sidebar-panel ${tab ? 'is-open' : 'is-closing'}`} ref={panelRef} aria-hidden={!tab}>
+          {renderedTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
+          {renderedTab === 'bookmarks' && (
             <BookmarkPanel
               book={book}
               currentPage={currentPage}
@@ -70,14 +84,14 @@ export default function Sidebar({
               removeBookmark={removeBookmark}
             />
           )}
-          {tab === 'search' && (
+          {renderedTab === 'search' && (
             <SearchPanel
               book={book}
               currentPage={currentPage}
               onNavigateSearchResult={onNavigateSearchResult}
             />
           )}
-          {tab === 'settings' && (
+          {renderedTab === 'settings' && (
             <SettingsPanel
               theme={theme} setTheme={setTheme}
               motion={motion} setMotion={setMotion}
@@ -88,6 +102,7 @@ export default function Sidebar({
           )}
         </div>
       )}
+      </div>
     </>
   )
 }

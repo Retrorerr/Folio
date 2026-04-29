@@ -19,7 +19,9 @@ URL = f"http://127.0.0.1:{PORT}"
 
 
 def log(msg):
-    with open(LOG_FILE, "a") as f:
+    # encoding="utf-8" so book titles / paths with non-ASCII chars don't blow
+    # up logging on Windows' cp1252 default.
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
 
 
@@ -104,7 +106,7 @@ def kill_orphan_server():
 
 def main():
     # Clear old log
-    with open(LOG_FILE, "w") as f:
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write(f"Kokoro Reader Launcher - {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     env = os.environ.copy()
@@ -183,15 +185,26 @@ def main():
     if browser_proc:
         browser_proc.wait()
         log("Browser closed, shutting down server")
-        # Give the beforeunload beacon a moment to save state
-        time.sleep(1)
+        # The browser-side beforeunload shutdown beacon was removed (it kept
+        # killing the backend on hard reloads). Send the shutdown POST from
+        # here instead so book state gets flushed before SIGTERM.
         if server_proc.poll() is None:
-            # Server still running (beacon may not have fired), terminate it
-            server_proc.terminate()
+            try:
+                import urllib.request
+                urllib.request.urlopen(
+                    urllib.request.Request(URL + "/api/shutdown", method="POST"),
+                    timeout=3,
+                )
+            except Exception as exc:
+                log(f"Graceful shutdown POST failed: {exc}")
             try:
                 server_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                server_proc.kill()
+                server_proc.terminate()
+                try:
+                    server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server_proc.kill()
         else:
             log(f"Server already exited (code={server_proc.returncode})")
     else:

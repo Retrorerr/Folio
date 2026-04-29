@@ -26,7 +26,11 @@ frontend/node_modules/
 frontend/dist/
 frontend/dist-ssr/
 frontend/.vite/
+node_modules/
+dist/
+build/
 src-tauri/target/
+src-tauri/resources/
 
 # Logs
 *.log
@@ -35,10 +39,17 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Windows shell artifact: hooks redirected to /dev/null create a real ./dev/null
+dev/
+
 # Runtime/generated app data
 backend/audio_cache/
 backend/uploads/
 backend/data/
+
+# Benchmark / debug output (tts_benchmark.py)
+backend/tts_debug_wavs*/
+backend/tts_benchmark_*.csv
 
 # Local frontend env files
 frontend/*.local

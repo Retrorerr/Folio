@@ -23,15 +23,33 @@ export default function Pill({
   preloadChapter,
   readingPage,
   jumpToReader,
+  followAlongMode = false,
+  toggleFollowAlong,
   book,
 }) {
-  // Show the LIVE button whenever the reader is actively playing — clicking
-  // it always snaps the view to the exact sentence the reader is reading,
-  // which is what makes it feel like a livestream "GO LIVE" affordance.
-  const showJumpToReader = isPlaying && readingPage != null && jumpToReader
+  const showFollowAlong = isPlaying && readingPage != null && toggleFollowAlong
   const [expanded, setExpanded] = useState(false)
+  const [pillMotion, setPillMotion] = useState('')
   const [pulse, setPulse] = useState(0)
+  const [controlsHidden, setControlsHidden] = useState(false)
   const pillRef = useRef(null)
+  const hideTimerRef = useRef(null)
+  const pillMotionTimerRef = useRef(null)
+
+  const setExpandedWithMotion = useCallback((next) => {
+    clearTimeout(pillMotionTimerRef.current)
+    setPillMotion(next ? 'expanding' : 'collapsing')
+    setExpanded(next)
+    pillMotionTimerRef.current = setTimeout(() => setPillMotion(''), 360)
+  }, [])
+
+  const revealControls = useCallback(() => {
+    setControlsHidden(false)
+    clearTimeout(hideTimerRef.current)
+    if (followAlongMode && isPlaying) {
+      hideTimerRef.current = setTimeout(() => setControlsHidden(true), 2000)
+    }
+  }, [followAlongMode, isPlaying])
 
   const handleKeyDown = useCallback((e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
@@ -64,12 +82,14 @@ export default function Pill({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [handleKeyDown])
 
+  useEffect(() => () => clearTimeout(pillMotionTimerRef.current), [])
+
   useEffect(() => {
     if (!expanded) return
     const onDown = (e) => {
-      if (pillRef.current && !pillRef.current.contains(e.target)) setExpanded(false)
+      if (pillRef.current && !pillRef.current.contains(e.target)) setExpandedWithMotion(false)
     }
-    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setExpandedWithMotion(false) }
     const t = setTimeout(() => {
       document.addEventListener('mousedown', onDown)
       document.addEventListener('keydown', onKey)
@@ -79,13 +99,31 @@ export default function Pill({
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [expanded])
+  }, [expanded, setExpandedWithMotion])
 
   useEffect(() => {
     if (!isPlaying) return
     const id = setInterval(() => setPulse((p) => p + 1), 120)
     return () => clearInterval(id)
   }, [isPlaying])
+
+  useEffect(() => {
+    clearTimeout(hideTimerRef.current)
+    const resetTimer = setTimeout(() => setControlsHidden(false), 0)
+    if (!followAlongMode || !isPlaying) return
+
+    const onActivity = () => revealControls()
+    window.addEventListener('pointermove', onActivity, { passive: true })
+    window.addEventListener('keydown', onActivity)
+    hideTimerRef.current = setTimeout(() => setControlsHidden(true), 2000)
+
+    return () => {
+      clearTimeout(resetTimer)
+      clearTimeout(hideTimerRef.current)
+      window.removeEventListener('pointermove', onActivity)
+      window.removeEventListener('keydown', onActivity)
+    }
+  }, [followAlongMode, isPlaying, revealControls])
 
   const heights = useMemo(() => (
     Array.from({ length: BARS }).map((_, i) => {
@@ -172,14 +210,24 @@ export default function Pill({
     : (status || `${voice?.toUpperCase?.() || ''} · PAGE ${currentPage + 1}/${pageCount}`)
 
   return (
-    <div className="pill-wrap">
+    <>
+    <div
+      className={`pill-reveal-zone ${followAlongMode && controlsHidden ? 'active' : ''}`}
+      onPointerEnter={revealControls}
+      onPointerMove={revealControls}
+    />
+    <div
+      className={`pill-wrap ${followAlongMode ? 'follow-mode' : ''} ${controlsHidden ? 'auto-hidden' : ''}`}
+      onPointerEnter={revealControls}
+      onFocusCapture={revealControls}
+    >
       <div
         ref={pillRef}
-        className={`pill ${expanded ? 'expanded' : ''}`}
-        onClick={() => { if (!expanded) setExpanded(true) }}
+        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${pillMotion}`}
+        onClick={() => { if (!expanded) setExpandedWithMotion(true) }}
       >
         {!expanded ? (
-          <>
+          <div className="pill-collapsed-content">
             <div className={`pill-cover ${isPlaying ? 'rotating' : ''}`} />
             <div className="pill-meta">
               <div className="t">{book?.title || 'Kokoro Reader'}</div>
@@ -224,24 +272,25 @@ export default function Pill({
                 <Icons.Download size={14} />
                 <span>{preloadShortLabel}</span>
               </button>
-              {showJumpToReader && (
+              {showFollowAlong && (
                 <button
-                  className="pill-btn jump-to-reader"
-                  onClick={(e) => { e.stopPropagation(); jumpToReader() }}
-                  title="Go to where the reader is reading (LIVE)"
-                  aria-label="Go to reader's position"
+                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''}`}
+                  onClick={(e) => { e.stopPropagation(); toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
+                  title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
+                  aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
+                  aria-pressed={followAlongMode}
                 >
                   <span className="live-dot" aria-hidden="true" />
-                  <span className="live-label">LIVE</span>
+                  <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
                 </button>
               )}
-              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); setExpanded(true) }} title="Expand">
+              <button className="pill-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand">
                 <Icons.ChevronDown size={16} style={{ transform: 'rotate(180deg)' }} />
               </button>
             </div>
-          </>
+          </div>
         ) : (
-          <>
+          <div className="pill-expanded-content">
             <div className="pill-expanded-head">
               <div className={`pill-cover ${isPlaying ? 'rotating' : ''}`} />
               <div className="meta">
@@ -251,7 +300,7 @@ export default function Pill({
                 <h3>{book?.title || 'Kokoro Reader'}</h3>
                 <div className="a">{book?.author ? `by ${book.author}` : ''}{voice ? ` · read by ${voice}` : ''}</div>
               </div>
-              <button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpanded(false) }}>
+              <button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(false) }}>
                 <Icons.ChevronDown size={18} />
               </button>
             </div>
@@ -305,15 +354,16 @@ export default function Pill({
               <button className="pill-btn" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= pageCount - 1} title="Next page">
                 <Icons.SkipForward size={18} />
               </button>
-              {showJumpToReader && (
+              {showFollowAlong && (
                 <button
-                  className="pill-btn jump-to-reader"
-                  onClick={jumpToReader}
-                  title="Go to where the reader is reading (LIVE)"
-                  aria-label="Go to reader's position"
+                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''}`}
+                  onClick={(e) => { e.stopPropagation(); toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
+                  title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
+                  aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
+                  aria-pressed={followAlongMode}
                 >
                   <span className="live-dot" aria-hidden="true" />
-                  <span className="live-label">LIVE</span>
+                  <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
                 </button>
               )}
               <button className="pill-btn" onClick={stop} title="Stop">
@@ -359,9 +409,10 @@ export default function Pill({
                 </label>
               </div>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
+    </>
   )
 }

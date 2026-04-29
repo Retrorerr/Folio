@@ -8,10 +8,37 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: 20;
-  transition: all var(--dur-slow) var(--ease-spring);
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    opacity var(--dur) var(--ease-out),
+    bottom var(--dur-slow) var(--ease-out);
+  will-change: transform, opacity;
+}
+.pill-wrap.follow-mode {
+  bottom: 18px;
+}
+.pill-wrap.auto-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(calc(100% + 34px));
+}
+.pill-reveal-zone {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 96px;
+  z-index: 19;
+  pointer-events: none;
+}
+.pill-reveal-zone.active {
+  pointer-events: auto;
 }
 
 .pill {
+  --pill-pop-ease: cubic-bezier(0.2, 1.45, 0.34, 1);
+  --pill-collapse-ease: cubic-bezier(0.33, 0, 0.2, 1);
+  --pill-expand-dur: 280ms;
   background: var(--ink);
   color: var(--paper);
   border-radius: 999px;
@@ -25,7 +52,15 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
   width: min(720px, calc(100vw - 32px));
   min-width: min(480px, calc(100vw - 32px));
-  transition: all var(--dur-slow) var(--ease-spring);
+  transition:
+    width var(--pill-expand-dur) var(--pill-pop-ease),
+    min-width var(--pill-expand-dur) var(--pill-pop-ease),
+    padding var(--pill-expand-dur) var(--pill-pop-ease),
+    border-radius var(--pill-expand-dur) var(--pill-pop-ease),
+    gap var(--pill-expand-dur) var(--pill-pop-ease),
+    box-shadow 220ms var(--ease-out),
+    background-color 220ms var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
   cursor: pointer;
   position: relative;
   overflow: hidden;
@@ -39,6 +74,68 @@
 }
 .pill:hover {
   transform: translateY(-2px);
+}
+.pill.expanding {
+  animation: pill-expand-bounce var(--pill-expand-dur) var(--pill-pop-ease);
+}
+.pill.collapsing {
+  animation: pill-collapse-snap 220ms var(--pill-collapse-ease);
+}
+.pill-collapsed-content {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.pill-expanded-content {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+}
+.pill.expanding .pill-expanded-content {
+  animation: pill-content-rise 240ms var(--pill-pop-ease) both;
+}
+.pill.collapsing .pill-collapsed-content {
+  animation: pill-content-settle 190ms var(--ease-out) both;
+}
+.pill.expanding .pill-expanded-content > * {
+  animation: pill-panel-item-in 260ms var(--pill-pop-ease) both;
+}
+.pill.expanding .pill-expanded-content > *:nth-child(2) { animation-delay: 22ms; }
+.pill.expanding .pill-expanded-content > *:nth-child(3) { animation-delay: 38ms; }
+.pill.expanding .pill-expanded-content > *:nth-child(4) { animation-delay: 54ms; }
+.pill.expanding .pill-expanded-content > *:nth-child(5) { animation-delay: 70ms; }
+
+@keyframes pill-expand-bounce {
+  0% { transform: translateY(2px) scale(0.985); }
+  62% { transform: translateY(-5px) scale(1.018); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes pill-collapse-snap {
+  0% { transform: translateY(-2px) scale(1.01); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes pill-content-rise {
+  0% { opacity: 0; transform: translateY(10px) scale(0.985); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+@keyframes pill-content-settle {
+  0% { opacity: 0.75; transform: translateY(-4px) scale(0.99); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pill-panel-item-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.pill-wrap.follow-mode .pill {
+  box-shadow:
+    0 24px 58px -14px rgba(0, 0, 0, 0.68),
+    0 8px 18px -6px rgba(20, 12, 6, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .pill button:focus-visible,
@@ -137,7 +234,9 @@
   flex: 1;
   background: var(--ember);
   border-radius: 999px;
-  transition: opacity var(--dur-fast);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    height var(--dur-fast) var(--ease-out);
   transform-origin: center;
 }
 
@@ -153,11 +252,16 @@
   justify-content: center;
   color: var(--ink-3);
   border-radius: 50%;
-  transition: all var(--dur-fast) var(--ease-out);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 .pill-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--paper);
+  transform: translateY(-1px);
 }
 .theme-dark .pill-btn { color: var(--ink-2); }
 .theme-dark .pill-btn:hover { color: var(--paper); }
@@ -485,6 +589,10 @@
     transform: none;
   }
 
+  .pill-wrap.auto-hidden {
+    transform: translateY(calc(100% + 30px));
+  }
+
   .pill,
   .pill.expanded {
     width: 100%;
@@ -493,6 +601,10 @@
 
   .pill {
     padding: 10px 10px 10px 12px;
+    gap: 10px;
+  }
+
+  .pill-collapsed-content {
     gap: 10px;
   }
 
@@ -529,6 +641,10 @@
 
   .pill-controls {
     gap: 0;
+  }
+
+  .pill-collapsed-content {
+    gap: 8px;
   }
 
   .pill-btn {
@@ -568,12 +684,10 @@
   }
 }
 
-/* "LIVE" button — a livestream-style affordance shown while audio is playing.
-   One click snaps the viewed page + column to the exact sentence the reader
-   is currently reading. */
-.pill-btn.jump-to-reader {
+/* Follow Along button: toggles the immersive auto-follow reading state. */
+.pill-btn.follow-along-btn {
   width: auto;
-  padding: 0 10px;
+  padding: 0 12px;
   gap: 6px;
   display: inline-flex;
   align-items: center;
@@ -581,30 +695,32 @@
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: #ff5a4a;
-  background: rgba(255, 90, 74, 0.10);
-  border: 1px solid rgba(255, 90, 74, 0.35);
+  color: var(--ember-soft);
+  background: color-mix(in srgb, var(--ember) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ember) 38%, transparent);
   border-radius: 999px;
   cursor: pointer;
 }
-.pill-btn.jump-to-reader:hover {
-  color: #ff5a4a;
-  background: rgba(255, 90, 74, 0.22);
-  border-color: rgba(255, 90, 74, 0.6);
+.pill-btn.follow-along-btn:hover,
+.pill-btn.follow-along-btn.active {
+  color: var(--paper);
+  background: color-mix(in srgb, var(--ember) 72%, transparent);
+  border-color: color-mix(in srgb, var(--ember-soft) 74%, transparent);
 }
-.pill-btn.jump-to-reader .live-dot {
+.pill-btn.follow-along-btn .live-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #ff5a4a;
-  box-shadow: 0 0 0 0 rgba(255, 90, 74, 0.7);
+  background: currentColor;
+  box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 70%, transparent);
   animation: live-dot-pulse 1.6s ease-in-out infinite;
 }
-.pill-btn.jump-to-reader .live-label {
+.pill-btn.follow-along-btn .live-label {
   line-height: 1;
+  white-space: nowrap;
 }
 @keyframes live-dot-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(255, 90, 74, 0.7); }
-  70%  { box-shadow: 0 0 0 6px rgba(255, 90, 74, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 90, 74, 0); }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 65%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent); }
 }

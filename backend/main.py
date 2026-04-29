@@ -1,9 +1,9 @@
 import json
 import os
 import re
-import sys
 import signal
 import logging
+import threading
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,19 +33,49 @@ def _state_path(book_id: str) -> str:
     return os.path.join(DATA_DIR, f"{book_id}.json")
 
 
+def _read_text_lenient(path) -> str:
+    """Read a JSON state file robustly. Files written before the utf-8 fix
+    (existing on-disk state) used Windows' cp1252 default, which breaks utf-8
+    strict decoding when title/filepath contains a smart quote or em-dash. New
+    writes always use utf-8 (see _atomic_write_text); the cp1252 fallback is
+    backwards-compat only — a one-shot save will rewrite the file as utf-8."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        with open(path, encoding="cp1252") as f:
+            return f.read()
+
+
+def _atomic_write_text(path: str, text: str):
+    """Write text to `path` via a temp file in the same directory + os.replace,
+    so a crash mid-write can't leave a half-written / corrupt file."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp_path, path)
+
+
+_settings_lock = threading.Lock()
+
+
 def _save_state(book_id: str):
     if book_id in BOOKS:
-        os.makedirs(DATA_DIR, exist_ok=True)
         state = BOOKS[book_id]["state"]
-        with open(_state_path(book_id), "w") as f:
-            f.write(state.model_dump_json(indent=2))
+        _atomic_write_text(_state_path(book_id), state.model_dump_json(indent=2))
 
 
 def _load_state(book_id: str) -> BookState | None:
     path = _state_path(book_id)
     if os.path.exists(path):
-        with open(path) as f:
-            return BookState.model_validate_json(f.read())
+        return BookState.model_validate_json(_read_text_lenient(path))
     return None
 
 
@@ -57,19 +87,19 @@ def _load_global_settings() -> dict:
     path = _settings_path()
     if os.path.exists(path):
         try:
-            with open(path) as f:
-                return json.load(f)
+            return json.loads(_read_text_lenient(path))
         except Exception:
             logger.exception("Failed to load global settings from %s", path)
     return {}
 
 
 def _save_global_settings(updates: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    existing = _load_global_settings()
-    existing.update(updates)
-    with open(_settings_path(), "w") as f:
-        json.dump(existing, f, indent=2)
+    # Serialize concurrent settings writes; load-modify-save would otherwise
+    # drop updates if two requests race.
+    with _settings_lock:
+        existing = _load_global_settings()
+        existing.update(updates)
+        _atomic_write_text(_settings_path(), json.dumps(existing, indent=2))
 
 
 def _resolve_filepath(filepath: str) -> str:
@@ -88,10 +118,16 @@ def _load_recent_books() -> list[dict]:
     os.makedirs(DATA_DIR, exist_ok=True)
     recent = []
     for f in sorted(Path(DATA_DIR).glob("*.json"), key=os.path.getmtime, reverse=True):
-        if f.name == "settings.json":
+        # Skip settings.json (global UI settings), reflow caches, and any
+        # half-written *.tmp.* shards from atomic writes.
+        if f.name == "settings.json" or f.name.endswith(".reflow.json") or ".tmp." in f.name:
             continue
         try:
-            text = f.read_text()
+            # _read_text_lenient: utf-8 first (new writes), cp1252 fallback for
+            # legacy state files written before the encoding fix. Without this,
+            # smart quotes / em-dashes in EPUB titles crash the recent list,
+            # which is polled every ~2s. The next _save_state rewrites as utf-8.
+            text = _read_text_lenient(f)
             if not text.strip():
                 # Empty/corrupt state file — prune it
                 try:
@@ -230,15 +266,29 @@ def _get_search_index(book_id: str) -> dict:
 async def lifespan(app: FastAPI):
     tts_service.log_runtime_environment()
     yield
+    # Always close the doc even if the state-save fails — otherwise a partial
+    # disk error would leak a fitz.Document on shutdown.
     for book_id in list(BOOKS):
-        _save_state(book_id)
+        try:
+            _save_state(book_id)
+        except Exception:
+            logger.exception("Failed to save state for book %s during shutdown", book_id)
         _close_book_entry(book_id)
 
 
 app = FastAPI(title="Kokoro Audiobook Reader", lifespan=lifespan)
+# Local-only desktop app — restrict CORS to the dev/preview origin and the
+# bundled frontend. Allowing "*" lets any visited webpage in the user's browser
+# hit our local API and read arbitrary files via /api/book/open?filepath=…
+_DEV_ORIGINS = [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.environ.get("KOKORO_CORS_ORIGINS", ",".join(_DEV_ORIGINS)).split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -259,9 +309,12 @@ def get_status():
 
 @app.post("/api/shutdown")
 def shutdown():
-    """Shutdown the server (called when browser window closes)."""
+    """Shutdown the server (called by the launcher when the browser closes)."""
     for book_id in list(BOOKS):
-        _save_state(book_id)
+        try:
+            _save_state(book_id)
+        except Exception:
+            logger.exception("Failed to save state for book %s during shutdown", book_id)
         _close_book_entry(book_id)
     os.kill(os.getpid(), signal.SIGTERM)
     return {"ok": True}
@@ -309,15 +362,23 @@ def open_book(filepath: str = Query(...)):
         return state.model_dump()
 
     doc = pdf_service.open_pdf(resolved)
-    meta = pdf_service.get_metadata(doc, resolved)
-    book_id = meta["id"]
-    saved = _load_state(book_id)
-    state = saved if saved else BookState(**meta)
-    if state.filepath != resolved:
-        state.filepath = resolved
-    _close_book_entry(book_id)
-    _invalidate_search_index(book_id)
-    BOOKS[book_id] = {"doc": doc, "state": state, "filepath": resolved}
+    try:
+        meta = pdf_service.get_metadata(doc, resolved)
+        book_id = meta["id"]
+        saved = _load_state(book_id)
+        state = saved if saved else BookState(**meta)
+        if state.filepath != resolved:
+            state.filepath = resolved
+        _close_book_entry(book_id)
+        _invalidate_search_index(book_id)
+        BOOKS[book_id] = {"doc": doc, "state": state, "filepath": resolved}
+    except Exception:
+        # Don't leak the fitz Document if metadata extraction or registration fails.
+        try:
+            doc.close()
+        except Exception:
+            logger.exception("Failed to close PDF after open_book failure")
+        raise
     _save_state(book_id)
     return state.model_dump()
 
@@ -331,7 +392,7 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
     filepath = None
     if os.path.exists(state_path):
         try:
-            state = BookState.model_validate_json(Path(state_path).read_text())
+            state = BookState.model_validate_json(_read_text_lenient(state_path))
             filepath = state.filepath
         except Exception:
             logger.exception("Failed to parse state file for book %s", book_id)
@@ -341,17 +402,24 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
             logger.exception("Failed to remove state file for book %s", book_id)
     if delete_file and filepath:
         resolved = _resolve_filepath(filepath)
-        uploads_dir = os.path.abspath(UPLOAD_DIR)
-        abs_fp = os.path.abspath(resolved)
-        if abs_fp.startswith(uploads_dir + os.sep) and os.path.exists(abs_fp):
+        uploads_dir = os.path.realpath(UPLOAD_DIR)
+        abs_fp = os.path.realpath(resolved)
+        # realpath + commonpath defends against symlinks/junctions; the older
+        # `startswith(uploads_dir + os.sep)` check could be bypassed with a
+        # filename that starts with the same prefix (e.g. `uploads-evil/...`).
+        try:
+            inside_uploads = os.path.commonpath([uploads_dir, abs_fp]) == uploads_dir
+        except ValueError:
+            inside_uploads = False
+        if inside_uploads and os.path.isfile(abs_fp):
             # Only delete if no other book state still references this file
             still_used = False
             for f in Path(DATA_DIR).glob("*.json"):
-                if f.name == "settings.json":
+                if f.name == "settings.json" or f.name.endswith(".reflow.json") or ".tmp." in f.name:
                     continue
                 try:
-                    other = BookState.model_validate_json(f.read_text())
-                    if os.path.abspath(_resolve_filepath(other.filepath)) == abs_fp:
+                    other = BookState.model_validate_json(_read_text_lenient(f))
+                    if os.path.realpath(_resolve_filepath(other.filepath)) == abs_fp:
                         still_used = True
                         break
                 except Exception:
@@ -700,10 +768,20 @@ def preload_chapter_status(
     return {"state": state, "ready": ready, "total": total, "failed": failed}
 
 
+_AUDIO_FILENAME_RE = re.compile(r"^[A-Za-z0-9_\-]+\.wav$")
+
+
 @app.get("/api/audio/{filename}")
 def get_audio(filename: str):
-    filepath = os.path.join(tts_service.CACHE_DIR, filename)
-    if not os.path.exists(filepath):
+    # Reject anything that isn't a plain wav filename so a request like
+    # /api/audio/..%2F..%2F..%2Fetc%2Fpasswd can't escape the cache dir.
+    if not _AUDIO_FILENAME_RE.match(filename):
+        raise HTTPException(400, "Invalid audio filename")
+    cache_dir = os.path.realpath(tts_service.CACHE_DIR)
+    filepath = os.path.realpath(os.path.join(cache_dir, filename))
+    if os.path.commonpath([cache_dir, filepath]) != cache_dir:
+        raise HTTPException(400, "Invalid audio filename")
+    if not os.path.isfile(filepath):
         raise HTTPException(404, "Audio not found")
     return FileResponse(filepath, media_type="audio/wav")
 

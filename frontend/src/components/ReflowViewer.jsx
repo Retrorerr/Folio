@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useLayoutEffect, useCallback, useMemo } from 'react'
 
 const PAGE_WIDTH = 680
-const PAGE_HEIGHT = 780
+const PAGE_HEIGHT = 936
 const PAGE_PAD_X = 56
 const CONTENT_TOP = 120
 const CONTENT_BOTTOM = 96
@@ -24,6 +24,7 @@ export default function ReflowViewer({
   motion = true,
   wheelPaging = false,
   searchTarget = null,
+  followAlongMode = false,
   onSentenceSelect,
 }) {
   const scrollRef = useRef(null)
@@ -151,7 +152,6 @@ export default function ReflowViewer({
   }, [])
 
   useLayoutEffect(() => {
-    updateMode()
     const raf = requestAnimationFrame(updateMode)
     const ro = new ResizeObserver(updateMode)
     if (scrollRef.current) ro.observe(scrollRef.current)
@@ -225,7 +225,10 @@ export default function ReflowViewer({
   }, [reflow])
 
   useEffect(() => {
-    setViewPage(prev => Math.min(prev, Math.max(0, viewCount - 1)))
+    const raf = requestAnimationFrame(() => {
+      setViewPage(prev => Math.min(prev, Math.max(0, viewCount - 1)))
+    })
+    return () => cancelAnimationFrame(raf)
   }, [pagesPerView, viewCount])
 
   useEffect(() => {
@@ -267,11 +270,22 @@ export default function ReflowViewer({
     if (targetChapter != null && targetChapter !== chapterIdx) {
       pendingScrollSentence.current = { idx: sentenceIdx, indexType }
       setChapterIdx?.(targetChapter)
+      const direction = targetChapter > chapterIdx ? 'next' : 'prev'
+      if (stateRef.current.pagesPerView === 2) onPageTurn?.(direction)
+      else triggerSingleTurn(direction)
       return
     }
     const targetView = viewForSentence(sentenceIdx, indexType)
-    if (targetView != null) setViewPage(targetView)
-  }, [chapterIdx, setChapterIdx, viewForSentence])
+    if (targetView != null) {
+      const currentView = stateRef.current.viewPage
+      if (targetView !== currentView) {
+        const direction = targetView > currentView ? 'next' : 'prev'
+        if (stateRef.current.pagesPerView === 2) onPageTurn?.(direction)
+        else triggerSingleTurn(direction)
+      }
+      setViewPage(targetView)
+    }
+  }, [chapterIdx, onPageTurn, setChapterIdx, triggerSingleTurn, viewForSentence])
 
   useEffect(() => {
     if (!navRef) return
@@ -300,7 +314,7 @@ export default function ReflowViewer({
 
   if (!reflow) {
     return (
-      <div className="page-scroll">
+      <div className={`page-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`}>
         <div style={{ margin: 'auto', color: 'var(--ink-3)', fontFamily: 'var(--font-display)', fontStyle: 'italic' }}>
           Loading reflow...
         </div>
@@ -310,7 +324,7 @@ export default function ReflowViewer({
 
   if (!chapter) {
     return (
-      <div className="page-scroll">
+      <div className={`page-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`}>
         <div style={{ margin: 'auto', color: 'var(--ink-3)' }}>No chapters found.</div>
       </div>
     )
@@ -369,7 +383,7 @@ export default function ReflowViewer({
   const contentEls = renderChapterContent(chapter, chapterIdx, true)
 
   return (
-    <div className="page-scroll reflow-scroll" ref={scrollRef}>
+    <div className={`page-scroll reflow-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`} ref={scrollRef}>
       <div className={`spread reflow-spread pt-spread pages-${pagesPerView}${singleTurn ? ` sp-turning sp-turning-${singleTurn}` : ''}`}>
         <article className="page-sheet reflow-sheet pt-page pt-verso verso">
           <header className="page-header"><span>{runHead}</span><span>{chapLabel}</span></header>

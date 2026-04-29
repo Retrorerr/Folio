@@ -141,6 +141,7 @@ npm run dev
 - The backend serves the production frontend build from `frontend/dist`
 - Runtime book data, uploads, generated audio, and local state are intentionally excluded from git
 - Large model binaries in `backend/models` are tracked with Git LFS
+- Tauri packaging is scaffolded under `src-tauri/`; see `docs/packaging.md`
 - For Tauri packaging, keep the app bundle read-only and point runtime paths at app data with `KOKORO_READER_DATA_DIR`, `KOKORO_READER_UPLOAD_DIR`, and `KOKORO_READER_AUDIO_CACHE_DIR`
 - `KOKORO_READER_MODELS_DIR` and `KOKORO_READER_FRONTEND_DIR` can relocate bundled model assets and the built frontend
 - The frontend can call an external backend origin by setting `VITE_API_BASE`; the default remains same-origin for the current FastAPI-served build

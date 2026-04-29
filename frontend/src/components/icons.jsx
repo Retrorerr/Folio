@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components */
+
 const Icon = ({ d, size = 18, stroke = 1.5, fill = 'none', style, children }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
        strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" style={style}>

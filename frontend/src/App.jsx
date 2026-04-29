@@ -27,6 +27,7 @@ export default function App() {
   })
   const [zoom, setZoom] = useState(() => parseFloat(localStorage.getItem('zoom') ?? '1'))
   const [searchTarget, setSearchTarget] = useState(null)
+  const [followAlongMode, setFollowAlongMode] = useState(false)
 
   const [gpuEnabled, setGpuEnabled] = useState(null)
   const [modelLoaded, setModelLoaded] = useState(false)
@@ -86,7 +87,7 @@ export default function App() {
   useEffect(() => {
     if (!isEpub) return
     let cancelled = false
-    fetch(`/api/book/${book.id}/reflow`)
+    apiFetch(`/api/book/${book.id}/reflow`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (!cancelled) setReflow(d) })
       .catch(() => {})
@@ -98,9 +99,8 @@ export default function App() {
     saveSetting('volume', v)
   }
 
-  // "Jump to reader" — the pill's LIVE button. Snaps the view to the exact
-  // chapter + subPage (or PDF page) the audio is currently reading, AND (for
-  // EPUBs) scrolls the column-flow to the sentence the reader is on.
+  // Snaps the view to the exact chapter + subPage (or PDF page) the audio is
+  // currently reading. Follow Along reuses this for continuous auto-follow.
   const jumpToReader = useCallback(() => {
     const p = audio.readingPage
     const s = audio.currentSentence
@@ -111,6 +111,61 @@ export default function App() {
       goToPage(p)
     }
   }, [audio.readingPage, audio.currentSentence, book?.format, currentPage, goToPage])
+
+  const exitFollowAlong = useCallback(() => {
+    setFollowAlongMode(false)
+  }, [])
+
+  const toggleFollowAlong = useCallback(() => {
+    if (followAlongMode) {
+      setFollowAlongMode(false)
+      return
+    }
+    setSidebarTab(null)
+    setFollowAlongMode(true)
+    requestAnimationFrame(jumpToReader)
+  }, [followAlongMode, jumpToReader])
+
+  const handleSidebarTab = useCallback((nextTab) => {
+    if (nextTab) exitFollowAlong()
+    setSidebarTab(nextTab)
+  }, [exitFollowAlong])
+
+  const goToPageFromUser = useCallback((page) => {
+    exitFollowAlong()
+    return goToPage(page)
+  }, [exitFollowAlong, goToPage])
+
+  const seekToSentenceFromUser = useCallback((page, sentence) => {
+    exitFollowAlong()
+    audio.seekToSentence(page, sentence)
+  }, [audio, exitFollowAlong])
+
+  useEffect(() => {
+    if (!followAlongMode) return
+    setSidebarTab(null)
+  }, [followAlongMode])
+
+  useEffect(() => {
+    if (!followAlongMode) return
+    if (!audio.isPlaying) {
+      setFollowAlongMode(false)
+      return
+    }
+    jumpToReader()
+  }, [followAlongMode, audio.isPlaying, audio.readingPage, audio.currentSentence, jumpToReader])
+
+  useEffect(() => {
+    if (!followAlongMode) return
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setFollowAlongMode(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [followAlongMode])
 
   // Page-turn animation overlay
   const [turning, setTurning] = useState(null)
@@ -162,6 +217,7 @@ export default function App() {
   }, []) // eslint-disable-line
 
   const onHome = () => {
+    exitFollowAlong()
     audio.stop()
     closeBook()
   }
@@ -169,6 +225,7 @@ export default function App() {
   const handleSearchNavigate = useCallback(async (result) => {
     if (!result || result.page == null) return
 
+    exitFollowAlong()
     await goToPage(result.page)
     setSearchTarget({
       bookId: book?.id,
@@ -177,7 +234,7 @@ export default function App() {
       globalSentenceIdx: result.global_sentence_idx ?? null,
       nonce: `${result.page}:${result.sentence_idx ?? ''}:${result.global_sentence_idx ?? ''}:${Date.now()}`,
     })
-  }, [book?.id, goToPage])
+  }, [book?.id, exitFollowAlong, goToPage])
 
   const statusBadges = (
     <>
@@ -204,7 +261,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell theme-${theme} grain`}>
+    <div className={`app-shell theme-${theme} grain ${followAlongMode ? 'follow-along-active' : ''}`}>
       {loading && <div className="loading-bar" />}
 
       <div className="reader-shell">
@@ -213,7 +270,7 @@ export default function App() {
           reflow={reflow}
           currentPage={currentPage}
           currentSentence={audio.currentSentence}
-          goToPage={goToPage}
+          goToPage={goToPageFromUser}
           addBookmark={addBookmark}
           removeBookmark={removeBookmark}
           voice={audio.voice}
@@ -228,12 +285,13 @@ export default function App() {
           highlightStyle={highlightStyle}
           setHighlightStyle={setHighlightStyle}
           tab={sidebarTab}
-          setTab={setSidebarTab}
+          setTab={handleSidebarTab}
           onNavigateSearchResult={handleSearchNavigate}
           onHome={onHome}
+          hidden={followAlongMode}
         />
 
-        <div className="reader-main">
+        <div className={`reader-main ${followAlongMode ? 'follow-along' : ''}`}>
           <div className="reader-topbar">
             <div className="topbar-title">
               <span className="t">{book.title}</span>
@@ -288,9 +346,10 @@ export default function App() {
               onPageTurn={triggerTurn}
               pageTurn={turning}
               motion={motion}
-              wheelPaging={wheelPaging}
+              wheelPaging={followAlongMode ? false : wheelPaging}
               searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-              onSentenceSelect={(page, sentence) => audio.seekToSentence(page, sentence)}
+              followAlongMode={followAlongMode}
+              onSentenceSelect={seekToSentenceFromUser}
             />
           ) : (
             <PdfViewer
@@ -307,7 +366,8 @@ export default function App() {
               setZoom={setZoom}
               highlightStyle={highlightStyle}
               searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-              onSentenceSelect={(page, sentence) => audio.seekToSentence(page, sentence)}
+              followAlongMode={followAlongMode}
+              onSentenceSelect={seekToSentenceFromUser}
             />
           )}
 
@@ -324,8 +384,8 @@ export default function App() {
           <button
             className="page-nav prev"
             onClick={() => book.format === 'epub'
-              ? reflowNavRef.current.goPrev?.()
-              : goToPage(Math.max(0, currentPage - 2))}
+              ? (exitFollowAlong(), reflowNavRef.current.goPrev?.())
+              : goToPageFromUser(Math.max(0, currentPage - 2))}
             disabled={book.format !== 'epub' && currentPage <= 0}
           >
             <Icons.ChevronLeft size={18} />
@@ -333,8 +393,8 @@ export default function App() {
           <button
             className="page-nav next"
             onClick={() => book.format === 'epub'
-              ? reflowNavRef.current.goNext?.()
-              : goToPage(Math.min(book.page_count - 1, currentPage + 2))}
+              ? (exitFollowAlong(), reflowNavRef.current.goNext?.())
+              : goToPageFromUser(Math.min(book.page_count - 1, currentPage + 2))}
             disabled={book.format !== 'epub' && currentPage >= book.page_count - 1}
           >
             <Icons.ChevronRight size={18} />
@@ -354,7 +414,7 @@ export default function App() {
         skipSentence={audio.skipSentence}
         currentPage={currentPage}
         pageCount={book.page_count}
-        goToPage={goToPage}
+        goToPage={goToPageFromUser}
         speed={audio.speed}
         setSpeed={audio.setSpeed}
         volume={audio.volume}
@@ -369,6 +429,8 @@ export default function App() {
         preloadChapter={audio.preloadChapter}
         readingPage={audio.readingPage}
         jumpToReader={jumpToReader}
+        followAlongMode={followAlongMode}
+        toggleFollowAlong={toggleFollowAlong}
         book={book}
       />
     </div>

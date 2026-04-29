@@ -390,12 +390,26 @@ def get_or_build_reflow(filepath: str, data_dir: str) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            logger.exception("Failed to read cached reflow from %s", path)
+            logger.exception("Failed to read cached reflow from %s; rebuilding", path)
     doc = build_reflow(filepath)
     os.makedirs(data_dir, exist_ok=True)
+    # Write to a temp file in the same dir + atomic rename so a crash during
+    # write can't leave a half-written JSON that future reads would silently
+    # discard or treat as empty.
+    tmp_path = f"{path}.tmp.{os.getpid()}"
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(doc, f, ensure_ascii=False)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_path, path)
     except Exception:
         logger.exception("Failed to write cached reflow to %s", path)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
     return doc
