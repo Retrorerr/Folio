@@ -98,6 +98,21 @@
   z-index: 1;
 }
 
+/* Align animated page header/footer with the static .reflow-sheet layout. */
+.pt-page-header {
+  position: absolute;
+  top: 64px;
+  left: 56px;
+  right: 56px;
+}
+
+.pt-page-footer {
+  position: absolute;
+  bottom: 56px;
+  left: 56px;
+  right: 56px;
+}
+
 .pt-page-text .reflow-flow {
   pointer-events: none;
 }

@@ -30,6 +30,7 @@ export default function App() {
   const [followAlongMode, setFollowAlongMode] = useState(false)
 
   const [gpuEnabled, setGpuEnabled] = useState(null)
+  const [backendReachable, setBackendReachable] = useState(false)
   const [modelLoaded, setModelLoaded] = useState(false)
   const [modelLoading, setModelLoading] = useState(false)
   const settingsHydrated = useRef(false)
@@ -57,11 +58,12 @@ export default function App() {
       try {
         const r = await apiFetch('/api/status')
         const d = await r.json()
+        setBackendReachable(true)
         setGpuEnabled(d.gpu)
         setModelLoaded(d.model_loaded)
         setModelLoading(d.model_loading)
       } catch {
-        // Ignore transient backend startup failures while polling status.
+        setBackendReachable(false)
       } finally {
         if (!cancelled) setTimeout(poll, 2000)
       }
@@ -238,6 +240,15 @@ export default function App() {
 
   const statusBadges = (
     <>
+      <span className={`gpu-badge ${backendReachable ? 'gpu-on' : 'gpu-off'}`}>
+        {backendReachable ? 'Backend Ready' : 'Starting Backend'}
+      </span>
+      {backendReachable && modelLoading && (
+        <span className="gpu-badge">Voice Model Loading</span>
+      )}
+      {backendReachable && modelLoaded && (
+        <span className="gpu-badge gpu-on">Voice Model Ready</span>
+      )}
       {gpuEnabled !== null && (
         <span className={`gpu-badge ${gpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
           {gpuEnabled ? 'GPU Accelerated' : 'CPU Mode'}

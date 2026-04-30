@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Folio",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "identifier": "com.folio.reader",
   "build": {
     "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\dev-tauri.ps1",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:VITE_API_BASE='http://127.0.0.1:8000'; npm --prefix frontend run build\"",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-frontend.ps1",
     "frontendDist": "../frontend/dist"
   },
   "app": {
@@ -26,7 +26,30 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "icon": [],
-    "resources": ["resources/**"]
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["resources/**/*"],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIzRUU1RkFDQTIwQ0YwNDgKUldSSThBeWlyRi91STR5L2dadE9sYnArUVA1R0MrQ0RVSkxiWVdrSi9TR3E0WXhEdFFSS3N6UEUK",
+      "endpoints": [
+        "https://github.com/Retrorerr/Folio/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

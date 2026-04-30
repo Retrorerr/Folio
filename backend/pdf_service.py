@@ -8,6 +8,7 @@ from collections import OrderedDict
 import fitz  # PyMuPDF
 
 from models import PageText, SentenceInfo, WordInfo
+import text_chunker
 
 # OCR cache: page_key -> PageText (avoid re-running OCR on same page)
 _ocr_cache: OrderedDict[str, PageText] = OrderedDict()
@@ -97,6 +98,21 @@ def _should_split_sentence(text: str, punct_idx: int) -> bool:
     tail = text[punct_idx + 1 :]
     if not tail.strip():
         return True
+
+    # Mid-acronym: prefix ends with a single capital letter + period, and the
+    # tail starts with another single capital letter + period (e.g. "U.S.",
+    # "U.K.", "P.M."). The upper-case letter would otherwise be mistaken for
+    # the start of a new sentence.
+    if re.search(r"\b[A-Z]\.$", prefix) and re.match(r"\s*[A-Z]\.", tail):
+        return False
+
+    # Initial + name: prefix ends with a single capital + period and the tail
+    # starts with a capitalized word (capital + lowercase letters). Common in
+    # author lists like "G. C. Williams, J. Maynard Smith, W. D. Hamilton".
+    # The 2-adjacent-initials rule above catches "G. C." but not "J. Maynard"
+    # where the initial is alone and followed by a real name word.
+    if re.search(r"\b[A-Z]\.$", prefix) and re.match(r"\s*[A-Z][a-z]", tail):
+        return False
 
     next_char_match = re.search(r"\S", tail)
     if not next_char_match:
@@ -298,8 +314,13 @@ def _fix_fused_words(word_list: list[dict]) -> list[dict]:
     return result
 
 
-def _build_sentence_infos(paragraphs: list[list[dict]]) -> list[SentenceInfo]:
-    sentences = []
+def _build_sentence_infos(paragraphs: list[list[dict]]) -> list[list[SentenceInfo]]:
+    """Build sentences with word boxes, grouped by source paragraph.
+
+    Returns a list of paragraphs, each a list of SentenceInfo. Paragraph
+    identity is preserved so the chunker can respect paragraph boundaries.
+    """
+    grouped: list[list[SentenceInfo]] = []
     global_char_offset = 0
 
     for para_words in paragraphs:
@@ -310,6 +331,7 @@ def _build_sentence_infos(paragraphs: list[list[dict]]) -> list[SentenceInfo]:
         para_text = " ".join(word["text"] for word in para_words)
         sentence_texts = _split_sentences(para_text)
 
+        para_sentences: list[SentenceInfo] = []
         word_idx = 0
         for sentence_text in sentence_texts:
             sentence_tokens = sentence_text.split()
@@ -357,7 +379,7 @@ def _build_sentence_infos(paragraphs: list[list[dict]]) -> list[SentenceInfo]:
             word_idx = max(word_idx, search_idx)
 
             if sentence_words:
-                sentences.append(SentenceInfo(text=sentence_text, words=sentence_words))
+                para_sentences.append(SentenceInfo(text=sentence_text, words=sentence_words))
             else:
                 global_char_offset = max(global_char_offset, sentence_start_offset + len(sentence_text) + 1)
 
@@ -365,49 +387,36 @@ def _build_sentence_infos(paragraphs: list[list[dict]]) -> list[SentenceInfo]:
             global_char_offset += len(para_words[word_idx]["text"]) + 1
             word_idx += 1
 
-    return sentences
+        if para_sentences:
+            grouped.append(para_sentences)
+
+    return grouped
 
 
-def _merge_sentence_infos(sentences: list[SentenceInfo]) -> list[SentenceInfo]:
-    if not sentences:
+def _chunk_sentence_infos(grouped: list[list[SentenceInfo]]) -> list[SentenceInfo]:
+    """Run grouped paragraph sentences through the chunker.
+
+    The chunker returns chunks of merged text along with the source-sentence
+    indices that fed each chunk. We rebuild SentenceInfo by concatenating
+    word arrays from those source sentences, so the per-word bounding boxes
+    that drive playback highlighting still cover every word in the chunk.
+    """
+    flat: list[SentenceInfo] = [s for para in grouped for s in para]
+    if not flat:
         return []
 
-    merged = []
-    chunk_texts: list[str] = []
-    chunk_words: list[WordInfo] = []
+    para_texts = [[s.text for s in para] for para in grouped]
+    chunks = text_chunker.chunk_paragraph_sentences(para_texts)
 
-    def flush_chunk():
-        if chunk_words:
-            merged.append(SentenceInfo(
-                text=" ".join(part for part in chunk_texts if part).strip(),
-                words=[*chunk_words],
-            ))
-
-    for sentence in sentences:
-        text = sentence.text.strip()
-        if not text:
+    merged: list[SentenceInfo] = []
+    for chunk in chunks:
+        words: list[WordInfo] = []
+        for src_idx in chunk["source_sentences"]:
+            if 0 <= src_idx < len(flat):
+                words.extend(flat[src_idx].words)
+        if not words and not chunk.get("text"):
             continue
-
-        candidate_words = len(chunk_words) + len(sentence.words)
-        candidate_chars = sum(len(part) for part in chunk_texts) + len(text)
-        terminal = text.endswith((".", "?", "!", '."', '!"', '?"'))
-
-        if chunk_words and (candidate_words >= 25 or candidate_chars >= 180):
-            flush_chunk()
-            chunk_texts = []
-            chunk_words = []
-
-        chunk_texts.append(text)
-        chunk_words.extend(sentence.words)
-
-        enough_context = len(chunk_words) >= 12 or candidate_chars >= 80
-        if terminal and enough_context:
-            flush_chunk()
-            chunk_texts = []
-            chunk_words = []
-
-    flush_chunk()
-
+        merged.append(SentenceInfo(text=chunk["text"], words=words))
     return merged
 
 
@@ -452,7 +461,7 @@ def extract_page_text(doc: fitz.Document, page_num: int, dpi: int = 150) -> Page
                 render_height=page_rect.height * zoom,
             )
 
-    sentences = _merge_sentence_infos(_build_sentence_infos(paragraphs))
+    sentences = _chunk_sentence_infos(_build_sentence_infos(paragraphs))
 
     page_rect = page.rect
     if ocr_render_size:

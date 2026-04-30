@@ -15,6 +15,8 @@ import logging
 from bs4 import BeautifulSoup
 from ebooklib import epub, ITEM_DOCUMENT
 
+import text_chunker
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +83,18 @@ def _split_sentences(text: str) -> list[str]:
             while end < len(text) and text[end] in "\"'”’)]}":
                 end += 1
             tail = text[end:].lstrip()
+            # Mid-acronym: prefix ends with a single capital + period and the
+            # tail begins with another single capital + period (e.g. "U.S.",
+            # "U.K.", "P.M."). Don't split here.
+            if re.search(r"\b[A-Z]\.$", prefix) and re.match(r"[A-Z]\.", tail):
+                i += 1
+                continue
+            # Initial + name: single capital + period followed by a capitalized
+            # word (e.g. "J. Maynard Smith"). The 2-adjacent-initials rule
+            # above only catches consecutive initials like "G. C." or "W. D.".
+            if re.search(r"\b[A-Z]\.$", prefix) and re.match(r"[A-Z][a-z]", tail):
+                i += 1
+                continue
             if not tail or tail[0].isupper() or tail[0] in "\"'“‘(":
                 sent = text[start:end].strip()
                 if sent:
@@ -244,6 +258,45 @@ def _looks_like_frontmatter(blocks: list[dict], chapter_title: str | None) -> bo
     return False
 
 
+def _chunk_chapter_blocks(blocks: list[dict], start_chunk_idx: int) -> tuple[list[dict], int]:
+    """Run the paragraph-aware chunker on a chapter's blocks.
+
+    Each `paragraph` block's `sentences` are replaced with chunk dicts
+    (merged sentence groups). `heading` and `dinkus` blocks pass through.
+    Only paragraph chunks consume a chunk index — headings are not narrated
+    by the audio pipeline today, so they don't get an idx.
+    """
+    new_blocks: list[dict] = []
+    chunk_idx = start_chunk_idx
+
+    for block in blocks:
+        btype = block.get("type")
+        if btype == "paragraph":
+            chunks = text_chunker.chunk_blocks([block])
+            new_sentences: list[dict] = []
+            for ch in chunks:
+                new_sentences.append({
+                    "text": ch["text"],
+                    "idx": chunk_idx,
+                    "source_sentences": list(ch.get("source_sentences", [])),
+                    "kind": ch.get("kind", "prose"),
+                })
+                chunk_idx += 1
+            if new_sentences:
+                new_blocks.append({"type": "paragraph", "sentences": new_sentences})
+        elif btype == "heading":
+            new_blocks.append({
+                "type": "heading",
+                "level": block.get("level", 1),
+                "text": block.get("text", ""),
+            })
+        elif btype == "dinkus":
+            new_blocks.append({"type": "dinkus"})
+        else:
+            new_blocks.append(block)
+    return new_blocks, chunk_idx
+
+
 def build_reflow(filepath: str) -> dict:
     """Parse an EPUB and return the reflow document tree."""
     book = epub.read_epub(filepath, options={"ignore_ncx": False})
@@ -268,7 +321,8 @@ def build_reflow(filepath: str) -> dict:
         meta_author = "Unknown"
 
     chapters: list[dict] = []
-    global_sent_idx = 0
+    raw_sent_idx = 0       # for source-sentence traceability
+    global_chunk_idx = 0   # post-chunking; this is what audio + display use
 
     for item in book.get_items_of_type(ITEM_DOCUMENT):
         try:
@@ -289,9 +343,12 @@ def build_reflow(filepath: str) -> dict:
             for b in sub_chapters[0]["blocks"]:
                 if b.get("type") == "paragraph":
                     for sent in b["sentences"]:
-                        sent["idx"] = global_sent_idx
-                        global_sent_idx += 1
-            chapters[-1]["blocks"].extend(sub_chapters[0]["blocks"])
+                        sent["idx"] = raw_sent_idx
+                        raw_sent_idx += 1
+            chunked, global_chunk_idx = _chunk_chapter_blocks(
+                sub_chapters[0]["blocks"], global_chunk_idx
+            )
+            chapters[-1]["blocks"].extend(chunked)
             sub_chapters = sub_chapters[1:]
 
         for ch in sub_chapters:
@@ -306,25 +363,28 @@ def build_reflow(filepath: str) -> dict:
             for b in ch_blocks:
                 if b.get("type") == "paragraph":
                     for sent in b["sentences"]:
-                        sent["idx"] = global_sent_idx
-                        global_sent_idx += 1
+                        sent["idx"] = raw_sent_idx
+                        raw_sent_idx += 1
+
+            chunked, global_chunk_idx = _chunk_chapter_blocks(ch_blocks, global_chunk_idx)
 
             chapters.append({
                 "id": len(chapters),
                 "title": ch.get("title") or f"Chapter {len(chapters) + 1}",
                 "number": ch.get("number"),
-                "blocks": ch_blocks,
+                "blocks": chunked,
             })
 
     return {
         "format": "epub",
+        "version": text_chunker.CHUNKER_VERSION,
         "metadata": {
             "title": _typographic(meta_title),
             "author": _typographic(meta_author),
             "running_head": _typographic(meta_title),
         },
         "chapters": chapters,
-        "sentence_count": global_sent_idx,
+        "sentence_count": global_chunk_idx,
     }
 
 
@@ -388,7 +448,17 @@ def get_or_build_reflow(filepath: str, data_dir: str) -> dict:
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                cached = json.load(f)
+            # Reuse only if the cache was written by the current chunker. A
+            # missing or mismatched `version` means the cached blocks were
+            # split into raw sentences (or a different chunking scheme) and
+            # would feed the wrong chunks into the audio pipeline.
+            if cached.get("version") == text_chunker.CHUNKER_VERSION:
+                return cached
+            logger.info(
+                "Reflow cache version mismatch (%s != %s); rebuilding %s",
+                cached.get("version"), text_chunker.CHUNKER_VERSION, path,
+            )
         except Exception:
             logger.exception("Failed to read cached reflow from %s; rebuilding", path)
     doc = build_reflow(filepath)

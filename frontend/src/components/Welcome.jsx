@@ -19,19 +19,40 @@ function Ring({ pct }) {
 
 export default function Welcome({ onUpload, recentBooks, onOpenRecent, onDeleteRecent, statusBadges }) {
   const [drag, setDrag] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState('')
   const fileRef = useRef()
+
+  const importFile = useCallback(async (file) => {
+    if (!file || importing) return
+    if (!/\.(pdf|epub)$/i.test(file.name)) {
+      setImportError('Choose a PDF or EPUB file.')
+      return
+    }
+    setImporting(true)
+    setImportError('')
+    try {
+      await onUpload(file)
+    } catch (err) {
+      const message = err?.message || 'Could not open that book. The backend may still be starting.'
+      setImportError(message.length > 260 ? `${message.slice(0, 260)}...` : message)
+    } finally {
+      setImporting(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }, [importing, onUpload])
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
     setDrag(false)
     const file = e.dataTransfer.files[0]
-    if (file && /\.(pdf|epub)$/i.test(file.name)) onUpload(file)
-  }, [onUpload])
+    importFile(file)
+  }, [importFile])
 
   const handleFileSelect = useCallback((e) => {
     const file = e.target.files[0]
-    if (file) onUpload(file)
-  }, [onUpload])
+    importFile(file)
+  }, [importFile])
 
   const handleOpen = useCallback((b) => {
     if (b.exists === false) {
@@ -79,15 +100,16 @@ export default function Welcome({ onUpload, recentBooks, onOpenRecent, onDeleteR
           onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
           onDragLeave={() => setDrag(false)}
           onDrop={handleDrop}
-          onClick={() => fileRef.current?.click()}
+          onClick={() => !importing && fileRef.current?.click()}
         >
           <div className="icon"><Icons.Upload size={22} /></div>
           <div className="copy">
-            <strong>Drop a book here</strong>
-            <span>PDF or EPUB, or click to browse</span>
+            <strong>{importing ? 'Opening book...' : 'Drop a book here'}</strong>
+            <span>{importing ? 'Preparing your library entry' : 'PDF or EPUB, or click to browse'}</span>
           </div>
           <div className="kbd">⌘ O</div>
         </div>
+        {importError && <div className="import-error">{importError}</div>}
 
         <div className="welcome-footer">
           <span>KOKORO READER · ON-DEVICE TTS</span>

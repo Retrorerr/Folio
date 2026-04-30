@@ -6,15 +6,25 @@ $dist = Join-Path $root "dist\backend"
 $resources = Join-Path $root "src-tauri\resources"
 $binResources = Join-Path $resources "bin"
 $modelResources = Join-Path $resources "backend\models"
+$pythonExe = $env:FOLIO_PYTHON
 
-python -m pip install -r (Join-Path $backend "requirements.txt")
-python -m pip install pyinstaller
+if (-not $pythonExe) {
+  $python313 = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"
+  if (Test-Path $python313) {
+    $pythonExe = $python313
+  } else {
+    $pythonExe = "python"
+  }
+}
+
+& $pythonExe -m pip install -r (Join-Path $backend "requirements.txt")
+& $pythonExe -m pip install pyinstaller
 
 if (Test-Path $dist) {
   Remove-Item -Recurse -Force $dist
 }
 
-python -m PyInstaller `
+& $pythonExe -m PyInstaller `
   --clean `
   --noconfirm `
   --onefile `
@@ -24,8 +34,10 @@ python -m PyInstaller `
   --specpath (Join-Path $root "build") `
   --paths $backend `
   --collect-all kokoro_onnx `
+  --collect-all espeakng_loader `
   --collect-all onnxruntime `
   --collect-all soundfile `
+  --collect-data language_tags `
   (Join-Path $backend "desktop_entry.py")
 
 New-Item -ItemType Directory -Force -Path $binResources | Out-Null

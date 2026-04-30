@@ -10,6 +10,7 @@ Thumbs.db
 .browser-profile/
 .claude/
 .codex/
+.tauri/
 
 # Python
 __pycache__/
@@ -17,6 +18,7 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
+backend/tests/
 .mypy_cache/
 .venv/
 venv/
@@ -31,7 +33,16 @@ node_modules/
 dist/
 build/
 src-tauri/target/
-src-tauri/resources/
+src-tauri/gen/
+src-tauri/resources/*
+!src-tauri/resources/.gitkeep
+!src-tauri/resources/README.txt
+src-tauri/icons/*
+!src-tauri/icons/32x32.png
+!src-tauri/icons/128x128.png
+!src-tauri/icons/128x128@2x.png
+!src-tauri/icons/icon.icns
+!src-tauri/icons/icon.ico
 
 # Logs
 *.log
@@ -48,12 +59,20 @@ backend/audio_cache/
 backend/uploads/
 backend/data/
 
-# Local model cache; download with backend/setup_kokoro_models.py
-backend/models/kokoro-v1.0.onnx
-
 # Benchmark / debug output (tts_benchmark.py)
+backend/tts_benchmark.py
 backend/tts_debug_wavs*/
 backend/tts_benchmark_*.csv
+
+# Local model cache; download with backend/setup_kokoro_models.py
+backend/models/*.onnx
+backend/models/*.bin
+
+# Non-app repository extras kept local-only
+.github/
+CONTRIBUTING.md
+docs/media/
+frontend/README.md
 
 # Local frontend env files
 frontend/*.local

@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { apiFetch } from '../api'
+import { apiFetch, apiJson } from '../api'
 
 export default function useBookState() {
   const [book, setBook] = useState(null)
@@ -27,9 +27,7 @@ export default function useBookState() {
   const openBook = useCallback(async (filepath) => {
     setLoading(true)
     try {
-      const res = await apiFetch(`/api/book/open?filepath=${encodeURIComponent(filepath)}`, { method: 'POST' })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
+      const data = await apiJson(`/api/book/open?filepath=${encodeURIComponent(filepath)}`, { method: 'POST' })
       setBook(data)
       setCurrentPage(data.last_position?.page || 0)
       fetchRecent()
@@ -44,9 +42,7 @@ export default function useBookState() {
     try {
       const form = new FormData()
       form.append('file', file)
-      const res = await apiFetch('/api/book/open-upload', { method: 'POST', body: form })
-      if (!res.ok) throw new Error(await res.text())
-      const data = await res.json()
+      const data = await apiJson('/api/book/open-upload', { method: 'POST', body: form })
       setBook(data)
       setCurrentPage(data.last_position?.page || 0)
       fetchRecent()

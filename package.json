@@ -1,12 +1,16 @@
 {
   "name": "folio-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.6",
   "scripts": {
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\run-tauri-dev.ps1",
     "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-tauri.ps1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-updater": "^2.10.1"
   }
 }

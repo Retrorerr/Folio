@@ -357,6 +357,8 @@ function SettingsPanel({
   const [cacheInfo, setCacheInfo] = useState(null)
   const [clearingCache, setClearingCache] = useState(false)
   const [cacheMessage, setCacheMessage] = useState('')
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [updateMessage, setUpdateMessage] = useState('')
 
   useEffect(() => {
     apiFetch('/api/cache/info')
@@ -383,6 +385,27 @@ function SettingsPanel({
       setCacheMessage('Cache clear failed.')
     } finally {
       setClearingCache(false)
+    }
+  }
+
+  const checkForUpdates = async () => {
+    setCheckingUpdate(true)
+    setUpdateMessage('')
+    try {
+      const { check } = await import('@tauri-apps/plugin-updater')
+      const update = await check()
+      if (!update) {
+        setUpdateMessage('Folio is up to date.')
+        return
+      }
+
+      setUpdateMessage(`Downloading ${update.version}...`)
+      await update.downloadAndInstall()
+      setUpdateMessage('Update installed. Restart Folio to finish.')
+    } catch (error) {
+      setUpdateMessage(error?.message || 'Update check failed.')
+    } finally {
+      setCheckingUpdate(false)
     }
   }
 
@@ -461,6 +484,23 @@ function SettingsPanel({
           <div className="control-row">
             <span className="k">Scroll wheel flips pages</span>
             <div className={`toggle ${wheelPaging ? 'on' : ''}`} onClick={() => setWheelPaging(!wheelPaging)} />
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <div className="label">Updates</div>
+          <div style={{ padding: 14, background: 'var(--paper)', borderRadius: 8, border: '1px solid var(--rule)' }}>
+            <button
+              disabled={checkingUpdate}
+              onClick={checkForUpdates}
+              style={{
+                padding: '6px 14px', fontSize: 11, fontFamily: 'var(--font-mono)',
+                letterSpacing: '.14em', textTransform: 'uppercase',
+                background: 'var(--ink)', color: 'var(--paper)', borderRadius: 8,
+                opacity: checkingUpdate ? 0.6 : 1,
+              }}
+            >{checkingUpdate ? 'Checking...' : 'Check for updates'}</button>
+            {updateMessage && <p style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-3)', overflowWrap: 'anywhere' }}>{updateMessage}</p>}
           </div>
         </div>
 

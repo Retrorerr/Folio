@@ -4,6 +4,7 @@ import re
 import signal
 import logging
 import threading
+import time
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,13 +16,15 @@ import pdf_service
 import reflow_service
 import tts_service
 from models import BookState, Position, Bookmark
-from paths import DATA_DIR, FRONTEND_DIR, UPLOAD_DIR
+from paths import AUDIO_CACHE_DIR, DATA_DIR, FRONTEND_DIR, MODELS_DIR, UPLOAD_DIR
 from tts_queue import TTSQueue
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = str(DATA_DIR)
 FRONTEND_DIR = str(FRONTEND_DIR)
 UPLOAD_DIR = str(UPLOAD_DIR)
+AUDIO_CACHE_DIR = str(AUDIO_CACHE_DIR)
+MODELS_DIR = str(MODELS_DIR)
 logger = logging.getLogger(__name__)
 
 BOOKS: dict[str, dict] = {}
@@ -264,8 +267,19 @@ def _get_search_index(book_id: str) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("FastAPI lifespan starting")
+    logger.info("Backend base dir: %s", BASE_DIR)
+    logger.info("Runtime data dir: %s", DATA_DIR)
+    logger.info("Upload dir: %s", UPLOAD_DIR)
+    logger.info("Audio cache dir: %s", AUDIO_CACHE_DIR)
+    logger.info("Models dir: %s", MODELS_DIR)
+    logger.info("Frontend dir: %s", FRONTEND_DIR)
+    logger.info("Expected quality model exists: %s", os.path.exists(os.path.join(MODELS_DIR, tts_service.QUALITY_MODEL_FILENAME)))
+    logger.info("Expected voices file exists: %s", os.path.exists(os.path.join(MODELS_DIR, tts_service.VOICES_FILENAME)))
+    logger.info("Expected frontend index exists: %s", os.path.exists(os.path.join(FRONTEND_DIR, "index.html")))
     tts_service.log_runtime_environment()
     yield
+    logger.info("FastAPI lifespan shutting down; open books=%s", list(BOOKS.keys()))
     # Always close the doc even if the state-save fails — otherwise a partial
     # disk error would leak a fitz.Document on shutdown.
     for book_id in list(BOOKS):
@@ -292,6 +306,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started = time.perf_counter()
+    logger.info("HTTP request start method=%s path=%s query=%s", request.method, request.url.path, request.url.query)
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.exception("HTTP request failed method=%s path=%s elapsed_ms=%.1f", request.method, request.url.path, elapsed_ms)
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "HTTP request end method=%s path=%s status=%s elapsed_ms=%.1f",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
 
 
 # === API Routes ===
@@ -339,11 +374,15 @@ def get_recent_books():
 
 @app.post("/api/book/open")
 def open_book(filepath: str = Query(...)):
+    logger.info("Opening book from filepath=%s", filepath)
     resolved = _resolve_filepath(filepath)
     if not os.path.exists(resolved):
+        logger.warning("Book file not found filepath=%s resolved=%s", filepath, resolved)
         raise HTTPException(404, f"File not found: {filepath}")
     ext = os.path.splitext(resolved)[1].lower()
+    logger.info("Resolved book path=%s ext=%s size_bytes=%s", resolved, ext, os.path.getsize(resolved))
     if ext == ".epub":
+        logger.info("Opening EPUB path=%s", resolved)
         meta = reflow_service.get_metadata(resolved)
         # Build reflow now so page_count reflects real (post-frontmatter-filter) chapters.
         reflow = reflow_service.get_or_build_reflow(resolved, DATA_DIR)
@@ -359,8 +398,10 @@ def open_book(filepath: str = Query(...)):
         _invalidate_search_index(book_id)
         BOOKS[book_id] = {"doc": None, "state": state, "filepath": resolved}
         _save_state(book_id)
+        logger.info("Opened EPUB book_id=%s title=%s chapters=%s", book_id, state.title, state.page_count)
         return state.model_dump()
 
+    logger.info("Opening PDF path=%s", resolved)
     doc = pdf_service.open_pdf(resolved)
     try:
         meta = pdf_service.get_metadata(doc, resolved)
@@ -380,6 +421,7 @@ def open_book(filepath: str = Query(...)):
             logger.exception("Failed to close PDF after open_book failure")
         raise
     _save_state(book_id)
+    logger.info("Opened PDF book_id=%s title=%s pages=%s", book_id, state.title, state.page_count)
     return state.model_dump()
 
 
@@ -440,9 +482,12 @@ async def open_book_upload(file: UploadFile = File(...)):
     os.makedirs(upload_dir, exist_ok=True)
     safe_name = os.path.basename(file.filename) if file.filename else "upload.pdf"
     filepath = os.path.join(upload_dir, safe_name)
+    logger.info("Receiving upload filename=%s content_type=%s target=%s", file.filename, file.content_type, filepath)
     content = await file.read()
+    logger.info("Upload read complete filename=%s bytes=%s", file.filename, len(content))
     with open(filepath, "wb") as f:
         f.write(content)
+    logger.info("Upload saved target=%s size_bytes=%s", filepath, os.path.getsize(filepath))
     return open_book(filepath)
 
 
