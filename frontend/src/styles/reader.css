@@ -56,13 +56,33 @@
     border-color var(--dur) var(--ease-out);
 }
 .icon-rail .rail-brand {
-  font-family: var(--font-display);
-  font-style: italic;
-  font-size: 22px;
-  color: var(--ember);
-  padding: 6px 0 14px;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  margin-bottom: 10px;
   cursor: pointer;
-  letter-spacing: 0.04em;
+  background: transparent;
+  border: 1px solid transparent;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.icon-rail .rail-brand:hover {
+  background: var(--paper-3);
+  border-color: color-mix(in srgb, var(--ember) 26%, transparent);
+  box-shadow: 0 8px 22px -14px color-mix(in srgb, var(--ember) 60%, transparent);
+  transform: translateY(-1px);
+}
+.rail-brand-logo {
+  width: 25px;
+  height: 25px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--ember) 34%, transparent));
 }
 .rail-btn {
   width: 40px; height: 40px;
@@ -250,6 +270,22 @@
   color: var(--ink-2);
   font-size: 13.5px;
   line-height: 1.45;
+  /* Real curly quotes via pseudo-elements — replaces the literal ASCII " "
+     wrapping the JS string, so we can use proper typography that doesn't
+     get smart-quoted by the user's input either. */
+  display: inline;
+}
+.bookmark-item .bm-snip::before {
+  content: "\201C";
+  margin-right: 2px;
+  font-style: italic;
+  color: var(--ink-3);
+}
+.bookmark-item .bm-snip::after {
+  content: "\201D";
+  margin-left: 2px;
+  font-style: italic;
+  color: var(--ink-3);
 }
 
 /* search */
@@ -375,6 +411,440 @@
   flex-direction: column;
   gap: 20px;
 }
+.settings-overlay {
+  position: fixed;
+  inset: 42px 0 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ember) 7%, transparent), transparent 28%),
+    color-mix(in srgb, var(--paper) 72%, transparent);
+  backdrop-filter: blur(12px) saturate(1.02);
+  animation: settings-fade-in 220ms var(--ease-out);
+}
+.settings-shell {
+  width: min(1240px, calc(100vw - 56px));
+  height: min(820px, calc(100vh - 88px));
+  max-height: calc(100vh - 88px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--paper) 96%, transparent), color-mix(in srgb, var(--paper-2) 96%, transparent) 58%);
+  border: 1px solid var(--rule);
+  box-shadow:
+    0 28px 80px -34px color-mix(in srgb, var(--paper-edge) 72%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--paper) 22%, transparent);
+  color: var(--ink);
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  animation: settings-rise-in 360ms var(--ease-out);
+}
+.settings-nav {
+  width: 214px;
+  flex: 0 0 214px;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px;
+  border-right: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper-2) 92%, transparent);
+}
+.settings-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px 28px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+}
+.settings-nav-brand img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+.settings-nav nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-nav nav button {
+  height: 40px;
+  border-radius: 8px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--ink-2);
+  font-size: 14px;
+  text-align: left;
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.settings-nav nav button:hover {
+  background: color-mix(in srgb, var(--paper-3) 80%, transparent);
+  color: var(--ink);
+}
+.settings-nav nav button.active {
+  background: var(--ember-wash);
+  color: var(--ember);
+  box-shadow: inset 2px 0 0 var(--ember);
+}
+.settings-nav-card {
+  margin-top: auto;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-nav-card span {
+  display: block;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.settings-nav-card strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.settings-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.settings-full-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px 32px 16px;
+}
+.settings-full-head h2 {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.settings-full-head p {
+  margin-top: 8px;
+  max-width: 520px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.settings-close {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+  border: 1px solid var(--rule);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.settings-close:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--paper-3) 78%, transparent);
+  transform: translateY(-1px);
+}
+.settings-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 20px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--rule);
+}
+.settings-tabs button {
+  position: relative;
+  padding: 12px 0 11px;
+  color: var(--ink-2);
+  font-size: 13px;
+  transition: color var(--dur-fast);
+}
+.settings-tabs button:hover,
+.settings-tabs button.active {
+  color: var(--ink);
+}
+.settings-tabs button.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--ember);
+}
+.settings-full-body.settings-body {
+  padding: 12px 32px 28px;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 10px;
+}
+.settings-full-body .settings-group {
+  min-width: 0;
+  padding: 16px 18px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+  border: 1px solid var(--rule);
+  box-shadow: none;
+}
+.settings-full-body .settings-group .label {
+  padding: 0;
+  color: var(--ember);
+}
+.settings-card-wide {
+  grid-column: 1 / -1;
+}
+.settings-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.settings-card-head h3 {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 620;
+  color: var(--ink);
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+.settings-card-head > span {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.settings-note {
+  margin-top: 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.settings-action {
+  align-self: flex-start;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 7px;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper-2) 90%, transparent);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.settings-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ember) 28%, var(--rule));
+  background: var(--ember-wash);
+}
+.settings-metric {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.settings-metric strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+}
+.settings-shell select {
+  min-width: 150px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+  color: var(--ink);
+  font: 12px var(--font-mono);
+}
+.settings-shell .control-row {
+  min-height: 44px;
+  padding: 10px 0;
+}
+.settings-shell .control-row + .control-row {
+  border-top-color: var(--rule);
+}
+.settings-shell .control-row .k {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.settings-full-body .theme-switch {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.settings-full-body .voice-picker {
+  max-height: 316px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.settings-voice-card {
+  grid-row: span 2;
+}
+.settings-shell .theme-option.active,
+.settings-shell .tts-engine-option.active {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ember) 22%, transparent), color-mix(in srgb, var(--ember) 12%, transparent));
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ember) 28%, transparent);
+}
+.settings-shell .theme-switch,
+.settings-shell .tts-engine-switch {
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+  border-color: var(--rule);
+  border-radius: 8px;
+}
+.settings-shell .theme-option,
+.settings-shell .tts-engine-option {
+  border-radius: 6px;
+}
+.settings-shell .voice-card {
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+}
+.settings-shell .voice-card.active {
+  background: var(--ember-wash);
+}
+.settings-shell {
+  width: min(900px, calc(100vw - 48px));
+  height: auto;
+  max-height: calc(100vh - 84px);
+  display: block;
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+}
+.settings-main {
+  min-height: 0;
+}
+.settings-full-head {
+  padding: 22px 24px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.settings-full-head p {
+  max-width: none;
+  margin-top: 5px;
+}
+.settings-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 24px 0;
+}
+.settings-summary span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+  font-size: 12px;
+}
+.settings-full-body.settings-body {
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  padding: 16px 24px 24px;
+  gap: 10px;
+}
+.settings-full-body .settings-group {
+  padding: 14px 15px;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+}
+.settings-card-wide {
+  grid-column: auto;
+}
+.settings-card-head {
+  margin-bottom: 11px;
+}
+.settings-card-head h3 {
+  font-size: 14px;
+}
+.settings-shell .control-row {
+  min-height: 38px;
+  padding: 8px 0;
+}
+.settings-shell select {
+  min-height: 30px;
+}
+.settings-shell .theme-option,
+.settings-shell .tts-engine-option {
+  min-height: 34px;
+  padding: 7px;
+}
+.settings-shell .theme-option .swatch {
+  width: 18px;
+  height: 18px;
+}
+.settings-voice-card {
+  grid-row: span 3;
+}
+.settings-full-body .voice-picker {
+  max-height: 344px;
+}
+.settings-shell .voice-card {
+  padding: 9px 10px;
+}
+.settings-shell .voice-description {
+  display: none;
+}
+.settings-shell .voice-card-head {
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+}
+.settings-shell .voice-mark {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+}
+@media (max-width: 820px) {
+  .settings-overlay {
+    padding: 14px;
+  }
+  .settings-shell {
+    width: min(100%, calc(100vw - 28px));
+    max-height: calc(100vh - 74px);
+    height: calc(100vh - 74px);
+    border-radius: 18px;
+    flex-direction: column;
+  }
+  .settings-nav {
+    display: none;
+  }
+  .settings-full-head {
+    padding: 22px;
+  }
+  .settings-full-body.settings-body {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+  .settings-voice-card {
+    grid-row: auto;
+  }
+  .settings-full-body .theme-switch {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@keyframes settings-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes settings-rise-in {
+  from { opacity: 0; transform: translateY(18px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
 .settings-group { display: flex; flex-direction: column; gap: 8px; }
 .settings-group .label {
   font-family: var(--font-mono);
@@ -419,11 +889,55 @@
 .theme-option[data-t="light"] .swatch { background: #f7f4ed; }
 .theme-option[data-t="sepia"] .swatch { background: #f3e7cf; }
 .theme-option[data-t="dark"] .swatch { background: #111417; }
+.theme-option[data-t="folio"] .swatch {
+  background:
+    linear-gradient(135deg, #090a0c 0 55%, #f2bd53 56% 100%);
+}
 .theme-option.active {
   background: var(--ink);
   color: var(--paper);
 }
 .theme-option.active .swatch { border-color: var(--paper); }
+
+.tts-engine-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.tts-engine-option {
+  min-height: 36px;
+  padding: 8px;
+  border-radius: 8px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  transition: all var(--dur-fast) var(--ease-out);
+}
+
+.tts-engine-option:hover {
+  background: var(--paper-3);
+  color: var(--ink);
+}
+
+.tts-engine-option.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.neutts-controls {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
 
 .control-row {
   display: flex;
@@ -454,6 +968,7 @@
   background: color-mix(in srgb, var(--paper) 86%, var(--paper-2));
   color: var(--ink);
   text-align: left;
+  cursor: pointer;
   transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 
@@ -537,6 +1052,36 @@
   color: var(--ink-2);
   font-size: 12.5px;
   line-height: 1.35;
+}
+
+.voice-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 9px;
+}
+
+.voice-preview-btn {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+
+.voice-preview-btn:hover:not(:disabled) {
+  border-color: var(--ember);
+  color: var(--ember);
+  background: var(--ember-wash);
+}
+
+.voice-preview-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .slider {
@@ -672,8 +1217,16 @@
 }
 .reading-progress .bar .fill {
   position: absolute; top: 0; left: 0; bottom: 0;
-  background: var(--ember);
+  /* Soft ember-to-gold gradient with a faint glow — feels like ink on warm
+     paper rather than a sterile UI bar. */
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ember) 70%, transparent) 0%,
+    var(--ember) 60%,
+    color-mix(in srgb, var(--ember) 88%, var(--gold, #d4a860)) 100%
+  );
   border-radius: 2px;
+  box-shadow: 0 0 6px -1px color-mix(in srgb, var(--ember) 55%, transparent);
   transition: width var(--dur-slow) var(--ease-out);
 }
 .reading-progress .lbl {
@@ -1125,27 +1678,81 @@
   z-index: 2;
 }
 .word-hitbox:hover {
-  background: color-mix(in srgb, var(--ember-wash) 42%, transparent);
+  background: color-mix(in srgb, var(--ember-wash) 30%, transparent);
 }
 
 .reflow-viewport .sentence {
-  border-radius: 3px;
+  border-radius: 4px;
+  padding: 0 0.06em;
+  margin: 0 -0.06em;
   transition:
     background-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out);
+    box-shadow var(--dur) var(--ease-out);
+  /* Suppress any inherited text decoration so the active highlight reads as a
+     clean wash rather than text + underline. */
+  text-decoration: none;
 }
 .reflow-viewport .sentence.selectable-s {
   cursor: pointer;
 }
 .reflow-viewport .sentence:hover {
-  background: color-mix(in srgb, var(--ember-wash) 54%, transparent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ember-wash) 42%, transparent);
+  background: color-mix(in srgb, var(--ember-wash) 48%, transparent);
 }
 .reflow-viewport .sentence.active-s {
-  background: color-mix(in srgb, var(--ember-wash) 68%, transparent);
+  /* Calm warm wash on the whole chunk so the listener can see at a glance
+     which sentence is being read. No animation here — the only moving piece
+     is the .reading-cursor overlay positioned over the current word. */
+  background: color-mix(in srgb, var(--ember-wash) 26%, transparent);
+  border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Overlay highlights that follow the estimated reading position inside the
+   active chunk. ReflowViewer positions them with the Range API, so no per-word
+   DOM nodes are needed. Theme-aware via --ember-soft, which tokens.css
+   redefines for light / sepia / dark. */
+.reading-focus-glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(0, 0, 0);
+  transform-origin: left top;
+  will-change: transform, width, height, opacity;
+  z-index: 7;
+  border-radius: 999px;
+  background:
+    radial-gradient(
+      ellipse at center,
+      color-mix(in srgb, var(--ember-soft) 34%, transparent) 0%,
+      color-mix(in srgb, var(--ember-soft) 20%, transparent) 48%,
+      transparent 78%
+    );
   box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--ember) 22%, transparent),
-    inset 0 -0.15em 0 color-mix(in srgb, var(--ember-soft) 34%, transparent);
+    0 0 18px color-mix(in srgb, var(--ember-soft) 18%, transparent),
+    0 0 34px color-mix(in srgb, var(--ember-soft) 10%, transparent);
+  filter: blur(7px) saturate(1.08);
+  transition: opacity 320ms ease-out;
+  /* mix-blend-mode: multiply works well on light/sepia paper; in dark mode
+     the highlight already reads as additive thanks to the lighter
+     --ember-soft token, but we still want it to sit "behind" the text
+     glyphs visually. */
+  mix-blend-mode: multiply;
+}
+.theme-dark .reading-focus-glow {
+  /* On dark backgrounds, multiply darkens further (invisible). Use plus-lighter
+     so the warm/teal accent shows through against dark paper. */
+  mix-blend-mode: plus-lighter;
+  filter: blur(8px) saturate(1.18);
+}
+@media (prefers-reduced-motion: reduce) {
+  .reading-focus-glow {
+    transition: opacity 180ms ease-out;
+  }
 }
 
 /* gliding cursor under active word */
@@ -1188,24 +1795,25 @@
 /* page nav arrows */
 .page-nav {
   position: fixed;
-  top: 50%;
+  top: auto;
+  bottom: 34px;
   width: 44px; height: 44px;
   border-radius: 50%;
   background: var(--paper-2);
   border: 1px solid var(--rule);
   display: flex; align-items: center; justify-content: center;
   color: var(--ink-2);
-  transform: translateY(-50%);
+  transform: none;
   transition: all var(--dur) var(--ease-out);
   z-index: 4;
   box-shadow: var(--shadow-1);
 }
-.page-nav.prev { left: 24px; }
-.page-nav.next { right: 24px; }
+.page-nav.prev { left: calc(50% - min(430px, calc(50vw - 72px))); }
+.page-nav.next { right: calc(50% - min(430px, calc(50vw - 72px))); }
 .page-nav:hover {
   background: var(--ink);
   color: var(--paper);
-  transform: translateY(-50%) scale(1.08);
+  transform: translateY(-1px) scale(1.05);
   box-shadow: var(--shadow-2);
 }
 
@@ -1213,6 +1821,8 @@
 .rail-btn:focus-visible,
 .icon-btn:focus-visible,
 .theme-option:focus-visible,
+.tts-engine-option:focus-visible,
+.voice-card:focus-visible,
 .chapter-item:focus-visible,
 .bookmark-item:focus-visible,
 .add-bookmark:focus-visible {
@@ -1289,11 +1899,11 @@
   }
 
   .page-nav.prev {
-    left: 12px;
+    left: calc(50% - min(344px, calc(50vw - 56px)));
   }
 
   .page-nav.next {
-    right: 12px;
+    right: calc(50% - min(344px, calc(50vw - 56px)));
   }
 }
 

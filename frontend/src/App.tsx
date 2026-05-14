@@ -1,16 +1,25 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import type { GlobalSettings, SearchResult, TtsRuntimeInfo, TtsStatus } from './types'
 import useBookState from './hooks/useBookState'
 import useAudioPlayback from './hooks/useAudioPlayback'
 import Welcome from './components/Welcome'
-import PdfViewer from './components/PdfViewer'
+import LoadingScreen from './components/LoadingScreen'
 import ReflowViewer from './components/ReflowViewer'
 import Pill from './components/Pill'
 import Sidebar from './components/Sidebar'
 import { Icons } from './components/icons'
 import { apiFetch } from './api'
+import CursorHalo from './components/CursorHalo'
+import TitleBar from './components/TitleBar'
 import './App.css'
 
-const THEMES = ['sepia', 'light', 'dark']
+const THEMES = ['sepia', 'light', 'dark', 'folio']
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseFloat(String(value))
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
 
 export default function App() {
   const [theme, setTheme] = useState(() => {
@@ -25,19 +34,22 @@ export default function App() {
     const t = localStorage.getItem('sidebarTab')
     return t === 'null' || t === '' ? null : (t || null)
   })
-  const [zoom, setZoom] = useState(() => parseFloat(localStorage.getItem('zoom') ?? '1'))
-  const [searchTarget, setSearchTarget] = useState(null)
+  const [searchTarget, setSearchTarget] = useState<any>(null)
   const [followAlongMode, setFollowAlongMode] = useState(false)
 
-  const [gpuEnabled, setGpuEnabled] = useState(null)
+  const [gpuEnabled, setGpuEnabled] = useState<boolean | null>(null)
   const [backendReachable, setBackendReachable] = useState(false)
   const [modelLoaded, setModelLoaded] = useState(false)
   const [modelLoading, setModelLoading] = useState(false)
+  const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null)
+  const [ttsEngineStatus, setTtsEngineStatus] = useState<Record<string, TtsRuntimeInfo>>({})
+  const [startupMinElapsed, setStartupMinElapsed] = useState(false)
+  const [startupTimedOut, setStartupTimedOut] = useState(false)
   const settingsHydrated = useRef(false)
 
-  const saveSetting = useCallback((key, value) => {
+  const saveSetting = useCallback((key: string, value: unknown) => {
     if (!settingsHydrated.current) return
-    localStorage.setItem(key, value)
+    localStorage.setItem(key, String(value))
     apiFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -49,70 +61,103 @@ export default function App() {
   useEffect(() => { saveSetting('motion', motion) }, [motion, saveSetting])
   useEffect(() => { saveSetting('wheelPaging', wheelPaging) }, [wheelPaging, saveSetting])
   useEffect(() => { saveSetting('highlightStyle', highlightStyle) }, [highlightStyle, saveSetting])
-  useEffect(() => { saveSetting('zoom', zoom) }, [zoom, saveSetting])
   useEffect(() => { saveSetting('sidebarTab', sidebarTab ?? '') }, [sidebarTab, saveSetting])
 
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
     const poll = async () => {
+      if (cancelled) return
       try {
         const r = await apiFetch('/api/status')
-        const d = await r.json()
+        const d = await r.json() as TtsStatus
+        if (cancelled) return
         setBackendReachable(true)
         setGpuEnabled(d.gpu)
         setModelLoaded(d.model_loaded)
         setModelLoading(d.model_loading)
+        setTtsStatus(d)
+        setTtsEngineStatus(d.tts_engines || {})
       } catch {
-        setBackendReachable(false)
+        if (!cancelled) {
+          setBackendReachable(false)
+          setModelLoaded(false)
+          setModelLoading(false)
+          setTtsStatus(null)
+          setTtsEngineStatus({})
+        }
       } finally {
-        if (!cancelled) setTimeout(poll, 2000)
+        if (!cancelled) timer = setTimeout(poll, 1000)
       }
     }
     poll()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
   }, [])
 
-  const [reflow, setReflow] = useState(null)
-  const [reflowProgress, setReflowProgress] = useState(null) // {current, total}
-  const reflowNavRef = useRef({})
+  useEffect(() => {
+    const minTimer = setTimeout(() => setStartupMinElapsed(true), 1400)
+    const timeoutTimer = setTimeout(() => setStartupTimedOut(true), 30000)
+    return () => {
+      clearTimeout(minTimer)
+      clearTimeout(timeoutTimer)
+    }
+  }, [])
+
+  const [reflow, setReflow] = useState<any>(null)
+  const [reflowProgress, setReflowProgress] = useState<any>(null) // {current, total}
+  const reflowNavRef = useRef<any>({})
 
   const bookState = useBookState()
   const {
-    book, pageData, pageImageUrl, facingPageImageUrl, facingPageNum, currentPage, loading, textLoading, recentBooks,
+    book, pageData, currentPage, loading, textLoading, recentBooks, recentLoaded,
     openBook, uploadBook, goToPage, savePosition, addBookmark, removeBookmark, closeBook, deleteBook,
   } = bookState
-  const isEpub = book?.format === 'epub'
 
   const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition })
+  const { setVolume: setAudioVolume, seekToSentence } = audio
+  const activeTtsStatus = ttsEngineStatus?.[audio.ttsEngine] || null
+  const activeModelLoaded = audio.ttsEngine === 'chatterbox-turbo'
+    ? (activeTtsStatus?.model_loaded ?? false)
+    : (activeTtsStatus?.model_loaded ?? modelLoaded)
+  const activeModelLoading = activeTtsStatus?.model_loading ?? modelLoading
+  const activeGpuEnabled = audio.ttsEngine === 'chatterbox-turbo'
+    ? (activeTtsStatus?.selected_device ? activeTtsStatus.selected_device === 'cuda' : null)
+    : gpuEnabled
+  const activeRuntime = activeTtsStatus || ttsStatus?.tts_runtime || null
+  const startupLoadFailed = Boolean(activeRuntime?.last_load_error)
+  const startupModelSettled = activeModelLoaded || startupLoadFailed || startupTimedOut
+  const startupReady = backendReachable && recentLoaded && startupModelSettled && startupMinElapsed
 
-  // Fetch reflow JSON for EPUB books
+  // Fetch reflow JSON for the active EPUB.
   useEffect(() => {
-    if (!isEpub) return
+    if (!book) return
     let cancelled = false
+    setReflow(null)
+    setReflowProgress(null)
     apiFetch(`/api/book/${book.id}/reflow`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (!cancelled) setReflow(d) })
-      .catch(() => {})
+      .catch(() => { if (!cancelled) setReflow(null) })
     return () => { cancelled = true }
-  }, [book?.id, isEpub])
+  }, [book])
 
-  const setVolume = (v) => {
-    audio.setVolume(v)
-    saveSetting('volume', v)
-  }
+  const setVolume = useCallback((v: unknown) => {
+    const next = clampNumber(v, 0, 1, 1)
+    setAudioVolume(next)
+    saveSetting('volume', next)
+  }, [setAudioVolume, saveSetting])
 
-  // Snaps the view to the exact chapter + subPage (or PDF page) the audio is
-  // currently reading. Follow Along reuses this for continuous auto-follow.
+  // Snaps the view to the exact chapter + subPage the audio is currently
+  // reading. Follow Along reuses this for continuous auto-follow.
   const jumpToReader = useCallback(() => {
     const p = audio.readingPage
     const s = audio.currentSentence
     if (p == null) return
-    if (book?.format === 'epub') {
-      reflowNavRef.current?.goToSentence?.(p, s)
-    } else if (p !== currentPage) {
-      goToPage(p)
-    }
-  }, [audio.readingPage, audio.currentSentence, book?.format, currentPage, goToPage])
+    reflowNavRef.current?.goToSentence?.(p, s)
+  }, [audio.readingPage, audio.currentSentence])
 
   const exitFollowAlong = useCallback(() => {
     setFollowAlongMode(false)
@@ -128,20 +173,20 @@ export default function App() {
     requestAnimationFrame(jumpToReader)
   }, [followAlongMode, jumpToReader])
 
-  const handleSidebarTab = useCallback((nextTab) => {
+  const handleSidebarTab = useCallback((nextTab: string | null) => {
     if (nextTab) exitFollowAlong()
     setSidebarTab(nextTab)
   }, [exitFollowAlong])
 
-  const goToPageFromUser = useCallback((page) => {
+  const goToPageFromUser = useCallback((page: number) => {
     exitFollowAlong()
     return goToPage(page)
   }, [exitFollowAlong, goToPage])
 
-  const seekToSentenceFromUser = useCallback((page, sentence) => {
+  const seekToSentenceFromUser = useCallback((page: number, sentence: number) => {
     exitFollowAlong()
-    audio.seekToSentence(page, sentence)
-  }, [audio, exitFollowAlong])
+    seekToSentence(page, sentence)
+  }, [seekToSentence, exitFollowAlong])
 
   useEffect(() => {
     if (!followAlongMode) return
@@ -159,7 +204,7 @@ export default function App() {
 
   useEffect(() => {
     if (!followAlongMode) return
-    const onKeyDown = (e) => {
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
         setFollowAlongMode(false)
@@ -170,61 +215,43 @@ export default function App() {
   }, [followAlongMode])
 
   // Page-turn animation overlay
-  const [turning, setTurning] = useState(null)
-  const turnTimeoutRef = useRef(null)
-  const triggerTurn = useCallback((direction) => {
+  const [turning, setTurning] = useState<'next' | 'prev' | null>(null)
+  const turnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const triggerTurn = useCallback((direction: 'next' | 'prev') => {
     if (!motion) return
     setTurning(direction)
-    clearTimeout(turnTimeoutRef.current)
+    if (turnTimeoutRef.current) clearTimeout(turnTimeoutRef.current)
     turnTimeoutRef.current = setTimeout(() => setTurning(null), 720)
   }, [motion])
-  const lastPageRef = useRef(currentPage)
-  useEffect(() => {
-    const prev = lastPageRef.current
-    if (prev !== currentPage) {
-      // For PDFs this drives the animation; for EPUBs the ReflowViewer
-      // triggers triggerTurn directly (so within-chapter flips animate too).
-      if (book?.format !== 'epub') {
-        const direction = currentPage > prev ? 'next' : 'prev'
-        requestAnimationFrame(() => triggerTurn(direction))
-      }
-      lastPageRef.current = currentPage
-    }
-  }, [currentPage, book?.format, triggerTurn])
-
-  useEffect(() => {
-    if (isEpub) return
-    setReflow(null)
-    setReflowProgress(null)
-  }, [isEpub])
-
   useEffect(() => {
     apiFetch('/api/settings')
       .then(r => r.ok ? r.json() : {})
-      .then(s => {
-        if (s.theme !== undefined && THEMES.includes(s.theme)) { setTheme(s.theme); localStorage.setItem('theme', s.theme) }
+      .then((s: GlobalSettings) => {
+        if (typeof s.theme === 'string' && THEMES.includes(s.theme)) { setTheme(s.theme); localStorage.setItem('theme', s.theme) }
         else if (s.darkMode !== undefined) { const t = s.darkMode ? 'dark' : 'sepia'; setTheme(t); localStorage.setItem('theme', t) }
-        if (s.motion !== undefined) { setMotion(!!s.motion); localStorage.setItem('motion', !!s.motion) }
-        if (s.wheelPaging !== undefined) { setWheelPaging(!!s.wheelPaging); localStorage.setItem('wheelPaging', !!s.wheelPaging) }
-        if (s.highlightStyle !== undefined) { setHighlightStyle(s.highlightStyle); localStorage.setItem('highlightStyle', s.highlightStyle) }
-        if (s.zoom !== undefined) { setZoom(s.zoom); localStorage.setItem('zoom', s.zoom) }
+        if (s.motion !== undefined) { setMotion(!!s.motion); localStorage.setItem('motion', String(!!s.motion)) }
+        if (s.wheelPaging !== undefined) { setWheelPaging(!!s.wheelPaging); localStorage.setItem('wheelPaging', String(!!s.wheelPaging)) }
+        if (typeof s.highlightStyle === 'string') { setHighlightStyle(s.highlightStyle); localStorage.setItem('highlightStyle', s.highlightStyle) }
         if (s.sidebarTab !== undefined) {
-          const t = s.sidebarTab === '' ? null : s.sidebarTab
+          const t = typeof s.sidebarTab === 'string' && s.sidebarTab !== '' ? s.sidebarTab : null
           setSidebarTab(t); localStorage.setItem('sidebarTab', t ?? '')
         }
-        if (s.volume !== undefined) { audio.setVolume(s.volume); localStorage.setItem('volume', s.volume) }
+        if (s.volume !== undefined) {
+          const v = clampNumber(s.volume, 0, 1, 1)
+          audio.setVolume(v); localStorage.setItem('volume', String(v))
+        }
       })
       .catch(() => {})
       .finally(() => { settingsHydrated.current = true })
   }, []) // eslint-disable-line
 
-  const onHome = () => {
+  const onHome = useCallback(() => {
     exitFollowAlong()
     audio.stop()
     closeBook()
-  }
+  }, [audio.stop, closeBook, exitFollowAlong])
 
-  const handleSearchNavigate = useCallback(async (result) => {
+  const handleSearchNavigate = useCallback(async (result: SearchResult) => {
     if (!result || result.page == null) return
 
     exitFollowAlong()
@@ -238,28 +265,52 @@ export default function App() {
     })
   }, [book?.id, exitFollowAlong, goToPage])
 
-  const statusBadges = (
+  const handleReflowProgress = useCallback((next: { current: number; total: number }) => {
+    setReflowProgress((prev: any) => (
+      prev?.current === next.current && prev?.total === next.total ? prev : next
+    ))
+  }, [])
+
+  const statusBadges = useMemo(() => (
     <>
       <span className={`gpu-badge ${backendReachable ? 'gpu-on' : 'gpu-off'}`}>
         {backendReachable ? 'Backend Ready' : 'Starting Backend'}
       </span>
-      {backendReachable && modelLoading && (
+      {backendReachable && activeModelLoading && (
         <span className="gpu-badge">Voice Model Loading</span>
       )}
-      {backendReachable && modelLoaded && (
+      {backendReachable && activeModelLoaded && (
         <span className="gpu-badge gpu-on">Voice Model Ready</span>
       )}
-      {gpuEnabled !== null && (
-        <span className={`gpu-badge ${gpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
-          {gpuEnabled ? 'GPU Accelerated' : 'CPU Mode'}
+      {activeGpuEnabled !== null && activeGpuEnabled !== undefined && (
+        <span className={`gpu-badge ${activeGpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
+          {activeGpuEnabled ? 'GPU Accelerated' : 'CPU Mode'}
         </span>
       )}
     </>
-  )
+  ), [backendReachable, activeModelLoading, activeModelLoaded, activeGpuEnabled])
+
+  if (!book && !startupReady) {
+    return (
+      <LoadingScreen
+        theme={theme}
+        status={ttsStatus}
+        backendReachable={backendReachable}
+        recentLoaded={recentLoaded}
+        recentBooks={recentBooks}
+        activeRuntime={activeRuntime}
+        activeModelLoaded={activeModelLoaded}
+        activeModelLoading={activeModelLoading}
+        timedOut={startupTimedOut}
+      />
+    )
+  }
 
   if (!book) {
     return (
-      <div className={`app-shell theme-${theme} grain`}>
+      <div className={`app-shell app-enter theme-${theme} grain`}>
+        <TitleBar />
+        <CursorHalo motion={motion} />
         <Welcome
           onUpload={uploadBook}
           recentBooks={recentBooks}
@@ -273,6 +324,8 @@ export default function App() {
 
   return (
     <div className={`app-shell theme-${theme} grain ${followAlongMode ? 'follow-along-active' : ''}`}>
+      <TitleBar />
+      <CursorHalo motion={motion} disabled={followAlongMode} />
       {loading && <div className="loading-bar" />}
 
       <div className="reader-shell">
@@ -286,6 +339,8 @@ export default function App() {
           removeBookmark={removeBookmark}
           voice={audio.voice}
           setVoice={audio.setVoice}
+          ttsEngine={audio.ttsEngine}
+          setTtsEngine={audio.setTtsEngine}
           speed={audio.speed}
           theme={theme}
           setTheme={setTheme}
@@ -311,9 +366,8 @@ export default function App() {
 
             <div className="reading-progress">
               {(() => {
-                const isEpub = book.format === 'epub' && reflowProgress
-                const cur = isEpub ? reflowProgress.current : currentPage + 1
-                const tot = isEpub ? reflowProgress.total : book.page_count
+                const cur = reflowProgress?.current ?? currentPage + 1
+                const tot = reflowProgress?.total ?? book.page_count
                 const pct = tot ? (cur / tot) * 100 : 0
                 return (
                   <>
@@ -328,9 +382,9 @@ export default function App() {
             </div>
 
             <div className="topbar-actions">
-              {gpuEnabled !== null && (
-                <span className={`gpu-badge small ${gpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
-                  {gpuEnabled ? 'GPU' : 'CPU'}
+              {activeGpuEnabled !== null && activeGpuEnabled !== undefined && (
+                <span className={`gpu-badge small ${activeGpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
+                  {activeGpuEnabled ? 'GPU' : 'CPU'}
                 </span>
               )}
               <button
@@ -338,75 +392,38 @@ export default function App() {
                 onClick={() => addBookmark(currentPage, audio.currentSentence, `Page ${currentPage + 1}`)}
                 title="Add bookmark"
               ><Icons.Bookmark size={17} /></button>
-              <button className="icon-btn" onClick={onHome} title="Close book">
-                <Icons.X size={17} />
-              </button>
             </div>
           </div>
 
-          {book.format === 'epub' ? (
-            <ReflowViewer
-              reflow={reflow}
-              chapterIdx={currentPage}
-              setChapterIdx={goToPage}
-              runningHead={book.title}
-              currentSentence={audio.currentSentence}
-              activeChapterIdx={audio.readingPage ?? currentPage}
-              onProgress={setReflowProgress}
-              navRef={reflowNavRef}
-              onPageTurn={triggerTurn}
-              pageTurn={turning}
-              motion={motion}
-              wheelPaging={followAlongMode ? false : wheelPaging}
-              searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-              followAlongMode={followAlongMode}
-              onSentenceSelect={seekToSentenceFromUser}
-            />
-          ) : (
-            <PdfViewer
-              pageImageUrl={pageImageUrl}
-              facingPageImageUrl={facingPageImageUrl}
-              facingPageNum={facingPageNum}
-              pageData={pageData}
-              currentSentence={audio.currentSentence}
-              currentWordIdx={audio.currentWordIdx}
-              activePage={audio.readingPage ?? currentPage}
-              currentPage={currentPage}
-              pageCount={book.page_count}
-              zoom={zoom}
-              setZoom={setZoom}
-              highlightStyle={highlightStyle}
-              searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-              followAlongMode={followAlongMode}
-              onSentenceSelect={seekToSentenceFromUser}
-            />
-          )}
-
-          {motion && turning && book.format !== 'epub' && (
-            <>
-              <div className={`flipper flipper-${turning}`} style={{ pointerEvents: 'none' }}>
-                <div className="flip-face flip-front"><div className="flip-face-inner" /><div className="flip-shade flip-shade-front" /></div>
-                <div className="flip-face flip-back"><div className="flip-face-inner" /><div className="flip-shade flip-shade-back" /></div>
-              </div>
-              <div className={`flip-cast flip-cast-${turning}`} />
-            </>
-          )}
+          <ReflowViewer
+            reflow={reflow}
+            chapterIdx={currentPage}
+            setChapterIdx={goToPage}
+            runningHead={book.title}
+            currentSentence={audio.currentSentence}
+            activeChapterIdx={audio.readingPage ?? currentPage}
+            chunkProgress={audio.chunkProgress}
+            isPlaying={audio.isPlaying}
+            onProgress={handleReflowProgress}
+            navRef={reflowNavRef}
+            onPageTurn={triggerTurn}
+            pageTurn={turning}
+            motion={motion}
+            wheelPaging={followAlongMode ? false : wheelPaging}
+            searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+            followAlongMode={followAlongMode}
+            onSentenceSelect={seekToSentenceFromUser}
+          />
 
           <button
             className="page-nav prev"
-            onClick={() => book.format === 'epub'
-              ? (exitFollowAlong(), reflowNavRef.current.goPrev?.())
-              : goToPageFromUser(Math.max(0, currentPage - 2))}
-            disabled={book.format !== 'epub' && currentPage <= 0}
+            onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
           >
             <Icons.ChevronLeft size={18} />
           </button>
           <button
             className="page-nav next"
-            onClick={() => book.format === 'epub'
-              ? (exitFollowAlong(), reflowNavRef.current.goNext?.())
-              : goToPageFromUser(Math.min(book.page_count - 1, currentPage + 2))}
-            disabled={book.format !== 'epub' && currentPage >= book.page_count - 1}
+            onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
           >
             <Icons.ChevronRight size={18} />
           </button>
@@ -416,9 +433,15 @@ export default function App() {
       <Pill
         isPlaying={audio.isPlaying}
         isGenerating={audio.isGenerating}
+        generationError={audio.generationError}
         textLoading={textLoading}
-        modelLoaded={modelLoaded}
-        modelLoading={modelLoading}
+        modelLoaded={activeModelLoaded}
+        modelLoading={activeModelLoading}
+        downloadActive={!!activeTtsStatus?.download_active}
+        downloadBytes={activeTtsStatus?.download_bytes ?? 0}
+        downloadTotalBytes={activeTtsStatus?.download_total_bytes ?? 0}
+        engineFallbackReason={activeTtsStatus?.fallback_reason ?? null}
+        engineLoadError={activeTtsStatus?.last_load_error ?? null}
         play={audio.play}
         pause={audio.pause}
         stop={audio.stop}
@@ -430,6 +453,7 @@ export default function App() {
         setSpeed={audio.setSpeed}
         volume={audio.volume}
         setVolume={setVolume}
+        ttsEngine={audio.ttsEngine}
         voice={audio.voice}
         currentSentence={audio.currentSentence}
         sentenceCount={pageData?.sentences?.length || 0}

@@ -1,6 +1,6 @@
 [package]
 name = "folio"
-version = "0.1.6"
+version = "0.1.9"
 description = "Folio desktop reader"
 authors = ["Folio contributors"]
 edition = "2021"

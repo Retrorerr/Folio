@@ -1,0 +1,781 @@
+/* ============================================================================
+   FLOURISH — PILL MORPH
+   ============================================================================
+   Apple-inspired collapsed↔expanded morph: spring-curve geometry transition,
+   blurred/scaled content cross-fade, ambient halo grows during expansion.
+   Plus refined expanded layout: prev/now/next teleprompter, real sliders,
+   sleep ring, voice card.
+============================================================================ */
+
+:root {
+  --pill-spring:  cubic-bezier(0.32, 0.72, 0, 1);
+  --pill-bounce:  cubic-bezier(0.4, 1.55, 0.4, 1);
+  --pill-smooth:  cubic-bezier(0.4, 0, 0.2, 1);
+  --pill-morph:   560ms;
+  --pill-fade:    220ms;
+}
+
+/* ---------------------------------------------------------------------------
+   The shell — geometry transitions on the same easing curve so the corner
+   radius, padding, height, and shadow morph in lockstep.
+--------------------------------------------------------------------------- */
+.pill {
+  /* Override the existing pill.css transition with a single cohesive set.
+     Border-radius lands faster than width/padding so the pill loses its
+     fully-rounded "stadium" shape early in the morph instead of staying
+     circular for half the animation. */
+  transition:
+    width var(--pill-morph) var(--pill-spring),
+    min-width var(--pill-morph) var(--pill-spring),
+    max-width var(--pill-morph) var(--pill-spring),
+    padding var(--pill-morph) var(--pill-spring),
+    border-radius 280ms var(--pill-smooth),
+    box-shadow var(--pill-morph) var(--pill-spring),
+    background-color var(--pill-morph) var(--pill-spring),
+    transform 200ms var(--pill-spring);
+  /* Soft ambient halo behind the pill, grows during expansion */
+  isolation: isolate;
+  position: relative;
+}
+.pill::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: inherit;
+  background: radial-gradient(ellipse at center,
+    rgba(20, 12, 6, 0.25) 0%,
+    rgba(20, 12, 6, 0.10) 40%,
+    transparent 75%);
+  z-index: -1;
+  opacity: 0.6;
+  filter: blur(14px);
+  transition:
+    opacity var(--pill-morph) var(--pill-spring),
+    inset var(--pill-morph) var(--pill-spring),
+    filter var(--pill-morph) var(--pill-spring);
+  pointer-events: none;
+}
+.theme-dark .pill::before {
+  background: radial-gradient(ellipse at center,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.25) 40%,
+    transparent 75%);
+}
+.pill.expanded::before {
+  opacity: 0.85;
+  inset: -16px;
+  filter: blur(22px);
+}
+
+/* Subtle "puff" on press / morph — squeeze then settle */
+.pill.expanding {
+  animation: pill-puff var(--pill-morph) var(--pill-spring);
+}
+.pill.collapsing {
+  animation: pill-press 320ms var(--pill-spring);
+}
+@keyframes pill-puff {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.014); }
+  100% { transform: scale(1); }
+}
+@keyframes pill-press {
+  0%   { transform: scale(1.008); }
+  60%  { transform: scale(0.996); }
+  100% { transform: scale(1); }
+}
+.pill.expanded:hover { transform: none; }
+
+/* ---------------------------------------------------------------------------
+   Content cross-fade — both trees mount during the morph. The arriving tree
+   drives the pill's layout (size grows/shrinks to fit it). The leaving tree
+   is positioned absolutely OVER the same area, fading out so the pill is
+   never visually empty mid-morph.
+--------------------------------------------------------------------------- */
+.pill-collapsed-content,
+.pill-expanded-content {
+  transform-origin: center center;
+  will-change: opacity, transform, filter;
+}
+
+/* Leaving tree — overlay, no pointer events, fades out */
+.pill-collapsed-content.is-leaving,
+.pill-expanded-content.is-leaving {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  animation: pill-content-leave 320ms var(--pill-smooth) forwards;
+}
+/* The leaving tree carries its previous state's padding so the inner layout
+   doesn't snap when it becomes absolute. */
+.pill-collapsed-content.is-leaving { padding: 10px 12px 10px 16px; }
+.pill-expanded-content.is-leaving { padding: 22px 24px 20px; }
+
+@keyframes pill-content-leave {
+  0%   { opacity: 1; transform: scale(1) translateY(0); filter: blur(0); }
+  60%  { opacity: 0.4; }
+  100% { opacity: 0; transform: scale(0.94) translateY(-2px); filter: blur(8px); }
+}
+
+/* Arriving tree — drives layout, fades in slightly delayed so the shell has
+   time to start morphing toward the new shape before content appears. */
+.pill-collapsed-content.is-arriving,
+.pill-expanded-content.is-arriving {
+  animation: pill-content-arrive 420ms var(--pill-spring) 80ms both;
+}
+@keyframes pill-content-arrive {
+  0%   { opacity: 0; transform: scale(0.985) translateY(4px); filter: blur(10px); }
+  60%  { filter: blur(0); }
+  100% { opacity: 1; transform: none; filter: none; }
+}
+
+/* Expanded child stagger — each block lifts in like a card */
+.pill-expanded-content.is-arriving > * {
+  animation: pill-block-in 480ms var(--pill-spring) both;
+}
+.pill-expanded-content.is-arriving > *:nth-child(1) { animation-delay: 140ms; }
+.pill-expanded-content.is-arriving > *:nth-child(2) { animation-delay: 180ms; }
+.pill-expanded-content.is-arriving > *:nth-child(3) { animation-delay: 220ms; }
+.pill-expanded-content.is-arriving > *:nth-child(4) { animation-delay: 260ms; }
+.pill-expanded-content.is-arriving > *:nth-child(5) { animation-delay: 300ms; }
+.pill-expanded-content.is-arriving > *:nth-child(6) { animation-delay: 340ms; }
+@keyframes pill-block-in {
+  from { opacity: 0; transform: translateY(10px); filter: blur(3px); }
+  60%  { filter: blur(0); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   Slow-mo debug — append ?slowpill=1 to the URL or run window.__SLOWPILL__=1
+   in the console to scale all morph timings 4×. Used to inspect the
+   transition by eye.
+--------------------------------------------------------------------------- */
+.pill.pill-slowmo {
+  transition:
+    width 2240ms var(--pill-spring),
+    min-width 2240ms var(--pill-spring),
+    max-width 2240ms var(--pill-spring),
+    padding 2240ms var(--pill-spring),
+    border-radius 1120ms var(--pill-smooth),
+    box-shadow 2240ms var(--pill-spring),
+    background-color 2240ms var(--pill-spring),
+    transform 800ms var(--pill-spring) !important;
+}
+.pill.pill-slowmo .pill-collapsed-content.is-leaving,
+.pill.pill-slowmo .pill-expanded-content.is-leaving {
+  animation-duration: 1280ms !important;
+}
+.pill.pill-slowmo .pill-collapsed-content.is-arriving,
+.pill.pill-slowmo .pill-expanded-content.is-arriving {
+  animation-duration: 1680ms !important;
+  animation-delay: 320ms !important;
+}
+.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(1) { animation-delay: 560ms !important; }
+.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(2) { animation-delay: 720ms !important; }
+.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(3) { animation-delay: 880ms !important; }
+.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(4) { animation-delay: 1040ms !important; }
+.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(5) { animation-delay: 1200ms !important; }
+.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(6) { animation-delay: 1360ms !important; }
+.pill.pill-slowmo.expanding,
+.pill.pill-slowmo.collapsing {
+  animation-duration: 2240ms !important;
+}
+
+/* ---------------------------------------------------------------------------
+   Expanded shell — generous proportions, refined surface
+--------------------------------------------------------------------------- */
+.pill.expanded {
+  width: min(820px, calc(100vw - 32px));
+  min-width: min(640px, calc(100vw - 32px));
+  padding: 22px 24px 20px;
+  border-radius: 28px;
+  background:
+    radial-gradient(ellipse 700px 320px at 50% -20%,
+      rgba(255, 255, 255, 0.04) 0%,
+      transparent 70%),
+    var(--ink);
+  box-shadow:
+    0 28px 70px -14px rgba(20, 12, 6, 0.62),
+    0 10px 24px -6px rgba(20, 12, 6, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  gap: 18px;
+}
+.theme-dark .pill.expanded {
+  background:
+    radial-gradient(ellipse 700px 320px at 50% -20%,
+      rgba(162, 226, 211, 0.06) 0%,
+      transparent 70%),
+    #0b1014;
+}
+
+/* ---------------------------------------------------------------------------
+   Expanded head — bigger cover, refined kerning
+--------------------------------------------------------------------------- */
+.pill-expanded-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding-bottom: 4px;
+}
+.pill-expanded-head .pill-cover {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, #8a5a30 0%, #6b4423 35%, #4a2f18 75%, #6b4423 100%);
+  background-size: 200% 200%;
+  position: relative;
+  flex-shrink: 0;
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,0.10),
+    0 6px 16px -4px rgba(20, 12, 6, 0.55);
+}
+.pill-expanded-head .pill-cover::after {
+  inset: 6px;
+  border-radius: 6px;
+  border-color: rgba(229, 203, 150, 0.34);
+}
+.pill-expanded-head .pill-cover.has-real-cover {
+  background-size: cover;
+  background-position: center;
+}
+.pill-expanded-head .pill-cover.has-real-cover::after {
+  inset: 0;
+  border-radius: 12px;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.pill-expanded-head .pill-cover .pill-cover-title {
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  font-size: 10px;
+  line-height: 1;
+}
+.pill-expanded-head .pill-cover.rotating {
+  border-radius: 50%;
+  animation: slow-rotate 8s linear infinite, cover-glow 3.4s ease-in-out infinite;
+}
+.pill-expanded-head .pill-cover.rotating::after { border-radius: 50%; inset: 6px; }
+.pill-expanded-head .pill-cover.rotating::before {
+  content: "";
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 12px; height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--paper) 0%, var(--paper) 40%, transparent 70%);
+  z-index: 2;
+}
+
+.pill-expanded-head .meta h3 {
+  font-size: 22px;
+  margin-top: 1px;
+}
+.pill-expanded-head .meta .a {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-top: 6px;
+  opacity: 0.85;
+}
+
+.collapse-btn {
+  width: 36px; height: 36px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition:
+    background var(--dur-fast),
+    transform var(--dur-fast) var(--ease-snap),
+    border-color var(--dur-fast);
+}
+.collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: scale(1.05);
+}
+
+/* ---------------------------------------------------------------------------
+   Teleprompter — prev / now / next with elegant fade
+--------------------------------------------------------------------------- */
+.tele-stack {
+  display: grid;
+  grid-template-rows: 1fr auto 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg,
+      rgba(255, 255, 255, 0.02) 0%,
+      rgba(255, 255, 255, 0.05) 50%,
+      rgba(255, 255, 255, 0.02) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+  overflow: hidden;
+  min-height: 110px;
+}
+.tele-stack::before {
+  /* warm ember wash anchored to the now-line */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 80% 60% at 50% 50%,
+    color-mix(in srgb, var(--ember) 16%, transparent) 0%,
+    transparent 70%);
+  pointer-events: none;
+  opacity: 0.7;
+}
+.tele-line {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: 16px;
+  line-height: 1.4;
+  text-align: center;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  transition: opacity 320ms var(--pill-spring);
+}
+.tele-line.tele-prev,
+.tele-line.tele-next {
+  color: var(--ink-3);
+  font-style: italic;
+  font-size: 13px;
+  opacity: 0.55;
+  -webkit-mask-image: linear-gradient(180deg,
+    transparent 0%,
+    rgba(0, 0, 0, 0.7) 40%,
+    rgba(0, 0, 0, 0.7) 60%,
+    transparent 100%);
+  mask-image: linear-gradient(180deg,
+    transparent 0%,
+    rgba(0, 0, 0, 0.7) 40%,
+    rgba(0, 0, 0, 0.7) 60%,
+    transparent 100%);
+}
+.tele-line.tele-now {
+  color: var(--paper);
+  font-size: 18px;
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  -webkit-line-clamp: 2;
+  text-shadow: 0 0 18px color-mix(in srgb, var(--ember) 30%, transparent);
+  animation: tele-now-in 360ms var(--pill-spring);
+}
+@keyframes tele-now-in {
+  from { opacity: 0.4; transform: translateY(4px); filter: blur(2px); }
+  to   { opacity: 1; transform: none; filter: none; }
+}
+.theme-dark .tele-line.tele-now { color: var(--ink); }
+
+.tele-line.tele-empty {
+  color: var(--ink-3);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* ---------------------------------------------------------------------------
+   Big waveform — clickable scrub
+--------------------------------------------------------------------------- */
+.pill-wave-lg {
+  height: 64px;
+  padding: 8px 4px 6px;
+  margin: 0;
+  border-radius: 12px;
+  position: relative;
+}
+.pill-wave-lg::after {
+  content: "";
+  position: absolute;
+  bottom: 0; left: 4px; right: 4px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(255, 255, 255, 0.06) 20%,
+    rgba(255, 255, 255, 0.06) 80%,
+    transparent);
+  pointer-events: none;
+}
+.wave-bar-lg {
+  border-radius: 999px;
+  transition: background var(--dur-fast), height 80ms var(--pill-smooth);
+}
+.wave-bar-lg.passed {
+  background: linear-gradient(180deg, var(--ember-soft) 0%, var(--ember) 100%);
+  box-shadow: 0 0 6px -1px color-mix(in srgb, var(--ember) 50%, transparent);
+}
+.wave-bar-lg.future { opacity: 0.32; }
+.pill-wave-lg:hover .wave-bar-lg.future { opacity: 0.5; transition: opacity var(--dur); }
+
+.pill-timeline {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ---------------------------------------------------------------------------
+   Transport — large play, refined satellites
+--------------------------------------------------------------------------- */
+.pill-expanded-controls {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 999px;
+  padding: 8px 12px;
+  gap: 6px;
+}
+.pill-expanded-controls .pill-btn {
+  width: 42px; height: 42px;
+  background: rgba(255, 255, 255, 0.0);
+}
+.pill-expanded-controls .pill-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.pill-expanded-controls .pill-btn.play {
+  width: 56px; height: 56px;
+  margin: 0 6px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--ember-soft) 20%, var(--ember)),
+    var(--ember));
+  box-shadow:
+    0 6px 18px -2px color-mix(in srgb, var(--ember) 60%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+.pill-expanded-controls .pill-btn.play:hover {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--ember-soft) 35%, var(--ember)),
+    var(--ember-soft));
+}
+.pill-expanded-controls .pill-btn.play.is-playing {
+  box-shadow:
+    0 8px 24px -4px color-mix(in srgb, var(--ember) 70%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--ember) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+/* ---------------------------------------------------------------------------
+   Secondary row — refined sliders, sleep ring, voice tile
+--------------------------------------------------------------------------- */
+.pill-secondary-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pill-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 14px;
+  transition:
+    background var(--dur-fast),
+    border-color var(--dur-fast),
+    transform var(--dur-fast) var(--ease-snap);
+}
+.pill-tile:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+.pill-tile.tile-button {
+  cursor: pointer;
+}
+.pill-tile.tile-button:hover {
+  transform: translateY(-1px);
+}
+.pill-tile .tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pill-tile .tile-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.pill-tile .tile-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--paper);
+  letter-spacing: 0.04em;
+}
+.theme-dark .pill-tile .tile-value { color: var(--ink); }
+.pill-tile .tile-value.is-ember { color: var(--ember-soft); }
+
+/* Slider component — applies to range inputs inside tiles */
+.pill-tile input[type="range"].pill-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  --pct: 50%;
+  background:
+    linear-gradient(90deg,
+      var(--ember) 0%,
+      var(--ember-soft) var(--pct),
+      rgba(255, 255, 255, 0.10) var(--pct),
+      rgba(255, 255, 255, 0.10) 100%);
+  border-radius: 999px;
+  transition: background 80ms var(--pill-smooth);
+}
+.pill-tile input[type="range"].pill-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 2px solid var(--ember);
+  cursor: grab;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.4),
+    0 0 0 6px rgba(255, 255, 255, 0);
+  transition:
+    transform var(--dur-fast) var(--ease-snap),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.pill-tile input[type="range"].pill-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.18);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 0 6px color-mix(in srgb, var(--ember) 14%, transparent);
+}
+.pill-tile input[type="range"].pill-slider:active::-webkit-slider-thumb {
+  cursor: grabbing;
+  transform: scale(1.06);
+}
+.pill-tile input[type="range"].pill-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 2px solid var(--ember);
+  cursor: grab;
+}
+
+.pill-slider-ticks {
+  position: relative;
+  height: 8px;
+  margin-top: 2px;
+}
+.pill-slider-ticks .tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  transform: translateX(-50%);
+}
+.pill-slider-ticks .tick.is-active {
+  background: var(--ember-soft);
+  height: 6px;
+}
+
+/* Sleep timer — ring + countdown */
+.pill-tile.tile-sleep .sleep-ring {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.pill-tile.tile-sleep .sleep-ring svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.pill-tile.tile-sleep .sleep-ring .ring-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.10);
+  stroke-width: 2.5;
+}
+.pill-tile.tile-sleep .sleep-ring .ring-fill {
+  fill: none;
+  stroke: var(--ember-soft);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--ember) 50%, transparent));
+  transition: stroke-dashoffset 600ms var(--pill-spring);
+}
+
+/* Voice tile — avatar + name */
+.pill-tile.tile-voice .voice-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+  background: linear-gradient(135deg, var(--ember), var(--gold));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 4px 10px -2px color-mix(in srgb, var(--ember) 50%, transparent);
+}
+
+/* Speed presets row (under slider) */
+.pill-speed-presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.pill-speed-presets button {
+  flex: 1;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.pill-speed-presets button:hover {
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.06);
+}
+.theme-dark .pill-speed-presets button:hover { color: var(--ink); }
+.pill-speed-presets button.is-active {
+  color: var(--ember-soft);
+  background: color-mix(in srgb, var(--ember) 16%, transparent);
+  border-color: color-mix(in srgb, var(--ember) 28%, transparent);
+}
+
+/* Inline page badge — chapter/page tile */
+.pill-tile.tile-page .page-display {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 22px;
+  color: var(--paper);
+  line-height: 1;
+}
+.theme-dark .pill-tile.tile-page .page-display { color: var(--ink); }
+.pill-tile.tile-page .page-display .of {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  margin: 0 4px 0 6px;
+}
+.pill-tile.tile-page .page-progress {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+}
+.pill-tile.tile-page .page-progress::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: var(--pp, 0%);
+  background: linear-gradient(90deg, var(--ember-soft), var(--ember));
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--pill-spring);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--ember) 50%, transparent);
+}
+
+/* Folio keeps the expanded player in the same dark, premium family as the
+   minimized pill. This intentionally sits late in the cascade because the
+   flourish layer owns the expanded morph surface. */
+.theme-folio .pill.expanded {
+  background:
+    radial-gradient(ellipse 680px 300px at 50% -18%,
+      rgba(242, 189, 83, 0.09) 0%,
+      transparent 72%),
+    linear-gradient(180deg, rgba(25, 23, 18, 0.985), rgba(8, 9, 11, 0.99));
+  color: #f6f0e3;
+  border-color: rgba(242, 189, 83, 0.18);
+  box-shadow:
+    0 28px 72px -18px rgba(0, 0, 0, 0.86),
+    0 0 0 1px rgba(255, 255, 255, 0.035) inset,
+    0 0 42px -30px rgba(242, 189, 83, 0.92);
+}
+.theme-folio .pill.expanded::before {
+  background:
+    radial-gradient(circle at 18% 20%, rgba(242, 189, 83, 0.10), transparent 28%),
+    radial-gradient(circle at 82% 10%, rgba(255, 236, 177, 0.06), transparent 26%);
+}
+.theme-folio .pill-expanded-head .meta h3,
+.theme-folio .tele-line.tele-now,
+.theme-folio .pill-tile .tile-value,
+.theme-folio .pill-tile.tile-page .page-display {
+  color: #f8f1e3;
+}
+.theme-folio .pill-expanded-head .meta .a,
+.theme-folio .tele-line.tele-prev,
+.theme-folio .tele-line.tele-next,
+.theme-folio .pill-timeline,
+.theme-folio .pill-voice,
+.theme-folio .pill-tile .tile-label {
+  color: rgba(214, 202, 181, 0.62);
+}
+.theme-folio .tele-stack,
+.theme-folio .pill-expanded-controls,
+.theme-folio .pill-secondary-row,
+.theme-folio .pill-tile {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(242, 189, 83, 0.12);
+}
+.theme-folio .pill-tile:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(242, 189, 83, 0.22);
+}
+.theme-folio .collapse-btn,
+.theme-folio .pill-expanded-controls .pill-btn {
+  color: rgba(246, 240, 227, 0.68);
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(242, 189, 83, 0.10);
+}
+.theme-folio .collapse-btn:hover,
+.theme-folio .pill-expanded-controls .pill-btn:hover {
+  color: #fbf6ea;
+  background: rgba(242, 189, 83, 0.11);
+  border-color: rgba(242, 189, 83, 0.22);
+}
+.theme-folio .wave-bar-lg.future {
+  background: rgba(246, 240, 227, 0.20);
+  opacity: 0.55;
+}
+.theme-folio .pill-wave-lg::after,
+.theme-folio .pill-tile.tile-page .page-progress {
+  background: rgba(242, 189, 83, 0.10);
+}
+.theme-folio .pill-tile input[type="range"].pill-slider::-webkit-slider-thumb {
+  background: #0b0c0f;
+}
+.theme-folio .pill-tile input[type="range"].pill-slider::-moz-range-thumb {
+  background: #0b0c0f;
+}
+
+/* Mobile reflow */
+@media (max-width: 720px) {
+  .pill-secondary-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .pill-tile.tile-page { grid-column: 1 / -1; }
+  .pill-expanded-controls .pill-btn { width: 38px; height: 38px; }
+  .pill-expanded-controls .pill-btn.play { width: 52px; height: 52px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill.expanding,
+  .pill.collapsing {
+    animation: none !important;
+  }
+}

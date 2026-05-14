@@ -7,7 +7,10 @@ class BookMeta(BaseModel):
     author: str
     page_count: int
     toc: list[dict]  # [{"title": str, "page": int}]
-    format: str = "pdf"  # "pdf" | "epub"
+    format: str = "epub"
+    cover_url: str | None = None
+    cover_source: str | None = None
+    tts_engine: str = "kokoro"
     voice: str = "af_heart"
     speed: float = 0.95
 
@@ -27,7 +30,10 @@ class BookState(BaseModel):
     author: str
     page_count: int
     toc: list[dict]
-    format: str = "pdf"
+    format: str = "epub"
+    cover_url: str | None = None
+    cover_source: str | None = None
+    tts_engine: str = "kokoro"
     voice: str = "af_heart"
     speed: float = 0.95
     last_position: Position = Field(default_factory=lambda: Position(page=0, sentence_idx=0))

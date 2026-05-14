@@ -9,6 +9,11 @@ if (Test-Path $cargoBin) {
 
 & (Join-Path $PSScriptRoot "build-backend.ps1")
 
+$releaseResources = Join-Path $root "src-tauri\target\release\resources"
+if (Test-Path $releaseResources) {
+  Remove-Item -Recurse -Force $releaseResources
+}
+
 $signingKeyPath = Join-Path $root ".tauri\folio-updater.key"
 if (Test-Path $signingKeyPath) {
   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $signingKeyPath

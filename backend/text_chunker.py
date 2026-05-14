@@ -1,6 +1,6 @@
 """Paragraph- and block-aware chunker for the Kokoro TTS pipeline.
 
-Sentences from the splitter (pdf_service / reflow_service) are too short on
+Sentences from the reflow splitter are too short on
 their own — Kokoro sounds stop-start when fed isolated sentences. This module
 merges adjacent sentences into "natural narration" chunks while respecting
 paragraph, heading, list, and dialogue boundaries.
@@ -20,7 +20,7 @@ from typing import Iterable
 # Bumping this invalidates the audio cache by changing _cache_key in
 # tts_service. Old WAVs become orphaned (different hash prefix) and new
 # chunks regenerate from scratch.
-CHUNKER_VERSION = "v2.1-2026-04"
+CHUNKER_VERSION = "v2.2-2026-05"
 
 # Token estimation. Kokoro's internal phoneme tokenizer isn't directly
 # importable here, so we approximate with char-count: ~4 chars per token for
@@ -151,7 +151,7 @@ def chunk_blocks(blocks: Iterable[dict]) -> list[dict]:
     block_list = list(blocks)
 
     # Assign a stable source-sentence id stream for blocks that didn't carry
-    # explicit indices (e.g. PDF input).
+    # explicit indices from pre-indexed input.
     next_auto_idx = 0
 
     def _next_idx(explicit) -> int:
@@ -310,7 +310,7 @@ def chunk_blocks(blocks: Iterable[dict]) -> list[dict]:
 
 
 def chunk_paragraph_sentences(paragraphs: Iterable[Iterable[str]]) -> list[dict]:
-    """PDF-flavored entry point.
+    """Plain paragraph entry point.
 
     Input: iterable of paragraphs, each an iterable of sentence strings.
     Output: chunks (same shape as chunk_blocks).

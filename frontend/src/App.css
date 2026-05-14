@@ -1,5 +1,133 @@
 /* App-specific styles that complement the design tokens/reader/welcome/pill CSS. */
 
+/* ===========================================================================
+   Custom desktop titlebar
+=========================================================================== */
+.app-titlebar {
+  flex: 0 0 42px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  z-index: 30;
+  padding-left: 12px;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--paper) 94%, transparent),
+      color-mix(in srgb, var(--paper-2) 86%, transparent));
+  border-bottom: 0;
+  color: var(--ink);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.theme-folio .app-titlebar {
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--paper) 92%, #15110a 8%),
+      color-mix(in srgb, var(--paper-2) 88%, #1f170b 12%));
+  border-bottom-color: transparent;
+  box-shadow: none;
+}
+
+.titlebar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 100%;
+  min-width: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.titlebar-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--ember) 28%, transparent));
+}
+
+.titlebar-drag-space {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
+.titlebar-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+}
+
+.titlebar-control {
+  width: 46px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  border-radius: 0;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.titlebar-control:hover {
+  background: color-mix(in srgb, var(--paper-3) 82%, transparent);
+  color: var(--ink);
+}
+
+.titlebar-control.titlebar-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.titlebar-minimize {
+  width: 12px;
+  height: 1px;
+  background: currentColor;
+  border-radius: 1px;
+  transform: translateY(4px);
+}
+
+.titlebar-maximize {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+/* ===========================================================================
+   View transitions — welcome ↔ reader
+   ===========================================================================
+   Both root views fade in on mount so swapping between the library and the
+   reading surface feels like one continuous motion rather than a hard cut.
+   The outgoing view unmounts immediately when `book` flips; the incoming
+   view's gentle blur-fade-up reads as a smooth handoff. Reduced-motion users
+   get the existing app-wide animation-duration override from tokens.css.
+=========================================================================== */
+.welcome,
+.reader-shell {
+  animation: app-view-in 420ms cubic-bezier(0.32, 0.72, 0.24, 1) both;
+  will-change: opacity, transform, filter;
+}
+@keyframes app-view-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985) translateY(6px);
+    filter: blur(3px);
+  }
+  55% {
+    filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
 /* Loading bar at top when fetching a page */
 .loading-bar {
   position: fixed;
@@ -51,38 +179,6 @@
   transform: scaleY(1.04);
 }
 
-/* zoom controls */
-.zoom-controls {
-  position: fixed;
-  bottom: 100px;
-  right: 24px;
-  display: flex;
-  gap: 4px;
-  padding: 6px;
-  background: var(--paper-2);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-pill);
-  box-shadow: var(--shadow-1);
-  z-index: 4;
-  align-items: center;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--ink-2);
-  transition:
-    opacity var(--dur) var(--ease-out),
-    transform var(--dur) var(--ease-out),
-    background-color var(--dur) var(--ease-out),
-    border-color var(--dur) var(--ease-out);
-}
-.zoom-controls button {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  color: var(--ink-2);
-  transition: all var(--dur-fast);
-}
-.zoom-controls button:hover { background: var(--paper-3); color: var(--ink); }
-.zoom-controls span { padding: 0 4px; }
-
 .page-indicator {
   position: fixed;
   bottom: 100px;
@@ -104,11 +200,9 @@
     background-color var(--dur) var(--ease-out),
     border-color var(--dur) var(--ease-out);
 }
-.follow-along-scroll .zoom-controls,
 .follow-along-scroll .page-indicator {
   opacity: 0.52;
 }
-.follow-along-scroll .zoom-controls:hover,
 .follow-along-scroll .page-indicator:hover {
   opacity: 1;
 }
@@ -116,7 +210,7 @@
 /* status badges (GPU / model / errors) in welcome + topbar */
 .status-badges {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
   margin-top: 14px;
 }
@@ -125,13 +219,29 @@
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  padding: 4px 10px;
+  /* Roomier padding so the text doesn't crowd the pill border, and so the
+     visual rhythm feels more relaxed than tightly-stamped. */
+  padding: 8px 16px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--rule);
   color: var(--ink-3);
+  background: color-mix(in srgb, var(--paper) 60%, transparent);
+  white-space: nowrap;
+  /* Subtle frosted-glass effect — gracefully ignored on browsers that don't
+     support backdrop-filter. */
+  backdrop-filter: saturate(140%) blur(6px);
+  -webkit-backdrop-filter: saturate(140%) blur(6px);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
 }
-.gpu-badge.gpu-on { color: var(--ember); border-color: var(--ember); background: var(--ember-wash); }
-.gpu-badge.small { padding: 2px 8px; font-size: 9px; }
+.gpu-badge.gpu-on {
+  color: var(--ember);
+  border-color: color-mix(in srgb, var(--ember) 55%, var(--rule));
+  background: var(--ember-wash);
+}
+.gpu-badge.small { padding: 3px 10px; font-size: 9px; }
 
 /* Reflow viewer: facing page spread with column-pagination overlay */
 .reflow-sheet {
@@ -151,8 +261,11 @@
   justify-content: center;
   align-items: start;
   transition:
+    width 420ms var(--ease-out),
+    grid-template-columns 420ms var(--ease-out),
     transform var(--dur-slow) var(--ease-out),
-    filter var(--dur-slow) var(--ease-out);
+    filter var(--dur-slow) var(--ease-out),
+    opacity 240ms var(--ease-out);
 }
 .follow-along-scroll .reflow-spread {
   transform: scale(1.045);
@@ -200,19 +313,68 @@
 .reflow-flow {
   font-family: var(--font-body, 'Cormorant Garamond', serif);
   font-size: 18px;
-  line-height: 1.62;
+  line-height: 1.68;
   color: var(--ink);
   pointer-events: auto;
+  text-wrap: pretty;
 }
 .reflow-flow p {
   margin: 0;
-  text-indent: 1.6em;
-  text-align: justify;
+}
+.reflow-flow p.reflow-para {
+  margin: 0 0 0.72em;
+  text-indent: 1.35em;
+  text-align: left;
   hyphens: none;
   overflow-wrap: normal;
   word-break: normal;
+  widows: 2;
+  orphans: 2;
+  break-inside: auto;
 }
-.reflow-flow p.first, .reflow-flow p:first-of-type { text-indent: 0; }
+.reflow-flow p.reflow-para.first,
+.reflow-flow p.reflow-para:first-of-type,
+.reflow-flow p.reflow-para-blockquote,
+.reflow-flow p.reflow-para-list-item {
+  text-indent: 0;
+}
+.reflow-flow p.reflow-para-blockquote {
+  margin: 0 1.05em 0.82em;
+  padding-left: 0.9em;
+  border-left: 1px solid color-mix(in srgb, var(--ember) 42%, var(--rule));
+  color: color-mix(in srgb, var(--ink) 86%, var(--ink-3));
+  font-style: italic;
+}
+.reflow-flow p.reflow-para-list-item {
+  position: relative;
+  margin-bottom: 0.56em;
+  padding-left: 1.18em;
+}
+.reflow-flow p.reflow-para-list-item::before {
+  content: "\2022";
+  position: absolute;
+  left: 0;
+  color: var(--ink-3);
+  font-size: 0.78em;
+  line-height: inherit;
+}
+.reflow-flow .reflow-heading {
+  margin: 1.15em 0 0.45em;
+  break-after: avoid;
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1.12;
+}
+.reflow-flow .reflow-dinkus {
+  margin: 0.95em 0 1.05em;
+  break-inside: avoid;
+  text-align: center;
+  color: var(--ember);
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-style: italic;
+  letter-spacing: 0.38em;
+}
 .reflow-flow .chapter-opener { margin-bottom: 1.6em; text-align: center; }
 .reflow-flow .chapter-opener .label {
   font-family: var(--font-mono);
@@ -237,18 +399,18 @@
   padding: 6px 8px 0 0;
   margin-top: 4px;
 }
-.reflow-flow .sentence.active-s { background: var(--ember-wash); border-radius: 2px; }
+.reflow-flow .sentence.active-s {
+  background: color-mix(in srgb, var(--ember-wash) 26%, transparent);
+  border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
 .reflow-flow .sentence.search-s {
   background: color-mix(in srgb, var(--ember) 18%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ember) 35%, transparent);
   border-radius: 3px;
 }
 @media (max-width: 820px) {
-  .zoom-controls {
-    right: 14px;
-    bottom: 86px;
-  }
-
   .page-indicator {
     bottom: 86px;
     max-width: calc(100vw - 120px);
@@ -257,13 +419,6 @@
 }
 
 @media (max-width: 560px) {
-  .zoom-controls {
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
-    bottom: 76px;
-  }
-
   .page-indicator {
     bottom: 124px;
     max-width: calc(100vw - 32px);

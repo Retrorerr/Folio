@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 
-@dataclass
+@dataclass(slots=True)
 class QueueJob:
     key: str
     fn: Callable[[], tuple[str, float]]
@@ -14,6 +14,7 @@ class QueueJob:
     result: tuple[str, float] | None = None
     error: Exception | None = None
     ticket: int = 0
+    priority: int = 10
 
 
 class TTSQueue:
@@ -36,6 +37,8 @@ class TTSQueue:
                 self._jobs[key] = job
             elif job.status == "done":
                 return job
+            elif job.status == "running":
+                return job
             elif job.status == "error":
                 job.event = threading.Event()
                 job.status = "pending"
@@ -43,6 +46,7 @@ class TTSQueue:
                 job.error = None
 
             job.fn = fn
+            job.priority = priority
             job.ticket += 1
             ticket = job.ticket
             self._queue.put((priority, next(self._counter), key, ticket))
@@ -60,6 +64,13 @@ class TTSQueue:
         with self._lock:
             job = self._jobs.get(key)
             return job.status if job else None
+
+    def has_active_priority_at_or_below(self, priority: int) -> bool:
+        with self._lock:
+            return any(
+                job.priority <= priority and job.status in {"pending", "running"}
+                for job in self._jobs.values()
+            )
 
     def _worker_loop(self):
         while True:
@@ -87,6 +98,5 @@ class TTSQueue:
             finally:
                 job.event.set()
                 with self._lock:
-                    # Keep errored jobs so status() can report them; only evict completed ones.
                     if self._jobs.get(key) is job and job.status == "done":
                         self._jobs.pop(key, None)

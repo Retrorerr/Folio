@@ -2,15 +2,17 @@
 
 Folio is a Windows desktop reader for people who like to move between reading and listening without losing the thread.
 
-It opens PDF and EPUB books, remembers where you left off, and uses local Kokoro text-to-speech so a book can become sentence-aware audio without sending the text away from your machine.
+It opens EPUB books, remembers where you left off, and uses local text-to-speech so a book can become sentence-aware audio without sending the text away from your machine.
 
 ## What It Does
 
-- Opens PDF and EPUB files from a polished desktop app.
+- Opens EPUB files from a polished desktop app.
 - Keeps recent books, reading position, bookmarks, and settings.
-- Generates local speech with Kokoro ONNX voices.
+- Generates local speech with Kokoro ONNX or Chatterbox Turbo.
 - Highlights and advances through sentences while audio plays.
-- Supports EPUB reflow, PDF page views, full-text search, and chapter navigation.
+- Supports EPUB reflow, full-text search, and chapter navigation.
+- Shows a startup loading screen with backend, model, RAM, and GPU status.
+- Uses a custom Windows titlebar and TypeScript React frontend.
 - Bundles the backend, frontend, and model runtime into a Tauri installer.
 
 ## Install
@@ -52,7 +54,7 @@ npm run tauri:build
 The build script:
 
 - builds the Python backend sidecar;
-- builds the React frontend with the Tauri API base;
+- builds the TypeScript React frontend with the Tauri API base;
 - packages the Windows installer with Tauri;
 - includes bundled resources from `src-tauri/resources`.
 
@@ -74,11 +76,13 @@ Or run the frontend/backend pieces manually when debugging:
 
 ```powershell
 cd frontend
+npm install
 npm run dev
 ```
 
 ```powershell
 cd backend
+pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -105,7 +109,7 @@ src-tauri\target\release\bundle\nsis\Folio_<version>_x64-setup.exe
 4. Tag the release with the same version, for example:
 
 ```text
-v0.1.6
+v0.1.9
 ```
 
 ## Uploading A GitHub Release
@@ -115,18 +119,18 @@ Using the GitHub website:
 1. Open the repository on GitHub.
 2. Go to **Releases**.
 3. Click **Draft a new release**.
-4. Create or choose a tag such as `v0.1.6`.
-5. Use a release title like `Folio 0.1.6`.
+4. Create or choose a tag such as `v0.1.9`.
+5. Use a release title like `Folio 0.1.9`.
 6. Attach the `.exe` installer from the Tauri bundle folder.
 7. Publish the release.
 
 Using GitHub CLI:
 
 ```powershell
-gh release create v0.1.6 `
-  "src-tauri\target\release\bundle\nsis\Folio_0.1.6_x64-setup.exe" `
-  --title "Folio 0.1.6" `
-  --notes "Windows desktop installer for Folio 0.1.6."
+gh release create v0.1.9 `
+  "src-tauri\target\release\bundle\nsis\Folio_0.1.9_x64-setup.exe" `
+  --title "Folio 0.1.9" `
+  --notes "Windows desktop installer for Folio 0.1.9."
 ```
 
 ## Updating
@@ -138,8 +142,8 @@ Until that release manifest is published, update by installing the newer `.exe` 
 ## Repository Layout
 
 ```text
-backend/       FastAPI app, book parsing, reflow, search, and TTS
-frontend/      React reader UI
+backend/       FastAPI app, book parsing, reflow, search, covers, and TTS
+frontend/      TypeScript React reader UI
 scripts/       Windows build and Tauri helper scripts
 src-tauri/     Tauri desktop shell, app resources, icons, and sidecar wiring
 ```
@@ -151,6 +155,8 @@ The repo intentionally avoids committing local-only or bulky runtime files:
 - installed app output;
 - generated installers;
 - model binaries in `backend/models`;
+- Codex/Claude memory folders;
+- browser check profiles and preview screenshots;
 - uploaded books;
 - generated audio cache;
 - backend test/debug artifacts;

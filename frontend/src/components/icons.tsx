@@ -1,13 +1,18 @@
 /* eslint-disable react-refresh/only-export-components */
+import type React from 'react'
 
-const Icon = ({ d, size = 18, stroke = 1.5, fill = 'none', style, children }) => (
+type IconProps = any
+
+const Icon = ({ d, size = 18, stroke = 1.5, fill = 'none', style, children }: IconProps) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
        strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" style={style}>
     {d ? <path d={d} /> : children}
   </svg>
 )
 
-export const Icons = {
+type IconComponent = (props: any) => React.ReactElement
+
+export const Icons: Record<string, IconComponent> = {
   Book: (p) => <Icon {...p}><path d="M4 4v16a2 2 0 0 1 2-2h14V4"/><path d="M4 4a2 2 0 0 1 2 2v14"/><path d="M20 4H6a2 2 0 0 0-2 2"/></Icon>,
   Library: (p) => <Icon {...p}><path d="M6 3v18"/><path d="M10 3v18"/><path d="M14 3h6v18h-6z"/><path d="M14 9h6"/></Icon>,
   Chapters: (p) => <Icon {...p}><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h12"/></Icon>,

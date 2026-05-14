@@ -39,8 +39,15 @@
   --pill-pop-ease: cubic-bezier(0.2, 1.45, 0.34, 1);
   --pill-collapse-ease: cubic-bezier(0.33, 0, 0.2, 1);
   --pill-expand-dur: 280ms;
+  /* The pill is always a dark surface across themes (background gets force-set
+     dark in .theme-dark below). --pill-fg is the readable foreground for that
+     surface in EVERY theme: light on dark in sepia/light (where var(--paper)
+     happens to be light), and explicitly light in dark mode (where
+     var(--paper) is *also* dark and would be invisible). */
+  --pill-fg: var(--paper);
+  --pill-fg-muted: var(--ink-3);
   background: var(--ink);
-  color: var(--paper);
+  color: var(--pill-fg);
   border-radius: 999px;
   padding: 10px 12px 10px 16px;
   display: flex;
@@ -67,10 +74,27 @@
 }
 .theme-dark .pill {
   background: #0b1014;
+  /* Override the inherited fg tokens — in dark theme var(--paper) is dark and
+     would render invisible against the dark pill surface. */
+  --pill-fg: var(--ink);
+  --pill-fg-muted: var(--ink-2);
+  color: var(--pill-fg);
   box-shadow:
     0 20px 48px -12px rgba(0,0,0,0.8),
     0 0 0 1px rgba(162, 226, 211, 0.1),
     inset 0 1px 0 rgba(230, 237, 243, 0.06);
+}
+.theme-folio .pill {
+  --pill-fg: #f6f0e3;
+  --pill-fg-muted: #9b907e;
+  background:
+    linear-gradient(180deg, rgba(25, 22, 17, 0.98), rgba(9, 10, 12, 0.98));
+  color: var(--pill-fg);
+  border: 1px solid rgba(242, 189, 83, 0.16);
+  box-shadow:
+    0 22px 54px -14px rgba(0, 0, 0, 0.82),
+    0 0 0 1px rgba(255, 218, 118, 0.06),
+    inset 0 1px 0 rgba(255, 232, 178, 0.08);
 }
 .pill:hover {
   transform: translateY(-2px);
@@ -172,6 +196,33 @@
   border: 1px solid rgba(229, 203, 150, 0.4);
   border-radius: 3px;
 }
+.pill-cover.has-real-cover {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.pill-cover.has-real-cover::after {
+  inset: 0;
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
+}
+.pill-cover-title {
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 5px;
+  z-index: 1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: rgba(255, 238, 196, 0.86);
+  font-family: var(--font-display);
+  font-size: 7px;
+  font-style: italic;
+  line-height: 0.9;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
 .pill-cover.rotating {
   animation: slow-rotate 6s linear infinite;
   border-radius: 50%;
@@ -205,7 +256,7 @@
   font-style: italic;
   font-size: 15px;
   line-height: 1.2;
-  color: var(--paper);
+  color: var(--pill-fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -221,6 +272,7 @@
   text-overflow: ellipsis;
 }
 .theme-dark .pill-meta .a { color: var(--ink-2); }
+.theme-folio .pill-meta .a { color: var(--pill-fg-muted); }
 
 .pill-waveform {
   flex: 0 0 auto;
@@ -242,8 +294,30 @@
 
 .pill-controls {
   display: flex;
+  gap: 6px;
+  align-items: center;
+}
+/* Transport (rewind / play / forward) — fixed footprint; the play button's
+   horizontal anchor never shifts when the prep cluster morphs. */
+.pill-controls-transport {
+  display: flex;
   gap: 2px;
   align-items: center;
+  flex: 0 0 auto;
+}
+/* Prep (divider / preload / follow-along / expand) — reserves enough width
+   for both variants so morphing the inner buttons doesn't ripple back into
+   transport. The buttons inside still animate (max-width on labels), but the
+   outer container width is steady. */
+.pill-controls-prep {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  /* Width budget = divider + ~150px follow + 4px gap + 32px preload-compact +
+     4px gap + 36px expand. ~228px covers both variants without overflow. */
+  min-width: 232px;
 }
 .pill-btn {
   width: 36px; height: 36px;
@@ -260,29 +334,62 @@
 }
 .pill-btn:hover {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--paper);
+  color: var(--pill-fg);
   transform: translateY(-1px);
 }
 .theme-dark .pill-btn { color: var(--ink-2); }
-.theme-dark .pill-btn:hover { color: var(--paper); }
+/* No .theme-dark .pill-btn:hover override needed — base rule's --pill-fg
+   resolves to var(--ink) (light) inside .theme-dark .pill. */
 
 .pill-btn.play {
   width: 48px; height: 48px;
   background: var(--ember);
   color: var(--paper);
   margin: 0 4px;
-  box-shadow: 0 4px 14px -2px rgba(181, 71, 26, 0.55);
+  box-shadow:
+    0 4px 14px -2px rgba(181, 71, 26, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out);
 }
 .pill-btn.play:hover {
   background: var(--ember-soft);
   transform: scale(1.05);
 }
+/* Subtle warm halo while playing — reinforces the "alive" state without
+   competing with the live-dot pulse on Follow Along. */
+.pill-btn.play.is-playing {
+  box-shadow:
+    0 6px 22px -4px rgba(181, 71, 26, 0.62),
+    0 0 0 4px color-mix(in srgb, var(--ember) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
 .pill-btn.play svg { margin-left: 2px; }
 .pill-btn.play.is-playing svg { margin-left: 0; }
 
+/* Hairline separator between transport controls and chapter-prep controls.
+   Keeps the visual rhythm of the pill in two clear groups. */
+.pill-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 4px;
+  flex: 0 0 auto;
+}
+
+/* Shared morph easing — slow-in / slow-out cubic for a refined feel.
+   400ms reads as a deliberate state change without dragging. */
+.pill-preload-control,
+.pill-btn.follow-along-btn {
+  --pill-morph-dur: 360ms;
+  --pill-morph-ease: cubic-bezier(0.32, 0.72, 0.24, 1);
+}
+
 .pill-preload-control {
   height: 32px;
-  padding: 0 10px;
+  padding: 0 12px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -294,16 +401,68 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  transition: all var(--dur-fast) var(--ease-out);
+  cursor: pointer;
+  transition:
+    width var(--pill-morph-dur) var(--pill-morph-ease),
+    padding var(--pill-morph-dur) var(--pill-morph-ease),
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+  overflow: hidden;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 .pill-preload-control:hover:not(:disabled) {
-  color: var(--paper);
+  color: var(--pill-fg);
   background: rgba(255, 255, 255, 0.12);
   border-color: rgba(255, 255, 255, 0.18);
 }
 .pill-preload-control:disabled {
   cursor: default;
   opacity: 0.75;
+}
+/* Prominent (paused): full chip with label visible. */
+.pill-preload-control.is-prominent {
+  width: auto;
+}
+/* Compact (playing): icon-only circle, label collapses smoothly. */
+.pill-preload-control.is-compact {
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+}
+.pill-preload-control .preload-short-label {
+  display: inline-block;
+  max-width: 80px;
+  opacity: 1;
+  white-space: nowrap;
+  transition:
+    max-width var(--pill-morph-dur) var(--pill-morph-ease),
+    opacity calc(var(--pill-morph-dur) * 0.55) var(--pill-morph-ease),
+    margin var(--pill-morph-dur) var(--pill-morph-ease);
+}
+.pill-preload-control.is-compact .preload-short-label {
+  max-width: 0;
+  opacity: 0;
+  margin-left: 0;
+  pointer-events: none;
+  /* Fade label fast at the START of the compact morph so the icon centers
+     visually before the width finishes collapsing. */
+  transition:
+    max-width var(--pill-morph-dur) var(--pill-morph-ease),
+    opacity calc(var(--pill-morph-dur) * 0.4) var(--pill-morph-ease),
+    margin var(--pill-morph-dur) var(--pill-morph-ease);
+}
+.pill-preload-control.is-compact:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+/* Icon stays put through the morph — no scale, no margin shift. */
+.pill-preload-control svg {
+  flex: 0 0 auto;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 .pill-preload-control.preload-preloading,
 .pill-preload-control.preload-verifying,
@@ -357,7 +516,7 @@
   font-weight: 400;
   font-size: 24px;
   line-height: 1.15;
-  color: var(--paper);
+  color: var(--pill-fg);
   letter-spacing: -0.005em;
 }
 .pill-expanded-head .meta .a {
@@ -376,7 +535,7 @@
   justify-content: center;
   transition: all var(--dur-fast);
 }
-.collapse-btn:hover { background: rgba(255,255,255,0.08); color: var(--paper); }
+.collapse-btn:hover { background: rgba(255,255,255,0.08); color: var(--pill-fg); }
 
 /* big waveform in expanded */
 .pill-wave-lg {
@@ -435,7 +594,7 @@
   padding: 6px 12px;
   border-radius: 999px;
   background: rgba(255,255,255,0.05);
-  color: var(--paper);
+  color: var(--pill-fg);
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.1em;
@@ -493,7 +652,7 @@
   overflow: hidden;
 }
 .teleprompter .now {
-  color: var(--paper);
+  color: var(--pill-fg);
 }
 .teleprompter .em {
   color: var(--ember-soft);
@@ -684,8 +843,12 @@
   }
 }
 
-/* Follow Along button: toggles the immersive auto-follow reading state. */
+/* Follow Along button: toggles the immersive auto-follow reading state.
+   Has two sizes: prominent (during playback — primary CTA) and compact
+   (during pause — secondary, the play-then-follow path). The transition
+   happens smoothly when isPlaying flips. */
 .pill-btn.follow-along-btn {
+  height: 32px;
   width: auto;
   padding: 0 12px;
   gap: 6px;
@@ -700,12 +863,24 @@
   border: 1px solid color-mix(in srgb, var(--ember) 38%, transparent);
   border-radius: 999px;
   cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition:
+    width var(--pill-morph-dur) var(--pill-morph-ease),
+    padding var(--pill-morph-dur) var(--pill-morph-ease),
+    gap var(--pill-morph-dur) var(--pill-morph-ease),
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out);
 }
 .pill-btn.follow-along-btn:hover,
 .pill-btn.follow-along-btn.active {
   color: var(--paper);
   background: color-mix(in srgb, var(--ember) 72%, transparent);
   border-color: color-mix(in srgb, var(--ember-soft) 74%, transparent);
+  box-shadow: 0 6px 18px -10px color-mix(in srgb, var(--ember) 80%, transparent);
 }
 .pill-btn.follow-along-btn .live-dot {
   width: 7px;
@@ -714,10 +889,47 @@
   background: currentColor;
   box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 70%, transparent);
   animation: live-dot-pulse 1.6s ease-in-out infinite;
+  flex: 0 0 auto;
 }
 .pill-btn.follow-along-btn .live-label {
   line-height: 1;
   white-space: nowrap;
+  display: inline-block;
+  max-width: 140px;
+  opacity: 1;
+  transition:
+    max-width var(--pill-morph-dur) var(--pill-morph-ease),
+    opacity calc(var(--pill-morph-dur) * 0.55) var(--pill-morph-ease);
+}
+.pill-btn.follow-along-btn.is-compact {
+  width: 32px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+}
+.pill-btn.follow-along-btn.is-compact .live-label {
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    max-width var(--pill-morph-dur) var(--pill-morph-ease),
+    opacity calc(var(--pill-morph-dur) * 0.4) var(--pill-morph-ease);
+}
+.pill-btn.follow-along-btn.is-prominent {
+  /* Slightly punchier border + subtle inner glow when this is the primary CTA. */
+  background: color-mix(in srgb, var(--ember) 18%, transparent);
+  border-color: color-mix(in srgb, var(--ember) 48%, transparent);
+}
+.pill-btn.follow-along-btn.is-prominent.active {
+  background: color-mix(in srgb, var(--ember) 76%, transparent);
+}
+/* Stub mode: rendered to hold prep-cluster width steady before the user has
+   ever pressed play. Invisible to users + assistive tech, doesn't intercept
+   clicks, but its layout space is reserved so the transport can't shift. */
+.pill-btn.follow-along-btn.is-stub {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
 }
 @keyframes live-dot-pulse {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 65%, transparent); }

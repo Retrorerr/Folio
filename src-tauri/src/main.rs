@@ -17,11 +17,11 @@ const BACKEND_PORT: u16 = 8000;
 
 struct BackendProcess(Mutex<Option<Child>>);
 
-fn backend_exe_name() -> &'static str {
+fn backend_exe_resource_path() -> &'static str {
     if cfg!(windows) {
-        "folio-backend.exe"
+        "resources/bin/folio-backend/folio-backend.exe"
     } else {
-        "folio-backend"
+        "resources/bin/folio-backend/folio-backend"
     }
 }
 
@@ -106,7 +106,7 @@ fn describe_path(path: &Path) -> String {
 }
 
 fn spawn_backend(app: &tauri::AppHandle) -> tauri::Result<Option<Child>> {
-    let backend_path = match resource_path(app, &format!("resources/bin/{}", backend_exe_name())) {
+    let backend_path = match resource_path(app, backend_exe_resource_path()) {
         Some(path) if path.exists() => path,
         _ => return Ok(None),
     };
@@ -184,11 +184,23 @@ fn main() {
         .manage(BackendProcess(Mutex::new(None)))
         .setup(|app| {
             if !cfg!(debug_assertions) {
-                if let Some(child) = spawn_backend(&app.handle())? {
-                    let log_path = app.path().app_data_dir()?.join("backend.log");
-                    wait_for_backend_logged(Duration::from_secs(2), &log_path);
-                    *app.state::<BackendProcess>().0.lock().unwrap() = Some(child);
-                }
+                let app_handle = app.handle().clone();
+                thread::spawn(move || {
+                    match spawn_backend(&app_handle) {
+                        Ok(Some(child)) => {
+                            *app_handle.state::<BackendProcess>().0.lock().unwrap() = Some(child);
+                            if let Ok(log_path) = app_handle.path().app_data_dir().map(|dir| dir.join("backend.log")) {
+                                wait_for_backend_logged(Duration::from_secs(30), &log_path);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            if let Ok(log_path) = app_handle.path().app_data_dir().map(|dir| dir.join("backend.log")) {
+                                append_log(&log_path, &format!("[tauri] Backend startup failed: {error}"));
+                            }
+                        }
+                    }
+                });
             }
             Ok(())
         })
@@ -203,6 +215,10 @@ fn main() {
                         .unwrap()
                         .take()
                     {
+                        // Give the child a moment to exit cleanly after the HTTP
+                        // shutdown request before forcing it. Without this, an
+                        // in-flight write to state JSON could be truncated.
+                        let _ = wait_for_backend_down(Duration::from_secs(3));
                         let _ = child.kill();
                     }
                 }

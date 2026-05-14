@@ -1,11 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import App from './App.jsx'
+import App from './App'
+import ErrorBoundary from './ErrorBoundary'
 
 async function setTauriWindowIcon() {
-  if (typeof window === 'undefined' || !window.__TAURI_INTERNALS__) return
-
   try {
     const [{ getCurrentWindow }, { Image }] = await Promise.all([
       import('@tauri-apps/api/window'),
@@ -22,8 +21,16 @@ async function setTauriWindowIcon() {
 
 setTauriWindowIcon()
 
-createRoot(document.getElementById('root')).render(
+const root = document.getElementById('root')
+
+if (!root) {
+  throw new Error('Folio root element was not found')
+}
+
+createRoot(root).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 )

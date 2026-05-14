@@ -1,4 +1,5 @@
 import glob
+import gc
 import hashlib
 import math
 import os
@@ -18,9 +19,31 @@ _site_packages = os.path.join(
     f"Python{sys.version_info.major}{sys.version_info.minor}",
     "site-packages",
 )
-for _nvidia_bin in glob.glob(os.path.join(_site_packages, "nvidia", "*", "bin")):
-    if _nvidia_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = _nvidia_bin + os.pathsep + os.environ.get("PATH", "")
+_site_package_candidates = [
+    os.path.join(sys.prefix, "Lib", "site-packages"),
+    _site_packages,
+]
+_dll_dir_handles = []
+
+
+def _add_runtime_path(path: str) -> None:
+    if not os.path.isdir(path):
+        return
+    path = os.path.abspath(path)
+    current = os.environ.get("PATH", "")
+    if path.lower() not in {p.lower() for p in current.split(os.pathsep) if p}:
+        os.environ["PATH"] = path + os.pathsep + current
+    if hasattr(os, "add_dll_directory"):
+        try:
+            _dll_dir_handles.append(os.add_dll_directory(path))
+        except OSError:
+            pass
+
+
+for _candidate in _site_package_candidates:
+    for _nvidia_bin in glob.glob(os.path.join(_candidate, "nvidia", "*", "bin")):
+        _add_runtime_path(_nvidia_bin)
+    _add_runtime_path(os.path.join(_candidate, "torch", "lib"))
 
 import onnxruntime as ort
 from kokoro_onnx import Kokoro
@@ -34,6 +57,7 @@ except Exception:
 
 SAMPLE_RATE = 24000
 CACHE_DIR = str(AUDIO_CACHE_DIR)
+os.makedirs(CACHE_DIR, exist_ok=True)
 DEFAULT_VOICE = "af_heart"
 DEFAULT_SPEED = 0.95
 MIN_SPEED = 0.75
@@ -61,6 +85,7 @@ _model_loading: bool = False
 _selected_provider: str | None = None
 _selected_model_path: str | None = None
 _selected_model_identity: dict | None = None
+_selected_cuda_mem_limit_mb: int | None = None
 _gpu_smoke_passed: bool | None = None
 _gpu_smoke_error: str | None = None
 _cpu_fallback_used: bool = False
@@ -75,6 +100,69 @@ _inflight: dict[str, threading.Event] = {}
 _inflight_errors: dict[str, Exception] = {}
 _cache_lock = threading.Lock()
 _identity_cache: dict[tuple[str, int, int], dict] = {}
+
+
+def _install_kokoro_espeak_compat() -> None:
+    """Bridge kokoro-onnx 0.4.x to newer phonemizer wrappers on Windows."""
+    try:
+        from phonemizer.backend.espeak import wrapper as espeak_wrapper
+    except Exception:
+        return
+
+    if hasattr(espeak_wrapper.EspeakWrapper, "set_data_path"):
+        return
+
+    def set_data_path(cls, data_path):
+        cls._folio_espeak_data_path = str(data_path) if data_path else None
+
+    original_init = espeak_wrapper.EspeakAPI.__init__
+
+    if getattr(original_init, "_folio_data_path_patch", False):
+        espeak_wrapper.EspeakWrapper.set_data_path = classmethod(set_data_path)
+        return
+
+    def init_with_data_path(self, library):
+        import atexit
+        import ctypes
+        import pathlib
+        import shutil
+        import tempfile
+        import weakref
+
+        self._library = None
+        try:
+            espeak = ctypes.cdll.LoadLibrary(str(library))
+            library_path = self._shared_library_path(espeak)
+            del espeak
+        except OSError as error:
+            raise RuntimeError(f"failed to load espeak library: {str(error)}") from None
+
+        self._tempdir = tempfile.mkdtemp()
+        if sys.platform == "win32":
+            atexit.register(self._delete_win32)
+        else:
+            weakref.finalize(self, self._delete, self._library, self._tempdir)
+
+        espeak_copy = pathlib.Path(self._tempdir) / library_path.name
+        shutil.copy(library_path, espeak_copy, follow_symlinks=False)
+
+        self._library = ctypes.cdll.LoadLibrary(str(espeak_copy))
+        data_path = getattr(espeak_wrapper.EspeakWrapper, "_folio_espeak_data_path", None)
+        data_arg = os.fsencode(data_path) if data_path else None
+        try:
+            if self._library.espeak_Initialize(0x02, 0, data_arg, 0) <= 0:
+                raise RuntimeError("failed to initialize espeak shared library")
+        except AttributeError:
+            raise RuntimeError("failed to load espeak library") from None
+
+        self._library_path = library_path
+
+    init_with_data_path._folio_data_path_patch = True
+    espeak_wrapper.EspeakWrapper.set_data_path = classmethod(set_data_path)
+    espeak_wrapper.EspeakAPI.__init__ = init_with_data_path
+
+
+_install_kokoro_espeak_compat()
 
 
 def is_model_loaded() -> bool:
@@ -202,9 +290,55 @@ def _select_int8_fallback_model() -> str | None:
     return path if _valid_file(path) else None
 
 
-def _make_session(model_path: str, provider: str):
+def _cache_provider_candidate() -> str:
+    requested_provider = _requested_provider()
+    if requested_provider == "cpu":
+        return "CPUExecutionProvider"
+
+    try:
+        providers = set(ort.get_available_providers())
+    except Exception:
+        providers = set()
+
+    if requested_provider in {"auto", "cuda"} and "CUDAExecutionProvider" in providers:
+        return "CUDAExecutionProvider"
+    return "CPUExecutionProvider"
+
+
+def _cache_model_candidate() -> str | None:
+    return _select_quality_model() or _select_int8_fallback_model()
+
+
+def _cuda_mem_limit_candidates() -> list[int]:
+    raw = os.environ.get("KOKORO_CUDA_MEM_LIMIT_MB", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"Invalid KOKORO_CUDA_MEM_LIMIT_MB={raw!r}; using adaptive CUDA limits")
+        else:
+            return [value]
+
+    # Try the smallest practical arenas first and grow only if smoke inference
+    # proves the model needs more. This avoids the old always-1536MB cap forcing
+    # CPU fallback while still not reserving a giant CUDA arena by default.
+    return [2048, 2560, 3072, 3584, 4096]
+
+
+def _cleanup_failed_cuda_attempt() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _make_session(model_path: str, provider: str, cuda_mem_limit_mb: int | None = None):
     if provider == "CUDAExecutionProvider":
-        mem_limit_mb = int(os.environ.get("KOKORO_CUDA_MEM_LIMIT_MB", "4096"))
+        mem_limit_mb = cuda_mem_limit_mb or _cuda_mem_limit_candidates()[0]
         providers = [
             (
                 "CUDAExecutionProvider",
@@ -236,9 +370,28 @@ def _smoke_inference(kokoro: Kokoro) -> tuple[int, int]:
     return len(samples), sample_rate
 
 
-def _load_with_provider(model_path: str, provider: str) -> Kokoro:
-    session = _make_session(model_path, provider)
+def _load_with_provider(model_path: str, provider: str, cuda_mem_limit_mb: int | None = None) -> Kokoro:
+    session = _make_session(model_path, provider, cuda_mem_limit_mb)
     return Kokoro.from_session(session, voices_path())
+
+
+def _load_cuda_with_adaptive_limit(model_path: str) -> tuple[Kokoro, int]:
+    errors = []
+    for mem_limit_mb in _cuda_mem_limit_candidates():
+        try:
+            print(f"Kokoro CUDA smoke attempt with gpu_mem_limit={mem_limit_mb}MB")
+            kokoro = _load_with_provider(model_path, "CUDAExecutionProvider", mem_limit_mb)
+            _smoke_inference(kokoro)
+            return kokoro, mem_limit_mb
+        except Exception as exc:
+            errors.append(f"{mem_limit_mb}MB: {exc}")
+            print(f"Kokoro CUDA smoke failed at gpu_mem_limit={mem_limit_mb}MB: {exc}")
+            try:
+                kokoro = None  # noqa: F841
+            except Exception:
+                pass
+            _cleanup_failed_cuda_attempt()
+    raise RuntimeError("CUDA smoke failed for all memory limits: " + " | ".join(errors))
 
 
 def _set_selected_runtime(
@@ -248,9 +401,10 @@ def _set_selected_runtime(
     *,
     gpu_enabled: bool,
     int8_fallback: bool,
+    cuda_mem_limit_mb: int | None = None,
 ) -> Kokoro:
     global _kokoro, _gpu_enabled, _selected_provider, _selected_model_path
-    global _selected_model_identity, _int8_fallback_used
+    global _selected_model_identity, _int8_fallback_used, _selected_cuda_mem_limit_mb
 
     _kokoro = kokoro
     _gpu_enabled = gpu_enabled
@@ -258,12 +412,15 @@ def _set_selected_runtime(
     _selected_model_path = model_path
     _selected_model_identity = model_file_identity(model_path)
     _int8_fallback_used = int8_fallback
+    _selected_cuda_mem_limit_mb = cuda_mem_limit_mb if provider == "CUDAExecutionProvider" else None
     return kokoro
 
 
 def _log_selected_runtime() -> None:
     print(f"Kokoro TTS selected model file: {os.path.basename(_selected_model_path) if _selected_model_path else None}")
     print(f"Kokoro TTS selected provider: {_selected_provider}")
+    if _selected_cuda_mem_limit_mb is not None:
+        print(f"Kokoro TTS CUDA memory limit: {_selected_cuda_mem_limit_mb}MB")
     print(f"Kokoro TTS GPU smoke test passed: {_gpu_smoke_passed}")
     if _gpu_smoke_error:
         print(f"Kokoro TTS GPU smoke test failure: {_gpu_smoke_error}")
@@ -292,6 +449,7 @@ def get_runtime_info() -> dict:
         "available_providers": ort.get_available_providers(),
         "requested_provider": _requested_provider(),
         "selected_provider": _selected_provider,
+        "selected_cuda_mem_limit_mb": _selected_cuda_mem_limit_mb,
         "selected_model": os.path.basename(_selected_model_path) if _selected_model_path else None,
         "selected_model_path": _selected_model_path,
         "selected_model_identity": identity,
@@ -358,8 +516,7 @@ def _load_kokoro_locked() -> Kokoro:
         if quality_model:
             if requested_provider in {"auto", "cuda"} and "CUDAExecutionProvider" in providers:
                 try:
-                    gpu_kokoro = _load_with_provider(quality_model, "CUDAExecutionProvider")
-                    _smoke_inference(gpu_kokoro)
+                    gpu_kokoro, cuda_mem_limit_mb = _load_cuda_with_adaptive_limit(quality_model)
                     _gpu_smoke_passed = True
                     _cpu_smoke_passed = None
                     _set_selected_runtime(
@@ -368,6 +525,7 @@ def _load_kokoro_locked() -> Kokoro:
                         "CUDAExecutionProvider",
                         gpu_enabled=True,
                         int8_fallback=False,
+                        cuda_mem_limit_mb=cuda_mem_limit_mb,
                     )
                     _log_selected_runtime()
                     return _kokoro
@@ -431,6 +589,7 @@ def _switch_to_cpu_runtime(reason: Exception) -> Kokoro:
     global _kokoro, _gpu_enabled, _selected_provider, _selected_model_path
     global _selected_model_identity, _cpu_fallback_used, _cpu_smoke_passed
     global _gpu_smoke_error, _last_load_error, _int8_fallback_used
+    global _selected_cuda_mem_limit_mb
 
     model_path = _select_quality_model()
     if not model_path:
@@ -442,6 +601,7 @@ def _switch_to_cpu_runtime(reason: Exception) -> Kokoro:
     _selected_provider = None
     _selected_model_path = None
     _selected_model_identity = None
+    _selected_cuda_mem_limit_mb = None
     _cpu_fallback_used = True
     _gpu_smoke_error = str(reason)
     _last_load_error = str(reason)
@@ -470,6 +630,7 @@ def unload_model() -> bool:
     global _kokoro, _gpu_enabled, _selected_provider, _selected_model_path
     global _selected_model_identity, _gpu_smoke_passed, _gpu_smoke_error
     global _cpu_fallback_used, _cpu_smoke_passed, _int8_fallback_used
+    global _selected_cuda_mem_limit_mb
     if _kokoro is None:
         return False
     try:
@@ -478,6 +639,7 @@ def unload_model() -> bool:
         _selected_provider = None
         _selected_model_path = None
         _selected_model_identity = None
+        _selected_cuda_mem_limit_mb = None
         _gpu_smoke_passed = None
         _gpu_smoke_error = None
         _cpu_fallback_used = False
@@ -520,16 +682,25 @@ def lang_for_voice(voice: str) -> str:
 
 
 def _cache_runtime_identity() -> tuple[str, int, str, str]:
-    if _selected_model_path is None or _selected_provider is None:
-        get_kokoro()
-    if _selected_model_path is None or _selected_provider is None:
-        raise RuntimeError("Kokoro runtime identity is unavailable")
-    identity = _selected_model_identity or model_file_identity(_selected_model_path)
+    model_path = _selected_model_path or _cache_model_candidate()
+    provider = _selected_provider or _cache_provider_candidate()
+    if model_path and os.path.exists(model_path):
+        identity = (
+            _selected_model_identity
+            if _selected_model_path == model_path and _selected_model_identity
+            else model_file_identity(model_path)
+        )
+    else:
+        identity = {
+            "filename": os.path.basename(quality_model_path()),
+            "size_bytes": 0,
+            "sha256_partial": "missing",
+        }
     return (
         identity["filename"],
         int(identity["size_bytes"]),
         identity["sha256_partial"],
-        _selected_provider,
+        provider,
     )
 
 
@@ -555,6 +726,35 @@ def _cache_key(text: str, voice: str, speed: float) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _cached_duration_ms(filepath: str) -> float | None:
+    if not os.path.exists(filepath):
+        return None
+    try:
+        info = sf.info(filepath)
+        if info.frames <= 0 or info.samplerate <= 0:
+            raise RuntimeError("Cached audio has no samples")
+        return info.frames / info.samplerate * 1000
+    except Exception:
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+        return None
+
+
+def _write_wav_atomic(filepath: str, samples, sample_rate: int) -> None:
+    tmp = f"{filepath}.tmp.{os.getpid()}.{threading.get_ident()}"
+    try:
+        sf.write(tmp, samples, sample_rate, format="WAV")
+        os.replace(tmp, filepath)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def generate_sentence_audio(
     text: str,
     voice: str = "af_heart",
@@ -563,11 +763,8 @@ def generate_sentence_audio(
 ) -> tuple[str, float]:
     """Generate audio for a sentence. Returns (filename, duration_ms).
     Caches to disk so repeated reads are instant."""
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
     voice = normalize_voice(voice)
     speed = validate_speed(speed)
-    kokoro = get_kokoro()
 
     def cached_path() -> tuple[str, str]:
         cache_key = _cache_key(text, voice, speed)
@@ -577,9 +774,8 @@ def generate_sentence_audio(
     filename, filepath = cached_path()
     inflight_path = filepath
 
-    if os.path.exists(filepath):
-        info = sf.info(filepath)
-        duration_ms = info.frames / info.samplerate * 1000
+    duration_ms = _cached_duration_ms(filepath)
+    if duration_ms is not None:
         return filename, duration_ms
 
     should_generate = False
@@ -592,20 +788,27 @@ def generate_sentence_audio(
 
     if not should_generate:
         event.wait()
-        if os.path.exists(filepath):
-            info = sf.info(filepath)
-            duration_ms = info.frames / info.samplerate * 1000
+        duration_ms = _cached_duration_ms(filepath)
+        if duration_ms is not None:
             return filename, duration_ms
-        err = _inflight_errors.pop(filepath, RuntimeError("Audio generation failed"))
+        filename, filepath = cached_path()
+        duration_ms = _cached_duration_ms(filepath)
+        if duration_ms is not None:
+            return filename, duration_ms
+        err = _inflight_errors.pop(inflight_path, RuntimeError("Audio generation failed"))
         raise err
 
     try:
         with _generation_slots:
-            if os.path.exists(filepath):
-                info = sf.info(filepath)
-                duration_ms = info.frames / info.samplerate * 1000
+            duration_ms = _cached_duration_ms(filepath)
+            if duration_ms is not None:
                 result = (filename, duration_ms)
             else:
+                kokoro = get_kokoro()
+                filename, filepath = cached_path()
+                duration_ms = _cached_duration_ms(filepath)
+                if duration_ms is not None:
+                    return filename, duration_ms
                 try:
                     samples, sr = kokoro.create(text, voice=voice, speed=speed, lang=lang_for_voice(voice))
                 except Exception as exc:
@@ -613,15 +816,15 @@ def generate_sentence_audio(
                         raise
                     with _model_lock:
                         kokoro = _switch_to_cpu_runtime(exc)
-                    if os.path.exists(filepath):
-                        info = sf.info(filepath)
-                        duration_ms = info.frames / info.samplerate * 1000
+                    filename, filepath = cached_path()
+                    duration_ms = _cached_duration_ms(filepath)
+                    if duration_ms is not None:
                         result = (filename, duration_ms)
                         return result
                     samples, sr = kokoro.create(text, voice=voice, speed=speed, lang=lang_for_voice(voice))
                 if sr != SAMPLE_RATE:
                     print(f"Kokoro TTS sample rate differs from expected {SAMPLE_RATE}: {sr}")
-                sf.write(filepath, samples, sr)
+                _write_wav_atomic(filepath, samples, sr)
                 duration_ms = len(samples) / sr * 1000
                 result = (filename, duration_ms)
             return result

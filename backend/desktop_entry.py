@@ -9,6 +9,9 @@ import sys
 
 import uvicorn
 
+os.environ.setdefault("USE_TORCH", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TORCH", "1")
+
 
 def configure_logging() -> logging.Logger:
     logging.basicConfig(

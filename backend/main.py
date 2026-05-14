@@ -3,19 +3,30 @@ import os
 import re
 import signal
 import logging
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, HTMLResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
-import pdf_service
+try:
+    import orjson  # noqa: F401
+    from fastapi.responses import ORJSONResponse as _DefaultResponse
+except ImportError:
+    _DefaultResponse = None
+
 import reflow_service
+import cover_service
+import chatterbox_service
 import tts_service
-from models import BookState, Position, Bookmark
+import psutil
+from models import BookState, Position, Bookmark, PageText, SentenceInfo
 from paths import AUDIO_CACHE_DIR, DATA_DIR, FRONTEND_DIR, MODELS_DIR, UPLOAD_DIR
 from tts_queue import TTSQueue
 
@@ -28,8 +39,179 @@ MODELS_DIR = str(MODELS_DIR)
 logger = logging.getLogger(__name__)
 
 BOOKS: dict[str, dict] = {}
-TTS_MANAGER = TTSQueue(worker_count=3)  # 3 parallel workers; priority still orders closest-to-reader first
+TTS_MANAGER = TTSQueue(worker_count=3)
 SEARCH_INDEXES: dict[str, dict] = {}
+DEFAULT_TTS_ENGINE = "kokoro"
+_active_tts_engine: str | None = None
+_tts_engine_runtime_lock = threading.RLock()
+_original_kokoro_provider_env = os.environ.get(tts_service.PROVIDER_ENV)
+_kokoro_provider_pinned_for_inactive_engine = False
+
+_recent_books_cache: list[dict] | None = None
+_recent_books_cache_time: float = 0.0
+_RECENT_CACHE_TTL = 2.0
+
+_save_debounce_timers: dict[str, threading.Timer] = {}
+_save_debounce_lock = threading.Lock()
+
+_page_text_epub_cache: dict[str, dict] = {}
+_PAGE_TEXT_EPUB_CACHE_LIMIT = 128
+_hardware_cache: dict | None = None
+_hardware_cache_time: float = 0.0
+_HARDWARE_CACHE_TTL = 3.0
+
+
+def _cover_url(book_id: str) -> str:
+    return f"/api/book/{book_id}/cover"
+
+
+def _ensure_book_cover(filepath: str, book_id: str):
+    result = cover_service.ensure_cover_thumbnail(filepath, book_id, DATA_DIR)
+    if result is None:
+        return None, "default-fallback"
+    source = result.source
+    return _cover_url(book_id), source
+
+
+def _system_metrics() -> dict:
+    vm = psutil.virtual_memory()
+    gpu = _gpu_metrics()
+    return {
+        "ram": {
+            "used_bytes": int(vm.used),
+            "total_bytes": int(vm.total),
+            "percent": float(vm.percent),
+        },
+        "gpu": gpu,
+    }
+
+
+def _gpu_metrics() -> dict | None:
+    global _hardware_cache, _hardware_cache_time
+    now = time.monotonic()
+    if _hardware_cache_time and now - _hardware_cache_time < _HARDWARE_CACHE_TTL:
+        return _hardware_cache
+
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        _hardware_cache = None
+        _hardware_cache_time = now
+        return None
+
+    try:
+        proc = subprocess.run(
+            [
+                nvidia_smi,
+                "--query-gpu=name,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=True,
+        )
+        line = proc.stdout.strip().splitlines()[0]
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            raise ValueError(f"Unexpected nvidia-smi output: {line!r}")
+        _hardware_cache = {
+            "name": parts[0],
+            "vram_used_mb": int(float(parts[1])),
+            "vram_total_mb": int(float(parts[2])),
+        }
+    except Exception as exc:
+        logger.info("GPU metrics unavailable via nvidia-smi: %s", exc)
+        _hardware_cache = None
+    _hardware_cache_time = now
+    return _hardware_cache
+
+
+def _normalize_tts_engine(engine: str | None) -> str:
+    value = (engine or DEFAULT_TTS_ENGINE).strip().lower()
+    if value in {
+        "chatterbox",
+        "chatterbox-turbo",
+        "chatterbox_turbo",
+        "vibevoice",  # legacy alias — migrates persisted state to Chatterbox
+        "vibe-voice",
+        "vibe_voice",
+    }:
+        return chatterbox_service.ENGINE_ID
+    return DEFAULT_TTS_ENGINE
+
+
+def _normalize_voice_for_engine(engine: str, voice: str | None) -> str:
+    engine = _normalize_tts_engine(engine)
+    if engine == chatterbox_service.ENGINE_ID:
+        return chatterbox_service.normalize_voice(voice)
+    return tts_service.normalize_voice(voice)
+
+
+def _set_kokoro_provider_for_active_engine(engine: str) -> None:
+    """Avoid incidental Kokoro CUDA loads, but restore CUDA when Kokoro is active."""
+    global _kokoro_provider_pinned_for_inactive_engine
+    engine = _normalize_tts_engine(engine)
+    if engine == chatterbox_service.ENGINE_ID:
+        if _original_kokoro_provider_env is None:
+            os.environ[tts_service.PROVIDER_ENV] = "cpu"
+            _kokoro_provider_pinned_for_inactive_engine = True
+        return
+
+    if _kokoro_provider_pinned_for_inactive_engine:
+        if _original_kokoro_provider_env is None:
+            os.environ.pop(tts_service.PROVIDER_ENV, None)
+        else:
+            os.environ[tts_service.PROVIDER_ENV] = _original_kokoro_provider_env
+        _kokoro_provider_pinned_for_inactive_engine = False
+
+
+def _activate_tts_engine(engine: str) -> None:
+    """Keep only the selected local TTS engine resident on the GPU."""
+    global _active_tts_engine
+    engine = _normalize_tts_engine(engine)
+    with _tts_engine_runtime_lock:
+        # Always evict the inactive engine — even when the active flag matches —
+        # so a stray load (e.g. a cache-key computation that called get_kokoro
+        # under the hood) doesn't leave a multi-GB arena resident forever.
+        if engine == chatterbox_service.ENGINE_ID:
+            if tts_service.is_model_loaded():
+                tts_service.unload_model()
+        else:
+            if chatterbox_service.is_model_loaded():
+                chatterbox_service.unload_model()
+        _set_kokoro_provider_for_active_engine(engine)
+        if _active_tts_engine == engine:
+            return
+        _active_tts_engine = engine
+        try:
+            _save_global_settings({"tts_engine": engine})
+        except Exception:
+            logger.exception("Failed to persist tts_engine=%s", engine)
+        _preload_engine_in_background(engine)
+
+
+def _preload_engine_in_background(engine: str) -> None:
+    """Kick off a daemon thread that loads the engine's model into memory.
+    Safe to call repeatedly — both engines guard against duplicate loads."""
+    engine = _normalize_tts_engine(engine)
+
+    def _run():
+        try:
+            with _tts_engine_runtime_lock:
+                if engine == chatterbox_service.ENGINE_ID:
+                    if not chatterbox_service.is_model_loaded() and not chatterbox_service.is_model_loading():
+                        chatterbox_service.get_model()
+                    if _active_tts_engine != chatterbox_service.ENGINE_ID and chatterbox_service.is_model_loaded():
+                        chatterbox_service.unload_model()
+                else:
+                    if not tts_service.is_model_loaded() and not tts_service.is_model_loading():
+                        tts_service.get_kokoro()
+                    if _active_tts_engine != DEFAULT_TTS_ENGINE and tts_service.is_model_loaded():
+                        tts_service.unload_model()
+        except Exception:
+            logger.exception("Background TTS preload failed for engine=%s", engine)
+
+    threading.Thread(target=_run, name=f"tts-preload-{engine}", daemon=True).start()
 
 
 def _state_path(book_id: str) -> str:
@@ -42,8 +224,28 @@ def _read_text_lenient(path) -> str:
     strict decoding when title/filepath contains a smart quote or em-dash. New
     writes always use utf-8 (see _atomic_write_text); the cp1252 fallback is
     backwards-compat only — a one-shot save will rewrite the file as utf-8."""
+    # Sniff the first few bytes for a BOM and pick the matching codec. Without
+    # this, an editor that saves UTF-16 (Notepad's "Unicode" / "Unicode big
+    # endian") would fail utf-8 decode and then fall through to cp1252, which
+    # silently produces garbage instead of raising.
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        head = b""
+    if head.startswith(b"\xff\xfe\x00\x00"):
+        with open(path, encoding="utf-32") as f:
+            return f.read()
+    if head.startswith(b"\x00\x00\xfe\xff"):
+        with open(path, encoding="utf-32") as f:
+            return f.read()
+    if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
+        with open(path, encoding="utf-16") as f:
+            return f.read()
+    try:
+        # utf-8-sig transparently strips a UTF-8 BOM if present (some editors
+        # add one when manually saving JSON), and behaves like utf-8 otherwise.
+        with open(path, encoding="utf-8-sig") as f:
             return f.read()
     except UnicodeDecodeError:
         with open(path, encoding="cp1252") as f:
@@ -55,15 +257,29 @@ def _atomic_write_text(path: str, text: str):
     so a crash mid-write can't leave a half-written / corrupt file."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    tmp_path = f"{path}.tmp.{os.getpid()}"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
         try:
-            os.fsync(f.fileno())
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
         except OSError:
             pass
-    os.replace(tmp_path, path)
 
 
 _settings_lock = threading.Lock()
@@ -73,6 +289,35 @@ def _save_state(book_id: str):
     if book_id in BOOKS:
         state = BOOKS[book_id]["state"]
         _atomic_write_text(_state_path(book_id), state.model_dump_json(indent=2))
+    _invalidate_recent_cache()
+
+
+def _save_state_debounced(book_id: str, delay: float = 0.5):
+    def save_and_forget():
+        try:
+            _save_state(book_id)
+        finally:
+            with _save_debounce_lock:
+                current = _save_debounce_timers.get(book_id)
+                if current is threading.current_thread():
+                    _save_debounce_timers.pop(book_id, None)
+
+    with _save_debounce_lock:
+        existing = _save_debounce_timers.pop(book_id, None)
+        if existing:
+            existing.cancel()
+        timer = threading.Timer(delay, save_and_forget)
+        timer.daemon = True
+        _save_debounce_timers[book_id] = timer
+        timer.start()
+
+
+def _flush_debounced_saves():
+    with _save_debounce_lock:
+        for book_id, timer in list(_save_debounce_timers.items()):
+            timer.cancel()
+            _save_state(book_id)
+        _save_debounce_timers.clear()
 
 
 def _load_state(book_id: str) -> BookState | None:
@@ -117,7 +362,18 @@ def _resolve_filepath(filepath: str) -> str:
     return filepath
 
 
+def _invalidate_recent_cache():
+    global _recent_books_cache, _recent_books_cache_time
+    _recent_books_cache = None
+    _recent_books_cache_time = 0.0
+
+
 def _load_recent_books() -> list[dict]:
+    global _recent_books_cache, _recent_books_cache_time
+    now = time.monotonic()
+    if _recent_books_cache is not None and now - _recent_books_cache_time < _RECENT_CACHE_TTL:
+        return _recent_books_cache
+
     os.makedirs(DATA_DIR, exist_ok=True)
     recent = []
     for f in sorted(Path(DATA_DIR).glob("*.json"), key=os.path.getmtime, reverse=True):
@@ -140,17 +396,27 @@ def _load_recent_books() -> list[dict]:
                 continue
             state = BookState.model_validate_json(text)
             resolved = _resolve_filepath(state.filepath)
+            if os.path.splitext(resolved)[1].lower() != ".epub":
+                continue
+            cover_url, cover_source = (None, "default-fallback")
+            if os.path.exists(resolved):
+                cover_url, cover_source = _ensure_book_cover(resolved, state.id)
             recent.append({
                 "id": state.id,
                 "title": state.title,
                 "author": state.author,
                 "filepath": resolved,
                 "page_count": state.page_count,
+                "format": "epub",
+                "cover_url": cover_url,
+                "cover_source": cover_source,
                 "last_position": state.last_position.model_dump(),
                 "exists": os.path.exists(resolved),
             })
         except Exception:
             logger.exception("Failed to load recent book state from %s", f)
+    _recent_books_cache = recent
+    _recent_books_cache_time = time.monotonic()
     return recent
 
 
@@ -158,12 +424,9 @@ def _close_book_entry(book_id: str):
     entry = BOOKS.pop(book_id, None)
     if not entry:
         return
-    doc = entry.get("doc")
-    if doc is not None:
-        try:
-            doc.close()
-        except Exception:
-            logger.exception("Failed to close PDF document for book %s", book_id)
+    keys_to_remove = [k for k in _page_text_epub_cache if k.startswith(f"{book_id}:")]
+    for k in keys_to_remove:
+        del _page_text_epub_cache[k]
 
 
 def _invalidate_search_index(book_id: str):
@@ -204,45 +467,26 @@ def _build_search_index(book_id: str) -> dict:
     state = entry["state"]
     rows: list[dict] = []
 
-    if state.format == "epub":
-        reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
-        for chapter_idx, chapter in enumerate(reflow.get("chapters", [])):
-            sentence_idx = 0
-            chapter_title = chapter.get("title") or f"Chapter {chapter_idx + 1}"
-            for block in chapter.get("blocks", []):
-                if block.get("type") != "paragraph":
-                    continue
-                for sentence in block.get("sentences", []):
-                    text = re.sub(r"\s+", " ", sentence.get("text", "")).strip()
-                    if not text:
-                        continue
-                    rows.append({
-                        "page": chapter_idx,
-                        "sentence_idx": sentence_idx,
-                        "global_sentence_idx": sentence.get("idx"),
-                        "location_label": chapter_title,
-                        "text": text,
-                        "normalized_text": _normalize_search_text(text),
-                    })
-                    sentence_idx += 1
-    else:
-        doc = entry["doc"]
-        if doc is None:
-            raise HTTPException(400, "Book not loaded")
-        for page_num in range(len(doc)):
-            page_text = pdf_service.extract_page_text(doc, page_num)
-            for sentence_idx, sentence in enumerate(page_text.sentences):
-                text = re.sub(r"\s+", " ", sentence.text).strip()
+    reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
+    for chapter_idx, chapter in enumerate(reflow.get("chapters", [])):
+        sentence_idx = 0
+        chapter_title = chapter.get("title") or f"Chapter {chapter_idx + 1}"
+        for block in chapter.get("blocks", []):
+            if block.get("type") != "paragraph":
+                continue
+            for sentence in block.get("sentences", []):
+                text = re.sub(r"\s+", " ", sentence.get("text", "")).strip()
                 if not text:
                     continue
                 rows.append({
-                    "page": page_num,
+                    "page": chapter_idx,
                     "sentence_idx": sentence_idx,
-                    "global_sentence_idx": None,
-                    "location_label": f"Page {page_num + 1}",
+                    "global_sentence_idx": sentence.get("idx"),
+                    "location_label": chapter_title,
                     "text": text,
                     "normalized_text": _normalize_search_text(text),
                 })
+                sentence_idx += 1
 
     index = {
         "book_id": book_id,
@@ -278,10 +522,33 @@ async def lifespan(app: FastAPI):
     logger.info("Expected voices file exists: %s", os.path.exists(os.path.join(MODELS_DIR, tts_service.VOICES_FILENAME)))
     logger.info("Expected frontend index exists: %s", os.path.exists(os.path.join(FRONTEND_DIR, "index.html")))
     tts_service.log_runtime_environment()
+    chatterbox_service.log_runtime_environment()
+
+    # Start loading whichever engine the user last selected, in the background
+    # so the API binds quickly. Switching engines later unloads the previous
+    # model (one resident at a time).
+    #
+    # Chatterbox is safe to eagerly preload now that we have the memory-pressure
+    # guard (chatterbox_service._check_memory_available) and the sticky failure
+    # flag (chatterbox_service._load_failed_permanently) — a low-RAM machine
+    # gets a clean error surfaced in the Pill instead of an OOM crash, and a
+    # broken load can't cascade-retry into a memory blow-up.
+    saved_engine = _normalize_tts_engine(_load_global_settings().get("tts_engine"))
+    global _active_tts_engine
+    _active_tts_engine = saved_engine
+    # If the saved engine isn't Kokoro, prevent incidental Kokoro CUDA init
+    # from grabbing VRAM for an arena that nothing will use. When Kokoro later
+    # becomes active, restore the user's provider setting so it can use CUDA.
+    _set_kokoro_provider_for_active_engine(saved_engine)
+    if saved_engine != "kokoro" and _kokoro_provider_pinned_for_inactive_engine:
+        logger.info("Saved engine is %s; pinning %s=cpu so incidental Kokoro "
+                    "sessions won't reserve CUDA VRAM.", saved_engine, tts_service.PROVIDER_ENV)
+    logger.info("Auto-loading TTS engine at startup: %s", saved_engine)
+    _preload_engine_in_background(saved_engine)
+
     yield
     logger.info("FastAPI lifespan shutting down; open books=%s", list(BOOKS.keys()))
-    # Always close the doc even if the state-save fails — otherwise a partial
-    # disk error would leak a fitz.Document on shutdown.
+    _flush_debounced_saves()
     for book_id in list(BOOKS):
         try:
             _save_state(book_id)
@@ -290,7 +557,10 @@ async def lifespan(app: FastAPI):
         _close_book_entry(book_id)
 
 
-app = FastAPI(title="Kokoro Audiobook Reader", lifespan=lifespan)
+_app_kwargs = {"title": "Kokoro Audiobook Reader", "lifespan": lifespan}
+if _DefaultResponse is not None:
+    _app_kwargs["default_response_class"] = _DefaultResponse
+app = FastAPI(**_app_kwargs)
 # Local-only desktop app — restrict CORS to the dev/preview origin and the
 # bundled frontend. Allowing "*" lets any visited webpage in the user's browser
 # hit our local API and read arbitrary files via /api/book/open?filepath=…
@@ -306,26 +576,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+_QUIET_PATHS = frozenset({"/api/status", "/api/recent", "/api/settings"})
 
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    path = request.url.path
+    quiet = path in _QUIET_PATHS or path.startswith("/api/audio/")
     started = time.perf_counter()
-    logger.info("HTTP request start method=%s path=%s query=%s", request.method, request.url.path, request.url.query)
+    if not quiet:
+        logger.info("HTTP request start method=%s path=%s query=%s", request.method, path, request.url.query)
     try:
         response = await call_next(request)
     except Exception:
         elapsed_ms = (time.perf_counter() - started) * 1000
-        logger.exception("HTTP request failed method=%s path=%s elapsed_ms=%.1f", request.method, request.url.path, elapsed_ms)
+        logger.exception("HTTP request failed method=%s path=%s elapsed_ms=%.1f", request.method, path, elapsed_ms)
         raise
     elapsed_ms = (time.perf_counter() - started) * 1000
-    logger.info(
-        "HTTP request end method=%s path=%s status=%s elapsed_ms=%.1f",
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed_ms,
-    )
+    if not quiet or response.status_code >= 400:
+        logger.info(
+            "HTTP request end method=%s path=%s status=%s elapsed_ms=%.1f",
+            request.method,
+            path,
+            response.status_code,
+            elapsed_ms,
+        )
     return response
 
 
@@ -333,18 +611,35 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/api/status")
 def get_status():
+    kokoro_loaded = tts_service.is_model_loaded()
+    chatterbox_loaded = chatterbox_service.is_model_loaded()
+    kokoro_loading = tts_service.is_model_loading()
+    chatterbox_loading = chatterbox_service.is_model_loading()
+    active_engine = _active_tts_engine or (chatterbox_service.ENGINE_ID if chatterbox_loaded else DEFAULT_TTS_ENGINE)
+    active_voices = (
+        len(chatterbox_service.get_available_voices())
+        if active_engine == chatterbox_service.ENGINE_ID
+        else (len(tts_service.get_available_voices()) if kokoro_loaded else 0)
+    )
     return {
-        "gpu": tts_service.is_gpu_enabled(),
-        "voices": len(tts_service.get_available_voices()) if tts_service.is_model_loaded() else 0,
-        "model_loaded": tts_service.is_model_loaded(),
-        "model_loading": tts_service.is_model_loading(),
+        "gpu": tts_service.is_gpu_enabled() or chatterbox_service.is_gpu_enabled(),
+        "voices": active_voices,
+        "model_loaded": kokoro_loaded or chatterbox_loaded,
+        "model_loading": kokoro_loading or chatterbox_loading,
+        "active_tts_engine": active_engine,
         "tts_runtime": tts_service.get_runtime_info(),
+        "tts_engines": {
+            "kokoro": tts_service.get_runtime_info(),
+            chatterbox_service.ENGINE_ID: chatterbox_service.get_runtime_info(),
+        },
+        "system": _system_metrics(),
     }
 
 
 @app.post("/api/shutdown")
 def shutdown():
     """Shutdown the server (called by the launcher when the browser closes)."""
+    _flush_debounced_saves()
     for book_id in list(BOOKS):
         try:
             _save_state(book_id)
@@ -381,54 +676,34 @@ def open_book(filepath: str = Query(...)):
         raise HTTPException(404, f"File not found: {filepath}")
     ext = os.path.splitext(resolved)[1].lower()
     logger.info("Resolved book path=%s ext=%s size_bytes=%s", resolved, ext, os.path.getsize(resolved))
-    if ext == ".epub":
-        logger.info("Opening EPUB path=%s", resolved)
-        meta = reflow_service.get_metadata(resolved)
-        # Build reflow now so page_count reflects real (post-frontmatter-filter) chapters.
-        reflow = reflow_service.get_or_build_reflow(resolved, DATA_DIR)
-        meta["page_count"] = max(1, len(reflow.get("chapters", [])))
-        book_id = meta["id"]
-        saved = _load_state(book_id)
-        state = saved if saved else BookState(**meta)
-        state.page_count = meta["page_count"]
-        if state.filepath != resolved:
-            state.filepath = resolved
-        state.format = "epub"
-        _close_book_entry(book_id)
-        _invalidate_search_index(book_id)
-        BOOKS[book_id] = {"doc": None, "state": state, "filepath": resolved}
-        _save_state(book_id)
-        logger.info("Opened EPUB book_id=%s title=%s chapters=%s", book_id, state.title, state.page_count)
-        return state.model_dump()
+    if ext != ".epub":
+        raise HTTPException(400, "Folio now supports EPUB files only.")
 
-    logger.info("Opening PDF path=%s", resolved)
-    doc = pdf_service.open_pdf(resolved)
-    try:
-        meta = pdf_service.get_metadata(doc, resolved)
-        book_id = meta["id"]
-        saved = _load_state(book_id)
-        state = saved if saved else BookState(**meta)
-        if state.filepath != resolved:
-            state.filepath = resolved
-        _close_book_entry(book_id)
-        _invalidate_search_index(book_id)
-        BOOKS[book_id] = {"doc": doc, "state": state, "filepath": resolved}
-    except Exception:
-        # Don't leak the fitz Document if metadata extraction or registration fails.
-        try:
-            doc.close()
-        except Exception:
-            logger.exception("Failed to close PDF after open_book failure")
-        raise
+    logger.info("Opening EPUB path=%s", resolved)
+    meta = reflow_service.get_metadata(resolved)
+    # Build reflow now so page_count reflects real (post-frontmatter-filter) chapters.
+    reflow = reflow_service.get_or_build_reflow(resolved, DATA_DIR)
+    meta["page_count"] = max(1, len(reflow.get("chapters", [])))
+    book_id = meta["id"]
+    saved = _load_state(book_id)
+    state = saved if saved else BookState(**meta)
+    state.page_count = meta["page_count"]
+    if state.filepath != resolved:
+        state.filepath = resolved
+    state.format = "epub"
+    state.cover_url, state.cover_source = _ensure_book_cover(resolved, book_id)
+    _close_book_entry(book_id)
+    _invalidate_search_index(book_id)
+    BOOKS[book_id] = {"state": state, "filepath": resolved}
     _save_state(book_id)
-    logger.info("Opened PDF book_id=%s title=%s pages=%s", book_id, state.title, state.page_count)
+    logger.info("Opened EPUB book_id=%s title=%s chapters=%s", book_id, state.title, state.page_count)
     return state.model_dump()
 
 
 @app.delete("/api/book/{book_id}")
 def delete_book(book_id: str, delete_file: bool = Query(False)):
-    """Remove a book from history. If delete_file=true and the PDF lives under
-    our uploads/ dir, delete the PDF too (but not files from arbitrary user
+    """Remove a book from history. If delete_file=true and the EPUB lives under
+    our uploads/ dir, delete the EPUB too (but not files from arbitrary user
     locations)."""
     state_path = _state_path(book_id)
     filepath = None
@@ -480,7 +755,9 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
 async def open_book_upload(file: UploadFile = File(...)):
     upload_dir = UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
-    safe_name = os.path.basename(file.filename) if file.filename else "upload.pdf"
+    safe_name = os.path.basename(file.filename) if file.filename else "upload.epub"
+    if os.path.splitext(safe_name)[1].lower() != ".epub":
+        raise HTTPException(400, "Choose an EPUB file.")
     filepath = os.path.join(upload_dir, safe_name)
     logger.info("Receiving upload filename=%s content_type=%s target=%s", file.filename, file.content_type, filepath)
     content = await file.read()
@@ -491,65 +768,65 @@ async def open_book_upload(file: UploadFile = File(...)):
     return open_book(filepath)
 
 
-@app.get("/api/book/{book_id}/page/{page_num}/image")
-def get_page_image(book_id: str, page_num: int, dpi: int = 150):
-    if book_id not in BOOKS:
-        raise HTTPException(404, "Book not loaded")
-    dpi = max(50, min(600, dpi))
-    doc = BOOKS[book_id]["doc"]
-    if doc is None:
-        raise HTTPException(400, "This book has no page images (EPUB)")
-    if page_num < 0 or page_num >= len(doc):
-        raise HTTPException(400, "Invalid page number")
-    png_bytes, w, h = pdf_service.render_page(doc, page_num, dpi)
-    return Response(content=png_bytes, media_type="image/png",
-                    headers={"X-Width": str(w), "X-Height": str(h)})
-
-
 @app.get("/api/book/{book_id}/reflow")
 def get_reflow(book_id: str):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
     entry = BOOKS[book_id]
-    if entry["state"].format != "epub":
-        raise HTTPException(400, "Reflow only available for EPUB books")
     return reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
 
 
+@app.get("/api/book/{book_id}/cover")
+def get_book_cover(book_id: str):
+    covers_dir = os.path.realpath(os.path.join(DATA_DIR, "covers"))
+    filepath = os.path.realpath(os.path.join(covers_dir, f"{book_id}.jpg"))
+    if os.path.commonpath([covers_dir, filepath]) != covers_dir:
+        raise HTTPException(400, "Invalid cover path")
+    if not os.path.isfile(filepath):
+        raise HTTPException(404, "Cover not found")
+    return FileResponse(
+        filepath,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
 @app.get("/api/book/{book_id}/page/{page_num}/text")
-def get_page_text(book_id: str, page_num: int, dpi: int = 150):
+def get_page_text(book_id: str, page_num: int):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
-    dpi = max(50, min(600, dpi))
     entry = BOOKS[book_id]
-    doc = entry["doc"]
-    if doc is None:
-        # EPUB: synthesize a PageText from the reflow chapter so the audio
-        # pipeline can consume it without branching.
-        reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
-        chapters = reflow.get("chapters", [])
-        if page_num < 0 or page_num >= len(chapters):
-            raise HTTPException(400, "Invalid chapter index")
-        chapter = chapters[page_num]
-        from models import PageText, SentenceInfo
-        sentences = []
-        for block in chapter.get("blocks", []):
-            if block.get("type") != "paragraph":
-                continue
-            for sent in block.get("sentences", []):
-                text = sent.get("text", "").strip()
-                if text:
-                    sentences.append(SentenceInfo(text=text, words=[]))
-        return PageText(
-            page_number=page_num,
-            sentences=sentences,
-            render_width=0,
-            render_height=0,
-        ).model_dump()
-    if page_num < 0 or page_num >= len(doc):
-        raise HTTPException(400, "Invalid page number")
-    page_text = pdf_service.extract_page_text(doc, page_num, dpi)
-    return page_text.model_dump()
+    cache_key = f"{book_id}:{page_num}"
+    cached = _page_text_epub_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
+    chapters = reflow.get("chapters", [])
+    if page_num < 0 or page_num >= len(chapters):
+        raise HTTPException(400, "Invalid chapter index")
+    chapter = chapters[page_num]
+
+    sentences = []
+    for block in chapter.get("blocks", []):
+        if block.get("type") != "paragraph":
+            continue
+        for sent in block.get("sentences", []):
+            text = sent.get("text", "").strip()
+            if text:
+                sentences.append(SentenceInfo(text=text, words=[]))
+    result = PageText(
+        page_number=page_num,
+        sentences=sentences,
+        render_width=0,
+        render_height=0,
+    ).model_dump()
+
+    _page_text_epub_cache[cache_key] = result
+    if len(_page_text_epub_cache) > _PAGE_TEXT_EPUB_CACHE_LIMIT:
+        oldest = next(iter(_page_text_epub_cache))
+        del _page_text_epub_cache[oldest]
+    return result
 
 
 @app.get("/api/book/{book_id}/search")
@@ -563,23 +840,23 @@ def search_book(
         return {"query": q, "total": 0, "results": []}
 
     tokens = [token for token in query.split(" ") if token]
+    first_token = tokens[0] if tokens else ""
     index = _get_search_index(book_id)
+    rows = index["rows"]
     matches: list[dict] = []
 
-    for row in index["rows"]:
+    for row in rows:
         haystack = row["normalized_text"]
         phrase_match = query in haystack
-        token_match = bool(tokens) and all(token in haystack for token in tokens)
-        if not phrase_match and not token_match:
+        if not phrase_match and not (tokens and all(token in haystack for token in tokens)):
             continue
 
-        score = 0
-        if phrase_match:
-            score += 100
+        score = 100 if phrase_match else 0
         if haystack.startswith(query):
             score += 20
         score += max(0, 10 - row["page"])
-        score += haystack.count(tokens[0]) if tokens else 0
+        if first_token:
+            score += haystack.count(first_token)
 
         matches.append({
             "page": row["page"],
@@ -593,7 +870,9 @@ def search_book(
 
     matches.sort(key=lambda item: (-item["_score"], item["page"], item["sentence_idx"]))
     total = len(matches)
-    results = [{k: v for k, v in item.items() if k != "_score"} for item in matches[:limit]]
+    for item in matches[:limit]:
+        del item["_score"]
+    results = matches[:limit]
     return {
         "query": q,
         "format": index["format"],
@@ -602,16 +881,63 @@ def search_book(
     }
 
 
-def _generate_audio(text, voice, speed, book_id):
-    return tts_service.generate_sentence_audio(text, voice=voice, speed=speed, book_id=book_id)
+def _generate_audio(
+    text,
+    engine,
+    voice,
+    speed,
+    book_id,
+    chatterbox_device: str | None = None,
+):
+    engine = _normalize_tts_engine(engine)
+    with _tts_engine_runtime_lock:
+        _activate_tts_engine(engine)
+        if engine == chatterbox_service.ENGINE_ID:
+            return chatterbox_service.generate_sentence_audio(
+                text,
+                voice=voice,
+                speed=speed,
+                book_id=book_id,
+                device=chatterbox_device,
+            )
+        return tts_service.generate_sentence_audio(text, voice=voice, speed=speed, book_id=book_id)
 
 
-def _job_key(book_id: str, page: int, sentence: int, voice: str, speed: float) -> str:
+def _job_key(
+    book_id: str,
+    page: int,
+    sentence: int,
+    engine: str,
+    voice: str,
+    speed: float,
+    chatterbox_device: str | None = None,
+) -> str:
     speed = tts_service.validate_speed(speed)
-    return f"kokoro|{book_id}|{page}|{sentence}|{tts_service.normalize_voice(voice)}|{speed}"
+    engine = _normalize_tts_engine(engine)
+    voice = _normalize_voice_for_engine(engine, voice)
+    if engine == chatterbox_service.ENGINE_ID:
+        device = chatterbox_service.normalize_device(chatterbox_device)
+        return f"{engine}|{book_id}|{page}|{sentence}|{voice}|{speed}|{device}"
+    return f"kokoro|{book_id}|{page}|{sentence}|{voice}|{speed}"
 
 
-def _audio_cache_path(book_id: str, text: str, voice: str, speed: float) -> str:
+def _audio_cache_path(
+    book_id: str,
+    text: str,
+    engine: str,
+    voice: str,
+    speed: float,
+    chatterbox_device: str | None = None,
+) -> str:
+    engine = _normalize_tts_engine(engine)
+    if engine == chatterbox_service.ENGINE_ID:
+        return chatterbox_service.audio_cache_path(
+            book_id,
+            text,
+            voice,
+            speed,
+            device=chatterbox_device,
+        )
     key = tts_service._cache_key(text, voice, speed)
     return os.path.join(tts_service.CACHE_DIR, f"{book_id}_{key}.wav")
 
@@ -619,36 +945,39 @@ def _audio_cache_path(book_id: str, text: str, voice: str, speed: float) -> str:
 def _get_sentence(book_id: str, page: int, sentence: int):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
-    entry = BOOKS[book_id]
-    doc = entry["doc"]
-    if doc is None:
-        # EPUB: pull sentences from reflow
+    cache_key = f"{book_id}:{page}"
+    cached_data = _page_text_epub_cache.get(cache_key)
+    if cached_data is not None:
+        sentences = cached_data["sentences"]
+    else:
         data = get_page_text(book_id, page)
         sentences = data["sentences"]
-        if sentence < 0 or sentence >= len(sentences):
-            raise HTTPException(400, "Invalid sentence index")
-        from models import SentenceInfo, PageText
-        sent = SentenceInfo(**sentences[sentence])
-        if not sent.text.strip():
-            raise HTTPException(400, "Empty sentence")
-        page_text = PageText(page_number=page, sentences=[SentenceInfo(**s) for s in sentences], render_width=0, render_height=0)
-        return None, page_text, sent
-    page_text = pdf_service.extract_page_text(doc, page)
-    if sentence < 0 or sentence >= len(page_text.sentences):
+    if sentence < 0 or sentence >= len(sentences):
         raise HTTPException(400, "Invalid sentence index")
-    sent = page_text.sentences[sentence]
+    sent_dict = sentences[sentence]
+    sent = SentenceInfo(**sent_dict) if isinstance(sent_dict, dict) else sent_dict
     if not sent.text.strip():
         raise HTTPException(400, "Empty sentence")
-    return doc, page_text, sent
+    page_text = PageText(page_number=page, sentences=[SentenceInfo(**s) if isinstance(s, dict) else s for s in sentences], render_width=0, render_height=0)
+    return page_text, sent
 
 
-def _submit_tts_job(book_id: str, page: int, sentence: int, voice: str, speed: float, priority: int):
-    _doc, _page_text, sent = _get_sentence(book_id, page, sentence)
-    job_key = _job_key(book_id, page, sentence, voice, speed)
+def _submit_tts_job(
+    book_id: str,
+    page: int,
+    sentence: int,
+    engine: str,
+    voice: str,
+    speed: float,
+    priority: int,
+    chatterbox_device: str | None = None,
+):
+    _page_text, sent = _get_sentence(book_id, page, sentence)
+    job_key = _job_key(book_id, page, sentence, engine, voice, speed, chatterbox_device)
     job = TTS_MANAGER.submit(
         key=job_key,
         priority=priority,
-        fn=lambda: _generate_audio(sent.text, voice, speed, book_id),
+        fn=lambda: _generate_audio(sent.text, engine, voice, speed, book_id, chatterbox_device),
     )
     return job, sent
 
@@ -657,24 +986,22 @@ def _iter_sentence_window(book_id: str, page: int, sentence: int, count: int, in
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
     entry = BOOKS[book_id]
-    doc = entry["doc"]
-    if doc is None:
-        # EPUB path — iterate chapters via reflow
-        reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
-        chapters = reflow.get("chapters", [])
-        total_pages = len(chapters)
-        def sentence_count(page_idx):
-            if page_idx < 0 or page_idx >= len(chapters):
-                return 0
-            n = 0
-            for b in chapters[page_idx].get("blocks", []):
-                if b.get("type") == "paragraph":
-                    n += sum(1 for s in b.get("sentences", []) if s.get("text", "").strip())
-            return n
-    else:
-        total_pages = len(doc)
-        def sentence_count(page_idx):
-            return len(pdf_service.extract_page_text(doc, page_idx).sentences)
+    _sentence_count_cache: dict[int, int] = {}
+    reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
+    chapters = reflow.get("chapters", [])
+    total_pages = len(chapters)
+    def sentence_count(page_idx):
+        cached = _sentence_count_cache.get(page_idx)
+        if cached is not None:
+            return cached
+        if page_idx < 0 or page_idx >= len(chapters):
+            return 0
+        n = 0
+        for b in chapters[page_idx].get("blocks", []):
+            if b.get("type") == "paragraph":
+                n += sum(1 for s in b.get("sentences", []) if s.get("text", "").strip())
+        _sentence_count_cache[page_idx] = n
+        return n
 
     refs = []
     page_num = page
@@ -696,11 +1023,27 @@ def generate_tts(
     book_id: str = Query(...),
     page: int = Query(...),
     sentence: int = Query(...),
+    engine: str = Query(DEFAULT_TTS_ENGINE),
     voice: str = Query("af_heart"),
     speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
 ):
-    job, _sent = _submit_tts_job(book_id, page, sentence, voice, speed, priority=0)
-    filename, duration_ms = TTS_MANAGER.wait(job)
+    normalized_engine = _normalize_tts_engine(engine)
+    _activate_tts_engine(normalized_engine)
+    job, _sent = _submit_tts_job(
+        book_id,
+        page,
+        sentence,
+        engine,
+        voice,
+        speed,
+        priority=0,
+        chatterbox_device=chatterbox_device,
+    )
+    try:
+        filename, duration_ms = TTS_MANAGER.wait(job)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"filename": filename, "duration_ms": duration_ms}
 
 
@@ -709,9 +1052,11 @@ def buffer_tts(
     book_id: str = Query(...),
     page: int = Query(...),
     sentence: int = Query(...),
-    count: int = Query(6, ge=1, le=24),
+    count: int = Query(2, ge=1, le=24),
+    engine: str = Query(DEFAULT_TTS_ENGINE),
     voice: str = Query("af_heart"),
     speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
 ):
     """Queue the next N sentences after the current reader position.
 
@@ -721,48 +1066,79 @@ def buffer_tts(
     refs = _iter_sentence_window(book_id, page, sentence, count, include_current=False)
     queued: list[dict] = []
     skipped: list[dict] = []
+    normalized_engine = _normalize_tts_engine(engine)
 
+    if normalized_engine == chatterbox_service.ENGINE_ID:
+        _activate_tts_engine(normalized_engine)
+
+    # Pre-queue future chunks regardless of engine. Chatterbox serializes GPU
+    # work via its own BoundedSemaphore(1), so pending jobs sit in the priority
+    # queue and start the instant the foreground chunk finishes — keeping
+    # playback continuous instead of stalling once per sentence.
+    model_loaded = (
+        normalized_engine != chatterbox_service.ENGINE_ID
+        or chatterbox_service.is_model_loaded()
+    )
     for offset, (page_num, sentence_idx) in enumerate(refs, start=1):
-        job_key = _job_key(book_id, page_num, sentence_idx, voice, speed)
+        job_key = _job_key(book_id, page_num, sentence_idx, normalized_engine, voice, speed, chatterbox_device)
         status = TTS_MANAGER.status(job_key)
         if status in {"pending", "running"}:
             skipped.append({"page": page_num, "sentence": sentence_idx, "reason": status})
             continue
 
-        _doc, _page_text, sent = _get_sentence(book_id, page_num, sentence_idx)
-        if os.path.exists(_audio_cache_path(book_id, sent.text, voice, speed)):
+        _page_text, sent = _get_sentence(book_id, page_num, sentence_idx)
+        if model_loaded and os.path.exists(_audio_cache_path(book_id, sent.text, normalized_engine, voice, speed, chatterbox_device)):
             skipped.append({"page": page_num, "sentence": sentence_idx, "reason": "cached"})
             continue
 
         TTS_MANAGER.submit(
             key=job_key,
             priority=offset,
-            fn=lambda text=sent.text: _generate_audio(text, voice, speed, book_id),
+            fn=lambda text=sent.text: _generate_audio(
+                text,
+                normalized_engine,
+                voice,
+                speed,
+                book_id,
+                chatterbox_device,
+            ),
         )
         queued.append({"page": page_num, "sentence": sentence_idx})
 
     return {"requested": len(refs), "queued": queued, "skipped": skipped}
 
 
-def _chapter_sentence_refs(book_id: str, page: int, voice: str, speed: float):
+def _chapter_sentence_refs(
+    book_id: str,
+    page: int,
+    engine: str,
+    voice: str,
+    speed: float,
+    chatterbox_device: str | None = None,
+    include_cache_path: bool = True,
+):
     """Return [(sentence_idx, text, expected_cache_filepath)] for every non-empty
-    sentence on `page` (which is a chapter index for EPUB, a page index for PDF)."""
+    sentence on the EPUB chapter at `page`."""
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
-    entry = BOOKS[book_id]
-    if entry["doc"] is None:
+    cache_key = f"{book_id}:{page}"
+    cached_data = _page_text_epub_cache.get(cache_key)
+    if cached_data is not None:
+        sentences = [s.get("text", "") for s in cached_data["sentences"]]
+    else:
         data = get_page_text(book_id, page)
         sentences = [s.get("text", "") for s in data["sentences"]]
-    else:
-        page_text = pdf_service.extract_page_text(entry["doc"], page)
-        sentences = [s.text for s in page_text.sentences]
 
     refs = []
     for idx, text in enumerate(sentences):
         text = (text or "").strip()
         if not text:
             continue
-        filepath = _audio_cache_path(book_id, text, voice, speed)
+        filepath = (
+            _audio_cache_path(book_id, text, engine, voice, speed, chatterbox_device)
+            if include_cache_path
+            else None
+        )
         refs.append((idx, text, filepath))
     return refs
 
@@ -771,25 +1147,56 @@ def _chapter_sentence_refs(book_id: str, page: int, voice: str, speed: float):
 def preload_chapter(
     book_id: str,
     page: int = Query(...),
+    engine: str = Query(DEFAULT_TTS_ENGINE),
     voice: str = Query("af_heart"),
     speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
 ):
     """Queue every sentence in the chapter/page for TTS generation at top priority."""
-    refs = _chapter_sentence_refs(book_id, page, voice, speed)
+    engine = _normalize_tts_engine(engine)
+    if engine == chatterbox_service.ENGINE_ID:
+        _activate_tts_engine(engine)
+    refs = _chapter_sentence_refs(
+        book_id,
+        page,
+        engine,
+        voice,
+        speed,
+        chatterbox_device,
+        include_cache_path=True,
+    )
+    queued = 0
     for offset, (sentence_idx, _text, _path) in enumerate(refs):
-        _submit_tts_job(book_id, page, sentence_idx, voice, speed, priority=offset)
-    return {"total": len(refs)}
+        if _path and os.path.exists(_path):
+            continue
+        _submit_tts_job(
+            book_id,
+            page,
+            sentence_idx,
+            engine,
+            voice,
+            speed,
+            priority=offset if engine != chatterbox_service.ENGINE_ID else offset + 1,
+            chatterbox_device=chatterbox_device,
+        )
+        queued += 1
+    return {"total": len(refs), "queued": queued}
 
 
 @app.get("/api/book/{book_id}/preload-chapter/status")
 def preload_chapter_status(
     book_id: str,
     page: int = Query(...),
+    engine: str = Query(DEFAULT_TTS_ENGINE),
     voice: str = Query("af_heart"),
     speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
 ):
     """Probe the audio cache for every sentence in the chapter. Cheap — no generation."""
-    refs = _chapter_sentence_refs(book_id, page, voice, speed)
+    # Kokoro cache keys use a no-load runtime fingerprint, so this endpoint can
+    # report cached chapters on cold start without pinning a model in memory.
+    engine = _normalize_tts_engine(engine)
+    refs = _chapter_sentence_refs(book_id, page, engine, voice, speed, chatterbox_device)
     ready = 0
     failed: list[int] = []
     active = 0
@@ -797,7 +1204,7 @@ def preload_chapter_status(
         if os.path.exists(filepath):
             ready += 1
             continue
-        job_key = _job_key(book_id, page, sentence_idx, voice, speed)
+        job_key = _job_key(book_id, page, sentence_idx, engine, voice, speed, chatterbox_device)
         status = TTS_MANAGER.status(job_key)
         if status == "error":
             failed.append(sentence_idx)
@@ -818,8 +1225,6 @@ _AUDIO_FILENAME_RE = re.compile(r"^[A-Za-z0-9_\-]+\.wav$")
 
 @app.get("/api/audio/{filename}")
 def get_audio(filename: str):
-    # Reject anything that isn't a plain wav filename so a request like
-    # /api/audio/..%2F..%2F..%2Fetc%2Fpasswd can't escape the cache dir.
     if not _AUDIO_FILENAME_RE.match(filename):
         raise HTTPException(400, "Invalid audio filename")
     cache_dir = os.path.realpath(tts_service.CACHE_DIR)
@@ -828,15 +1233,47 @@ def get_audio(filename: str):
         raise HTTPException(400, "Invalid audio filename")
     if not os.path.isfile(filepath):
         raise HTTPException(404, "Audio not found")
-    return FileResponse(filepath, media_type="audio/wav")
+    return FileResponse(
+        filepath,
+        media_type="audio/wav",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 @app.get("/api/tts/voices")
-def get_voices():
+def get_voices(engine: str = Query(DEFAULT_TTS_ENGINE)):
     try:
+        engine = _normalize_tts_engine(engine)
+        if engine == chatterbox_service.ENGINE_ID:
+            return chatterbox_service.get_available_voices()
         return tts_service.get_available_voices()
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.get("/api/tts/options")
+def get_tts_options():
+    return {
+        "engines": [
+            {
+                "id": "kokoro",
+                "name": "Kokoro",
+                "voices": tts_service.get_available_voices(),
+                "default_voice": tts_service.DEFAULT_VOICE,
+            },
+            {
+                "id": chatterbox_service.ENGINE_ID,
+                "name": "Chatterbox Turbo",
+                "voices": chatterbox_service.get_available_voices(),
+                "default_voice": chatterbox_service.DEFAULT_VOICE,
+            },
+        ]
+    }
+
+
+@app.get("/api/tts/voice-preview")
+def voice_preview():
+    raise HTTPException(400, "Voice preview is not available for the current engine.")
 
 
 @app.post("/api/book/{book_id}/position")
@@ -844,7 +1281,7 @@ def save_position(book_id: str, position: Position):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
     BOOKS[book_id]["state"].last_position = position
-    _save_state(book_id)
+    _save_state_debounced(book_id)
     return {"ok": True}
 
 
@@ -871,14 +1308,18 @@ def remove_bookmark(book_id: str, idx: int):
 @app.post("/api/book/{book_id}/settings")
 def update_settings(
     book_id: str,
+    tts_engine: str = Query(None),
     voice: str = Query(None),
     speed: float = Query(None, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
 ):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
     state = BOOKS[book_id]["state"]
+    if tts_engine is not None:
+        state.tts_engine = _normalize_tts_engine(tts_engine)
+        _activate_tts_engine(state.tts_engine)
     if voice is not None:
-        state.voice = voice
+        state.voice = _normalize_voice_for_engine(getattr(state, "tts_engine", DEFAULT_TTS_ENGINE), voice)
     if speed is not None:
         state.speed = speed
     _save_state(book_id)
@@ -905,6 +1346,8 @@ if os.path.exists(os.path.join(FRONTEND_DIR, "assets")):
 # Catch-all: serve index.html for any non-API route (SPA routing)
 @app.get("/{path:path}")
 def serve_frontend(path: str = ""):
+    if path.startswith("api/"):
+        raise HTTPException(404, "API route not found")
     index = os.path.join(FRONTEND_DIR, "index.html")
     if os.path.exists(index):
         return FileResponse(index)

@@ -1,36 +1,108 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { apiFetch, apiUrl } from '../api'
-import { defaultKokoroVoice, normalizeKokoroVoice } from '../kokoroVoices'
+import {
+  defaultKokoroVoice,
+  defaultTtsEngine,
+  normalizeTtsEngine,
+  normalizeVoiceForEngine,
+} from '../kokoroVoices'
+import type { AudioInfo, BookState, PageText, PreloadState, TtsGenerateResponse } from '../types'
 
-const READ_AHEAD_SENTENCES = 6
+const READ_AHEAD_SENTENCES = 12
 const DEFAULT_SPEED = 0.95
+const CHUNK_PROGRESS_MIN_DELTA = 0.008
+const CHUNK_PROGRESS_MAX_INTERVAL_MS = 50
 
-export default function useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition }) {
+function clampNumber(value, min, max, fallback) {
+  const parsed = Number.parseFloat(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function stopProgressLoop(progressRafRef) {
+  if (progressRafRef.current != null) {
+    cancelAnimationFrame(progressRafRef.current)
+    progressRafRef.current = null
+  }
+}
+
+function debugFlag(globalName, storageKey) {
+  if (typeof window === 'undefined') return false
+  return Boolean(window[globalName]) || window.localStorage?.getItem(storageKey) === '1'
+}
+
+interface UseAudioPlaybackArgs {
+  book: BookState | null
+  pageData: PageText | null
+  currentPage: number
+  goToPage: (page: number) => Promise<PageText | null> | undefined
+  savePosition: (page: number, sentenceIdx: number) => Promise<void> | undefined
+}
+
+export default function useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition }: UseAudioPlaybackArgs) {
   const bookId = book?.id
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentSentence, setCurrentSentence] = useState(0)
   const [currentWordIdx, setCurrentWordIdx] = useState(-1)
   const [speed, setSpeed] = useState(book?.speed ?? DEFAULT_SPEED)
-  const [voice, setVoice] = useState(normalizeKokoroVoice(book?.voice || defaultKokoroVoice))
-  const [volume, setVolume] = useState(() => parseFloat(localStorage.getItem('volume') ?? '1.0'))
-  const [sleepTimer, setSleepTimer] = useState(null)
-  const [preloadState, setPreloadState] = useState({ state: 'idle', ready: 0, total: 0, failed: [] })
-  const [readingPage, setReadingPage] = useState(null)
+  const [ttsEngine, setTtsEngineRaw] = useState(normalizeTtsEngine(book?.tts_engine || defaultTtsEngine))
+  const [voice, setVoiceRaw] = useState(normalizeVoiceForEngine(book?.tts_engine || defaultTtsEngine, book?.voice || defaultKokoroVoice))
+  const [volume, setVolume] = useState(() => clampNumber(localStorage.getItem('volume'), 0, 1, 1))
+  const [sleepTimer, setSleepTimer] = useState<number | null>(null)
+  const [preloadState, setPreloadState] = useState<PreloadState>({ state: 'idle', ready: 0, total: 0, failed: [] })
+  const [readingPage, setReadingPage] = useState<number | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [generationError, setGenerationError] = useState('')
+  const [settingsReady, setSettingsReady] = useState(false)
+  // Fraction (0..1) of the way through the current sentence's audio. Drives the
+  // shimmer highlight and the line-aware page-advance heuristic in Follow Along.
+  const [chunkProgress, setChunkProgress] = useState(0)
 
-  const audioRef = useRef(null)
-  const wordTimerRef = useRef(null)
-  const sleepTimerRef = useRef(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const progressRafRef = useRef<number | null>(null)
+  const wordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sleepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const currentPageRef = useRef(currentPage)
   const currentSentenceRef = useRef(0)
-  const pageDataRef = useRef(pageData)
+  const pageDataRef = useRef<PageText | null>(pageData)
   const isPlayingRef = useRef(false)
   const playbackSessionRef = useRef(0)
-  const playbackSettingsKeyRef = useRef(null)
+  const playbackSettingsKeyRef = useRef<string | null>(null)
   const settingsHydratedRef = useRef(false)
-  const audioCacheRef = useRef(new Map())
-  const readAheadRef = useRef(new Set())
-  const preloadAbortRef = useRef(null)
+  const audioCacheRef = useRef<Map<string, AudioInfo | Promise<AudioInfo | null>>>(new Map())
+  const readAheadRef = useRef<Set<string>>(new Set())
+  const preloadAbortRef = useRef<AbortController | null>(null)
   const pauseRef = useRef(() => {})
+  const preparedAudioKeyRef = useRef<string | null>(null)
+  const prepareCurrentTokenRef = useRef(0)
+  const chunkProgressPublishRef = useRef({ value: 0, at: 0 })
+  const playingListenerCleanupRef = useRef<null | (() => void)>(null)
+
+  const publishChunkProgress = useCallback((next, force = false) => {
+    const value = Math.max(0, Math.min(1, next))
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    const last = chunkProgressPublishRef.current
+    if (
+      force ||
+      value === 0 ||
+      value === 1 ||
+      Math.abs(value - last.value) >= CHUNK_PROGRESS_MIN_DELTA ||
+      now - last.at >= CHUNK_PROGRESS_MAX_INTERVAL_MS
+    ) {
+      chunkProgressPublishRef.current = { value, at: now }
+      setChunkProgress(value)
+    }
+  }, [])
+
+  const setTtsEngine = useCallback((nextEngine) => {
+    const normalized = normalizeTtsEngine(nextEngine)
+    setTtsEngineRaw(normalized)
+    setVoiceRaw((prev) => normalizeVoiceForEngine(normalized, prev))
+  }, [])
+
+  const setVoice = useCallback((nextVoice) => {
+    setVoiceRaw(normalizeVoiceForEngine(ttsEngine, nextVoice))
+  }, [ttsEngine])
 
   useEffect(() => { currentPageRef.current = currentPage }, [currentPage])
   useEffect(() => { pageDataRef.current = pageData }, [pageData])
@@ -45,22 +117,44 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
   useEffect(() => {
     if (!bookId) return
+    setSettingsReady(false)
+    const engine = normalizeTtsEngine(book.tts_engine || defaultTtsEngine)
     setSpeed(book.speed ?? DEFAULT_SPEED)
-    setVoice(normalizeKokoroVoice(book.voice || defaultKokoroVoice))
+    setTtsEngineRaw(engine)
+    setVoiceRaw(normalizeVoiceForEngine(engine, book.voice || defaultKokoroVoice))
     setCurrentSentence(book.last_position?.sentence_idx || 0)
     currentSentenceRef.current = book.last_position?.sentence_idx || 0
     settingsHydratedRef.current = true
   }, [book, bookId])
 
   useEffect(() => {
-    audioCacheRef.current.clear()
-    readAheadRef.current.clear()
-  }, [book?.id, voice, speed])
+    if (!bookId) {
+      setSettingsReady(false)
+      return
+    }
+    if (settingsReady) return
+    const engine = normalizeTtsEngine(book.tts_engine || defaultTtsEngine)
+    const expectedSpeed = book.speed ?? DEFAULT_SPEED
+    const ready = (
+      ttsEngine === engine
+      && voice === normalizeVoiceForEngine(engine, book.voice || defaultKokoroVoice)
+      && Math.abs(speed - expectedSpeed) < 0.001
+    )
+    if (ready) setSettingsReady(true)
+  }, [book, bookId, settingsReady, ttsEngine, voice, speed])
 
   useEffect(() => {
-    if (!book || !settingsHydratedRef.current) return
+    audioCacheRef.current.clear()
+    readAheadRef.current.clear()
+    preparedAudioKeyRef.current = null
+    setGenerationError('')
+  }, [book?.id, ttsEngine, voice, speed])
+
+  useEffect(() => {
+    if (!book || !settingsHydratedRef.current || !settingsReady) return
     const controller = new AbortController()
     const params = new URLSearchParams({
+      tts_engine: ttsEngine,
       voice,
       speed: String(speed),
     })
@@ -69,7 +163,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       signal: controller.signal,
     }).catch(() => {})
     return () => controller.abort()
-  }, [book, voice, speed])
+  }, [book, settingsReady, ttsEngine, voice, speed])
 
   useEffect(() => {
     if (sleepTimerRef.current) clearInterval(sleepTimerRef.current)
@@ -103,8 +197,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [pageData, currentSentence, currentWordIdx])
 
   const getCacheKey = useCallback((page, sentence) => {
-    return `${book?.id}|kokoro|${voice}|${speed}|${page}|${sentence}`
-  }, [book?.id, voice, speed])
+    return `${book?.id}|${ttsEngine}|${voice}|${speed}|${page}|${sentence}`
+  }, [book?.id, ttsEngine, voice, speed])
 
   const fetchSentenceAudio = useCallback(async (page, sentence) => {
     if (!book) return null
@@ -112,37 +206,41 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     const cached = audioCacheRef.current.get(key)
     if (cached) return cached instanceof Promise ? cached : Promise.resolve(cached)
 
-    const params = new URLSearchParams({
-      book_id: book.id,
-      page: String(page),
-      sentence: String(sentence),
-      voice,
-      speed: String(speed),
-    })
+    const qs = `book_id=${encodeURIComponent(book.id)}&page=${page}&sentence=${sentence}&engine=${encodeURIComponent(ttsEngine)}&voice=${encodeURIComponent(voice)}&speed=${speed}`
 
-    const promise = apiFetch(`/api/tts/generate?${params.toString()}`)
+    const promise = apiFetch(`/api/tts/generate?${qs}`)
       .then(async (res) => {
         if (!res.ok) {
           audioCacheRef.current.delete(key)
+          let message = 'TTS generation failed.'
+          try {
+            const data = await res.json()
+            message = data?.detail || message
+          } catch {
+            // Keep the generic error if the backend returns a non-JSON body.
+          }
+          setGenerationError(message)
           return null
         }
-        const data = await res.json()
+        const data = await res.json() as TtsGenerateResponse
         const info = { url: apiUrl(`/api/audio/${data.filename}`), duration_ms: data.duration_ms }
         audioCacheRef.current.set(key, info)
+        setGenerationError('')
         return info
       })
       .catch(() => {
         audioCacheRef.current.delete(key)
+        setGenerationError('TTS generation failed because the backend did not respond.')
         return null
       })
 
     audioCacheRef.current.set(key, promise)
     return promise
-  }, [book, getCacheKey, voice, speed])
+  }, [book, getCacheKey, ttsEngine, voice, speed])
 
   const queueReadAhead = useCallback((page, sentence) => {
     if (!book) return
-    const key = `${book.id}|kokoro|${voice}|${speed}|${page}|${sentence}|${READ_AHEAD_SENTENCES}`
+    const key = `${book.id}|${ttsEngine}|${voice}|${speed}|${page}|${sentence}|${READ_AHEAD_SENTENCES}`
     if (readAheadRef.current.has(key)) return
     readAheadRef.current.add(key)
 
@@ -151,6 +249,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       page: String(page),
       sentence: String(sentence),
       count: String(READ_AHEAD_SENTENCES),
+      engine: ttsEngine,
       voice,
       speed: String(speed),
     })
@@ -165,7 +264,62 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     }).catch(() => {
       readAheadRef.current.delete(key)
     })
-  }, [book, voice, speed])
+  }, [book, ttsEngine, voice, speed])
+
+  const primePausedAudio = useCallback((audioInfo, key) => {
+    if (!audioInfo?.url || isPlayingRef.current) return
+    if (preparedAudioKeyRef.current === key && audioRef.current?.src === audioInfo.url) return
+
+    const audio = audioRef.current || new Audio()
+    audio.pause()
+    audio.onended = null
+    audio.onerror = null
+    audio.onpause = null
+    audio.src = audioInfo.url
+    audio.preload = 'auto'
+    audio.volume = volume
+    audioRef.current = audio
+    preparedAudioKeyRef.current = key
+
+    try {
+      audio.load()
+    } catch {
+      // The generated URL is still in the app cache; playback will retry load.
+    }
+  }, [volume])
+
+  const prepareCurrentChunk = useCallback(async () => {
+    if (!bookId || !pageData?.sentences?.length) return
+    if (currentSentenceRef.current < 0 || currentSentenceRef.current >= pageData.sentences.length) return
+
+    const page = currentPageRef.current
+    const sentence = currentSentenceRef.current
+    const key = getCacheKey(page, sentence)
+    const token = ++prepareCurrentTokenRef.current
+
+    setIsGenerating(true)
+    try {
+      const audioInfo = await fetchSentenceAudio(page, sentence)
+      if (prepareCurrentTokenRef.current !== token) return
+      if (!audioInfo) return
+      primePausedAudio(audioInfo, key)
+      queueReadAhead(page, sentence)
+      setPreloadState((prev) => (
+        prev.state === 'idle' || prev.state === 'verifying'
+          ? { ...prev, state: 'current-ready', ready: Math.max(prev.ready || 0, 1), total: prev.total || 1 }
+          : prev
+      ))
+    } finally {
+      if (prepareCurrentTokenRef.current === token) {
+        setIsGenerating(false)
+      }
+    }
+  }, [bookId, pageData, getCacheKey, fetchSentenceAudio, primePausedAudio, queueReadAhead])
+
+  useEffect(() => {
+    if (!bookId || !settingsHydratedRef.current || !settingsReady) return
+    prepareCurrentChunk()
+  }, [bookId, settingsReady, currentPage, currentSentence, pageData, ttsEngine, voice, speed, prepareCurrentChunk])
 
   // Check whether the current chapter/page is already cached, but do not start
   // generation. Preload is intentionally user-triggered from the pill.
@@ -181,6 +335,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
     const qs = () => new URLSearchParams({
       page: String(currentPage),
+      engine: ttsEngine,
       voice,
       speed: String(speed),
     }).toString()
@@ -220,7 +375,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       cancelled = true
       controller.abort()
     }
-  }, [bookId, currentPage, voice, speed])
+  }, [bookId, currentPage, ttsEngine, voice, speed])
 
   const preloadChapter = useCallback(async () => {
     if (!bookId) return
@@ -232,6 +387,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
     const qs = () => new URLSearchParams({
       page: String(page),
+      engine: ttsEngine,
       voice,
       speed: String(speed),
     }).toString()
@@ -287,14 +443,28 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         setPreloadState((prev) => ({ ...prev, state: prev.ready >= prev.total && prev.total > 0 ? 'ready' : 'idle' }))
       }
     }
-  }, [bookId, voice, speed])
+  }, [bookId, ttsEngine, voice, speed])
+
+  // Fetch page text WITHOUT navigating the view. Used by the playback loop
+  // when scanning ahead for the next readable sentence — auto page navigation
+  // is owned by App.jsx's Follow Along effect and must not happen here.
+  const fetchPageText = useCallback(async (page) => {
+    if (!book) return null
+    try {
+      const r = await apiFetch(`/api/book/${book.id}/page/${page}/text`)
+      if (!r.ok) return null
+      return await r.json()
+    } catch {
+      return null
+    }
+  }, [book])
 
   const getPageData = useCallback(async (page) => {
     if (page === currentPageRef.current && pageDataRef.current) {
       return pageDataRef.current
     }
-    return await goToPage(page)
-  }, [goToPage])
+    return await fetchPageText(page)
+  }, [fetchPageText])
 
   const findNextReadablePosition = useCallback(async (page, sentence) => {
     if (!book) return null
@@ -320,34 +490,154 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
   const playAudio = useCallback((audioInfo, sessionId) => {
     return new Promise((resolve) => {
-      if (audioRef.current) audioRef.current.pause()
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.onended = null
+        audioRef.current.onerror = null
+        audioRef.current.onpause = null
+      }
       if (wordTimerRef.current) clearInterval(wordTimerRef.current)
+      stopProgressLoop(progressRafRef)
+      playingListenerCleanupRef.current?.()
+      playingListenerCleanupRef.current = null
 
-      const audio = new Audio(audioInfo.url)
+      const audio = audioRef.current || new Audio()
+      audio.src = audioInfo.url
       audio.preload = 'auto'
       audioRef.current = audio
       setCurrentWordIdx(-1)
+      publishChunkProgress(0, true)
+
+      const debug = debugFlag('FOLIO_DEBUG_PROGRESS', 'folioDebugProgress')
+      const debugTrace = debug ? [] : null
+      const debugStart = debug ? performance.now() : 0
+      const reportProgress = (state, extra = {}) => {
+        if (typeof window === 'undefined') return
+        const entry = {
+          state,
+          sessionId,
+          page: currentPageRef.current,
+          sentence: currentSentenceRef.current,
+          audioReadyState: audio.readyState,
+          paused: audio.paused,
+          currentTime: audio.currentTime,
+          duration: audio.duration,
+          rafActive: progressRafRef.current != null,
+          ...extra,
+        }
+        window.__folioProgressDebug = entry
+        if (debug) console.debug('[progress]', entry)
+      }
+      if (debug) {
+        window.__folioProgressTrace = debugTrace
+        // Reported duration from the backend; compared to audio.duration to
+        // detect WAV-header / decoder discrepancies.
+        console.debug('[progress] start', {
+          sessionId,
+          reportedDurationMs: audioInfo.duration_ms,
+          url: audioInfo.url,
+        })
+      }
+      reportProgress('created', { reportedDurationMs: audioInfo.duration_ms, url: audioInfo.url })
+
+      // Sample audio progress at frame rate, but publish React state at a
+      // coarser cadence so playback does not re-render the whole reader every
+      // animation frame.
+      const tick = () => {
+        progressRafRef.current = null
+        if (playbackSessionRef.current !== sessionId) return
+        const a = audioRef.current
+        if (!a) return
+        const dur = a.duration
+        if (Number.isFinite(dur) && dur > 0) {
+          const p = Math.max(0, Math.min(1, a.currentTime / dur))
+          publishChunkProgress(p)
+          if (typeof window !== 'undefined') {
+            window.__folioProgressDebug = {
+              state: 'tick',
+              sessionId,
+              page: currentPageRef.current,
+              sentence: currentSentenceRef.current,
+              currentTime: a.currentTime,
+              duration: dur,
+              progress: p,
+              rafActive: true,
+            }
+          }
+          if (debug) {
+            debugTrace.push({
+              wallMs: performance.now() - debugStart,
+              currentTime: a.currentTime,
+              duration: dur,
+              progress: p,
+            })
+          }
+        }
+        progressRafRef.current = requestAnimationFrame(tick)
+      }
+      const startTicking = () => {
+        if (progressRafRef.current) {
+          reportProgress('playing-skip-raf-already-active')
+          return
+        }
+        reportProgress('playing-start-raf')
+        progressRafRef.current = requestAnimationFrame(tick)
+      }
+      audio.addEventListener('playing', startTicking, { once: true })
+      const cleanupPlayingListener = () => {
+        audio.removeEventListener('playing', startTicking)
+        if (playingListenerCleanupRef.current === cleanupPlayingListener) {
+          playingListenerCleanupRef.current = null
+        }
+      }
+      playingListenerCleanupRef.current = cleanupPlayingListener
 
       audio.onended = () => {
+        cleanupPlayingListener()
         if (playbackSessionRef.current !== sessionId) return
+        stopProgressLoop(progressRafRef)
+        // The 'ended' event fires when currentTime stops advancing (typically
+        // ~30ms before duration). Snap progress to 1 so any downstream
+        // "finished?" check sees a clean terminal value.
+        publishChunkProgress(1, true)
+        reportProgress('ended')
+        if (debug) {
+          console.debug('[progress] ended', {
+            sessionId,
+            wallMs: performance.now() - debugStart,
+            traceCount: debugTrace.length,
+            lastSample: debugTrace[debugTrace.length - 1],
+          })
+        }
         resolve('done')
       }
       audio.onerror = () => {
+        cleanupPlayingListener()
         if (playbackSessionRef.current !== sessionId) return
+        stopProgressLoop(progressRafRef)
+        reportProgress('error')
         resolve('error')
       }
       audio.onpause = () => {
+        cleanupPlayingListener()
         if (isPlayingRef.current) return
+        stopProgressLoop(progressRafRef)
+        reportProgress('paused')
         resolve('paused')
       }
-      audio.play().catch(() => resolve('error'))
+      audio.play().catch((error) => {
+        cleanupPlayingListener()
+        reportProgress('play-rejected', { error: String(error?.message || error) })
+        resolve('error')
+      })
     })
-  }, [])
+  }, [publishChunkProgress])
 
   const startPlayback = useCallback(async (startPage, startSentence) => {
     if (!book) return
 
     const sessionId = ++playbackSessionRef.current
+    setGenerationError('')
     isPlayingRef.current = true
     setIsPlaying(true)
 
@@ -358,12 +648,11 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       return
     }
 
-    // Track the last page we advanced the reader to. If the view is still on
-    // that page when we advance to the next, we pull the view along (auto-follow).
-    // If the user has manually flipped away, we stop dragging the view and let
-    // them browse freely — they can hit the "jump to reader" button in the pill.
-    let lastReaderPage = null
-
+    // The view does NOT auto-follow the playback cursor here. App.jsx owns
+    // page/sub-page advancement via the Follow Along effect, so pages turn
+    // only when Follow Along is active. Outside Follow Along, audio keeps
+    // playing while the visible page stays put — the user can re-sync via
+    // the "jump to reader" pill button or by entering Follow Along.
     while (isPlayingRef.current && playbackSessionRef.current === sessionId && position) {
       const { page, sentence, pageData: data } = position
       const sentenceInfo = data.sentences[sentence]
@@ -375,13 +664,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       setCurrentSentence(sentence)
       currentSentenceRef.current = sentence
       setReadingPage(page)
-      if (page !== currentPageRef.current) {
-        const viewWasFollowing = lastReaderPage === null || lastReaderPage === currentPageRef.current
-        if (viewWasFollowing) {
-          await goToPage(page)
-        }
-      }
-      lastReaderPage = page
+      // Reset chunkProgress *before* the audio load so the cursor / page-turn
+      // effects don't see the previous sentence's terminal value (which would
+      // place the cursor at end-of-chunk and over-advance Follow Along).
+      publishChunkProgress(0, true)
 
       setCurrentWordIdx(0)
       const audioPromise = fetchSentenceAudio(page, sentence)
@@ -404,8 +690,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         return
       }
 
-      // Natural pause between sentences — mimics a reader's breath
-      await new Promise(res => setTimeout(res, 300))
+      await new Promise(res => setTimeout(res, 200))
       if (playbackSessionRef.current !== sessionId) return
 
       if (sentence % 3 === 0) {
@@ -422,12 +707,12 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       isPlayingRef.current = false
       setCurrentWordIdx(-1)
     }
-  }, [book, findNextReadablePosition, goToPage, playAudio, fetchSentenceAudio, queueReadAhead, savePosition])
+  }, [book, findNextReadablePosition, playAudio, fetchSentenceAudio, queueReadAhead, savePosition, publishChunkProgress])
 
   useEffect(() => {
     if (!bookId || !settingsHydratedRef.current) return
 
-    const settingsKey = `${bookId}|kokoro|${voice}|${speed}`
+    const settingsKey = `${bookId}|${ttsEngine}|${voice}|${speed}`
     if (playbackSettingsKeyRef.current === null || playbackSettingsKeyRef.current === settingsKey) {
       playbackSettingsKeyRef.current = settingsKey
       return
@@ -457,7 +742,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     }, 0)
 
     return () => clearTimeout(restartTimer)
-  }, [bookId, voice, speed, readingPage, startPlayback])
+  }, [bookId, ttsEngine, voice, speed, readingPage, startPlayback])
 
   const play = useCallback(() => {
     if (isPlayingRef.current) return
@@ -481,6 +766,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     currentSentenceRef.current = sentence
     setCurrentSentence(sentence)
     setCurrentWordIdx(-1)
+    publishChunkProgress(0, true)
     setReadingPage(page)
 
     await savePosition(page, sentence)
@@ -488,7 +774,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     if (shouldResume) {
       startPlayback(page, sentence)
     }
-  }, [book, goToPage, savePosition, startPlayback])
+  }, [book, goToPage, savePosition, startPlayback, publishChunkProgress])
 
   const pause = useCallback(() => {
     playbackSessionRef.current += 1
@@ -496,6 +782,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     isPlayingRef.current = false
     if (audioRef.current) audioRef.current.pause()
     if (wordTimerRef.current) clearInterval(wordTimerRef.current)
+    stopProgressLoop(progressRafRef)
     if (book) savePosition(currentPageRef.current, currentSentenceRef.current)
   }, [book, savePosition])
 
@@ -508,7 +795,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     currentSentenceRef.current = 0
     setCurrentSentence(0)
     setCurrentWordIdx(-1)
-  }, [pause])
+    publishChunkProgress(0, true)
+  }, [pause, publishChunkProgress])
 
   const skipSentence = useCallback((delta) => {
     const sentenceCount = pageDataRef.current?.sentences?.length || 0
@@ -516,14 +804,17 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     currentSentenceRef.current = nextSentence
     setCurrentSentence(nextSentence)
     setCurrentWordIdx(-1)
+    publishChunkProgress(0, true)
 
     if (isPlayingRef.current) {
       pause()
       startPlayback(currentPageRef.current, nextSentence)
     }
-  }, [pause, startPlayback])
+  }, [pause, startPlayback, publishChunkProgress])
 
   useEffect(() => {
+    const audioCache = audioCacheRef.current
+    const readAhead = readAheadRef.current
     // Read refs *inside* the cleanup so unmount sees the live audio element /
     // timers, not the (null) values captured at mount.
     return () => {
@@ -533,20 +824,26 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         audioRef.current = null
       }
       if (wordTimerRef.current) clearInterval(wordTimerRef.current)
+      playingListenerCleanupRef.current?.()
+      playingListenerCleanupRef.current = null
+      stopProgressLoop(progressRafRef)
       if (sleepTimerRef.current) clearInterval(sleepTimerRef.current)
       if (preloadAbortRef.current) preloadAbortRef.current.abort()
-      audioCacheRef.current.clear()
-      readAheadRef.current.clear()
+      audioCache.clear()
+      readAhead.clear()
     }
   }, [])
 
   return {
     isPlaying,
-    isGenerating: false,
+    isGenerating,
+    generationError,
     currentSentence,
     currentWordIdx,
     speed,
     setSpeed,
+    ttsEngine,
+    setTtsEngine,
     voice,
     setVoice,
     volume,
@@ -556,6 +853,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     preloadState,
     preloadChapter,
     readingPage,
+    chunkProgress,
     play,
     pause,
     stop,

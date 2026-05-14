@@ -17,14 +17,24 @@
    WELCOME
    ============================================ */
 
+/* Empty state: full marketing hero on the left, empty-library callout right.
+   Library state: compact top header + library content below. The two layouts
+   are different DOM shapes (.welcome-empty vs .welcome-library) so they can
+   each have a clean, focused composition rather than fighting for space. */
 .welcome {
   flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 1.2fr;
-  gap: 0;
   overflow: hidden;
   position: relative;
   z-index: 2;
+}
+.welcome.welcome-empty {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 0;
+}
+.welcome.welcome-library {
+  display: flex;
+  flex-direction: column;
 }
 
 .welcome-left {
@@ -33,7 +43,15 @@
   flex-direction: column;
   justify-content: space-between;
   border-right: 1px solid var(--rule);
-  background: var(--paper-2);
+  /* Subtle vertical gradient adds depth without competing with the type —
+     warm at the top, settling toward the binding. */
+  background:
+    radial-gradient(
+      ellipse 800px 600px at 0% 0%,
+      color-mix(in srgb, var(--ember) 4%, transparent) 0%,
+      transparent 60%
+    ),
+    var(--paper-2);
   position: relative;
 }
 
@@ -97,10 +115,22 @@
   letter-spacing: -0.02em;
   color: var(--ink);
   margin-bottom: 24px;
+  /* Tighten the top edge of italic terminals so the hero sits crisply. */
+  text-rendering: geometricPrecision;
 }
 .welcome-hero h1 em {
   font-style: italic;
-  color: var(--ember);
+  /* Subtle ember-to-soft-ember gradient on the emphasis word — gives the
+     accent a more luminous, modern feel than a flat color. */
+  background: linear-gradient(
+    180deg,
+    var(--ember) 0%,
+    color-mix(in srgb, var(--ember) 78%, var(--ember-soft)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .welcome-hero p {
@@ -110,31 +140,62 @@
   max-width: 440px;
 }
 
-/* Drop zone */
+/* Drop zone — the primary CTA. Modern depth via layered shadows and a soft
+   ember glow that intensifies on hover / drag. */
 .drop-zone {
   border: 1px dashed var(--rule);
   border-radius: var(--radius-lg);
-  padding: 32px;
+  padding: 28px 32px;
   background: var(--paper);
-  transition: all var(--dur) var(--ease-out);
+  transition:
+    border-color var(--dur) var(--ease-out),
+    background-color var(--dur) var(--ease-out),
+    transform var(--dur) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out);
   position: relative;
   overflow: hidden;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 20px;
+  box-shadow: var(--shadow-1);
+}
+/* Soft animated glow behind the drop zone, revealed on hover. Pure CSS, no
+   JS — and it's `pointer-events: none` so it never blocks the drop target. */
+.drop-zone::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background:
+    radial-gradient(
+      ellipse 380px 140px at 30% 50%,
+      color-mix(in srgb, var(--ember) 22%, transparent) 0%,
+      transparent 65%
+    );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur) var(--ease-out);
 }
 .drop-zone:hover {
-  border-color: var(--ember);
+  border-color: color-mix(in srgb, var(--ember) 60%, var(--rule));
   background: var(--paper-3);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-2);
+  transform: translateY(-2px);
+  box-shadow:
+    var(--shadow-2),
+    0 0 0 4px color-mix(in srgb, var(--ember) 8%, transparent);
 }
+.drop-zone:hover::before { opacity: 1; }
 .drop-zone.drag-over {
   border-color: var(--ember);
   border-style: solid;
   background: var(--ember-wash);
+  transform: translateY(-2px) scale(1.005);
+  box-shadow:
+    var(--shadow-3),
+    0 0 0 4px color-mix(in srgb, var(--ember) 18%, transparent);
 }
+.drop-zone.drag-over::before { opacity: 1; }
 .drop-zone .icon {
   width: 56px; height: 56px;
   flex-shrink: 0;
@@ -144,7 +205,20 @@
   align-items: center;
   justify-content: center;
   color: var(--ember);
-  box-shadow: inset 0 0 0 1px var(--rule);
+  box-shadow:
+    inset 0 0 0 1px var(--rule),
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent);
+  transition:
+    transform var(--dur) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out);
+}
+.drop-zone:hover .icon {
+  transform: translateY(-1px) scale(1.04);
+  color: var(--ember-soft);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ember) 32%, var(--rule)),
+    0 4px 14px -6px color-mix(in srgb, var(--ember) 50%, transparent);
 }
 .drop-zone .copy { flex: 1; }
 .drop-zone .copy strong {
@@ -163,10 +237,13 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ink-3);
-  padding: 4px 8px;
+  padding: 5px 10px;
   border-radius: 6px;
   background: var(--paper-2);
-  box-shadow: inset 0 0 0 1px var(--rule);
+  box-shadow:
+    inset 0 0 0 1px var(--rule),
+    inset 0 -1px 0 color-mix(in srgb, var(--ink) 8%, transparent);
+  letter-spacing: 0.06em;
 }
 
 .import-error {
@@ -208,25 +285,36 @@
   align-items: baseline;
   justify-content: space-between;
   margin-bottom: 28px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--rule);
+  padding-bottom: 16px;
+  position: relative;
+  /* Hairline rule that dissolves at the edges for a softer break than a
+     solid horizontal line. */
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--rule) 12%,
+      var(--rule) 88%,
+      transparent 100%
+    )
+    bottom / 100% 1px no-repeat;
 }
 .section-head h2 {
   font-family: var(--font-display);
   font-weight: 400;
-  font-size: 28px;
-  letter-spacing: -0.01em;
+  font-size: 30px;
+  letter-spacing: -0.012em;
   color: var(--ink);
 }
 .section-head .meta {
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   color: var(--ink-3);
   text-transform: uppercase;
 }
 
-/* Continue-reading card */
+/* Continue-reading card — the hero card for the right panel. */
 .continue-card {
   display: grid;
   grid-template-columns: 92px 1fr auto;
@@ -234,18 +322,44 @@
   padding: 22px;
   align-items: stretch;
   background: var(--paper-2);
+  border: 1px solid color-mix(in srgb, var(--rule) 60%, transparent);
   border-radius: var(--radius-lg);
   margin-bottom: 36px;
-  box-shadow: var(--shadow-2);
+  box-shadow:
+    var(--shadow-1),
+    var(--shadow-2);
   position: relative;
   overflow: hidden;
   cursor: pointer;
-  transition: transform var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out);
+  transition:
+    transform var(--dur) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out);
+}
+/* Subtle ember sheen revealed on hover, behind the content. */
+.continue-card::after {
+  content: "";
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 50%;
+  background:
+    radial-gradient(
+      ellipse at 100% 50%,
+      color-mix(in srgb, var(--ember) 12%, transparent) 0%,
+      transparent 70%
+    );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-slow) var(--ease-out);
 }
 .continue-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-3);
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--ember) 30%, var(--rule));
+  box-shadow:
+    var(--shadow-3),
+    0 0 0 1px color-mix(in srgb, var(--ember) 12%, transparent);
 }
+.continue-card:hover::after { opacity: 1; }
 .continue-card .cover {
   aspect-ratio: 2 / 3;
   border-radius: 6px;
@@ -259,6 +373,14 @@
   align-items: center;
   justify-content: center;
   padding: 12px;
+  background-size: cover;
+  background-position: center;
+}
+.continue-card .cover.has-real-cover {
+  background-color: #16110c;
+  background-size: contain;
+  background-repeat: no-repeat;
+  padding: 0;
 }
 .continue-card .cover-title {
   font-family: var(--font-display);
@@ -276,6 +398,14 @@
   border: 1px solid rgba(229, 203, 150, 0.3);
   border-radius: 3px;
   pointer-events: none;
+}
+.continue-card .cover.has-real-cover::before {
+  inset: 0;
+  border-color: rgba(255,255,255,0.10);
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.18),
+    inset 10px 0 16px -12px rgba(0,0,0,0.8);
+  opacity: 1;
 }
 
 .continue-info { display: flex; flex-direction: column; justify-content: center; gap: 8px; }
@@ -384,11 +514,12 @@
   position: relative;
   transition: transform var(--dur) var(--ease-out);
 }
-.book-card:hover { transform: translateY(-4px); }
+.book-card:hover { transform: translateY(-6px); }
+.book-card:active { transform: translateY(-2px); transition-duration: 80ms; }
 
 .book-cover {
   aspect-ratio: 2 / 3;
-  border-radius: 4px;
+  border-radius: 5px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -399,14 +530,42 @@
   box-shadow:
     inset 2px 0 4px rgba(0,0,0,0.35),
     inset -1px 0 0 rgba(255,255,255,0.08),
+    0 1px 0 rgba(255,255,255,0.04),
     0 10px 24px -6px rgba(62, 40, 18, 0.4);
   transition: box-shadow var(--dur) var(--ease-out);
+  background-size: cover;
+  background-position: center;
+}
+.book-cover.has-real-cover {
+  background-color: #16110c;
+  background-size: contain;
+  background-repeat: no-repeat;
+  padding: 0;
+}
+/* Soft sheen on hover — diagonal highlight that hints at a real cover. */
+.book-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.08) 50%,
+    transparent 65%
+  );
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur) var(--ease-out);
 }
 .book-card:hover .book-cover {
   box-shadow:
     inset 2px 0 4px rgba(0,0,0,0.35),
-    inset -1px 0 0 rgba(255,255,255,0.08),
-    0 20px 44px -10px rgba(62, 40, 18, 0.55);
+    inset -1px 0 0 rgba(255,255,255,0.10),
+    0 1px 0 rgba(255,255,255,0.05),
+    0 24px 48px -10px rgba(62, 40, 18, 0.6);
+}
+.book-card:hover .book-cover::after {
+  opacity: 1;
 }
 .book-cover::before {
   content: "";
@@ -416,6 +575,14 @@
   border-radius: 2px;
   opacity: 0.3;
   pointer-events: none;
+}
+.book-cover.has-real-cover::before {
+  inset: 0;
+  border-color: rgba(255,255,255,0.10);
+  box-shadow:
+    inset 0 0 0 1px rgba(0,0,0,0.18),
+    inset 12px 0 18px -14px rgba(0,0,0,0.9);
+  opacity: 1;
 }
 .book-cover-title {
   font-family: var(--font-display);
@@ -488,8 +655,202 @@
   transition: width var(--dur-slow) var(--ease-out);
 }
 
+/* ============================================
+   Library state — compact header + book grid
+   ============================================ */
+
+.welcome-topbar {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 32px;
+  align-items: center;
+  /* Slightly extra right padding so the trailing badges have breathing room
+     against the screen edge instead of hugging it. */
+  padding: 18px 36px 18px 32px;
+  border-bottom: 1px solid var(--rule);
+  background:
+    linear-gradient(
+      180deg,
+      var(--paper-2) 0%,
+      var(--paper) 100%
+    );
+  position: relative;
+  z-index: 3;
+}
+.welcome-topbar::after {
+  /* Hairline shadow under the header — gives modern depth without a hard rule. */
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -8px;
+  height: 8px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 4%, transparent), transparent);
+  pointer-events: none;
+}
+.theme-dark .welcome-topbar::after {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.35), transparent);
+}
+.welcome-topbar-brand {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 56px;
+}
+.welcome-topbar-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--ember) 28%, transparent));
+}
+.welcome-topbar-drop {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+.welcome-topbar-drop .drop-zone {
+  width: 100%;
+  max-width: 420px;
+}
+.welcome-topbar-status {
+  display: flex;
+  /* The statusBadges prop is a Fragment of <span> badges (no wrapping div),
+     so gap has to live here, not on .status-badges. Without this, the
+     badges sit edge-to-edge in the topbar. */
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+}
+.welcome-topbar-status .status-badges {
+  margin-top: 0;
+}
+
+.welcome-library-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 36px 56px 64px;
+  /* Soft warm wash anchored top-right — gives the library page a sense of
+     light source without being chrome. */
+  background:
+    radial-gradient(
+      ellipse 900px 600px at 100% 0%,
+      color-mix(in srgb, var(--ember) 5%, transparent) 0%,
+      transparent 60%
+    ),
+    var(--paper);
+}
+.library-section {
+  max-width: 1280px;
+  margin: 0 auto 44px;
+}
+.library-section:last-child {
+  margin-bottom: 0;
+}
+
+/* Compact drop zone for the library-state header. Same drag/drop semantics
+   as the full one but a more restrained footprint. */
+.drop-zone.drop-compact {
+  padding: 10px 14px;
+  gap: 12px;
+  border-radius: var(--radius-pill);
+  align-items: center;
+}
+.drop-zone.drop-compact .icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+.drop-zone.drop-compact .copy strong {
+  font-size: 13px;
+  margin-bottom: 0;
+}
+.drop-zone.drop-compact .copy span {
+  display: none;
+}
+
+/* Empty-library callout (shown only when library is truly empty — alongside
+   the full hero on the left). */
+.empty-library {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  text-align: center;
+  color: var(--ink-2);
+  gap: 18px;
+}
+.empty-library .empty-mark {
+  font-family: var(--font-display);
+  font-size: 64px;
+  color: var(--ember);
+  line-height: 1;
+  opacity: 0.6;
+}
+.empty-library h2 {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 400;
+  font-style: italic;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.empty-library p {
+  max-width: 360px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+
+/* Continue-card "Remove" link — was inline-style in JSX, now a real class. */
+.continue-remove {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.continue-remove:hover {
+  color: var(--ember);
+}
+
+/* Book-card "remove" × button — was inline-style, now a class so it can
+   inherit theme colors and animate cleanly. */
+.book-card-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.32);
+  color: #e5cb96;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  opacity: 0;
+  transform: scale(0.85);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+.book-card:hover .book-card-remove {
+  opacity: 1;
+  transform: scale(1);
+}
+.book-card-remove:hover {
+  background: rgba(0, 0, 0, 0.5);
+}
+
 @media (max-width: 1100px) {
-  .welcome {
+  .welcome.welcome-empty {
     grid-template-columns: 1fr;
   }
 
@@ -511,6 +872,16 @@
     margin: 48px 0 32px;
     max-width: 100%;
   }
+}
+
+@media (max-width: 900px) {
+  .welcome-topbar {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 14px 18px;
+  }
+  .welcome-topbar-status { justify-content: flex-start; }
+  .welcome-library-main { padding: 24px 18px 64px; }
 }
 
 @media (max-width: 700px) {

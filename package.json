@@ -1,8 +1,10 @@
 {
   "name": "folio-desktop",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.9",
   "scripts": {
+    "preview:codex": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-codex-preview.ps1",
+    "preview:codex:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-codex-preview.ps1 -Restart",
     "tauri:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\run-tauri-dev.ps1",
     "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-tauri.ps1"
   },

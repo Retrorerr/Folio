@@ -8,9 +8,11 @@ Thumbs.db
 
 # Local tooling
 .browser-profile/
+.browser-check-profile*/
 .claude/
 .codex/
 .tauri/
+codex-preview-*.png
 
 # Python
 __pycache__/
@@ -58,13 +60,16 @@ dev/
 backend/audio_cache/
 backend/uploads/
 backend/data/
+backend/codex-preview-pids/
 
 # Benchmark / debug output (tts_benchmark.py)
 backend/tts_benchmark.py
 backend/tts_debug_wavs*/
 backend/tts_benchmark_*.csv
+backend/benchmarks/
 
-# Local model cache; download with backend/setup_kokoro_models.py
+# Local model cache; download/regenerate locally, do not commit model weights.
+backend/models/
 backend/models/*.onnx
 backend/models/*.bin
 

@@ -1,12 +1,43 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, memo } from 'react'
+import type React from 'react'
+import { createPortal } from 'react-dom'
 import { Icons } from './icons'
 import { apiFetch } from '../api'
-import { kokoroVoices, normalizeKokoroVoice } from '../kokoroVoices'
 
-export default function Sidebar({
+// Spawns a one-shot radial wash from the click point so the upcoming theme
+// change reads as a curtain sweeping across, not a hard cut. The ripple
+// element auto-removes after its CSS animation completes.
+function spawnThemeRipple(event: React.MouseEvent, theme: string) {
+  if (typeof document === 'undefined') return
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+  const x = event.clientX
+  const y = event.clientY
+  const node = document.createElement('div')
+  node.className = 'theme-ripple'
+  node.style.setProperty('--rx', `${x}px`)
+  node.style.setProperty('--ry', `${y}px`)
+  // Use the destination theme's paper as the wash color.
+  const paper = theme === 'folio' ? 'rgba(8, 9, 11, 0.68)'
+    : theme === 'dark' ? 'rgba(20, 24, 28, 0.6)'
+    : theme === 'sepia' ? 'rgba(243, 231, 207, 0.6)'
+    : 'rgba(247, 244, 237, 0.6)'
+  node.style.setProperty('--ripple-color', paper)
+  document.body.appendChild(node)
+  setTimeout(() => node.remove(), 820)
+}
+import {
+  ttsEngines,
+  voicesForEngine,
+  normalizeTtsEngine,
+  normalizeVoiceForEngine,
+  CHATTERBOX_ENGINE,
+} from '../kokoroVoices'
+
+export default memo(function Sidebar({
   book, reflow, currentPage, currentSentence, goToPage,
   addBookmark, removeBookmark,
   voice, setVoice,
+  ttsEngine, setTtsEngine,
   theme, setTheme,
   motion, setMotion,
   wheelPaging, setWheelPaging,
@@ -15,11 +46,14 @@ export default function Sidebar({
   onNavigateSearchResult,
   onHome,
   hidden = false,
-}) {
+}: any) {
   const [renderedTab, setRenderedTab] = useState(tab)
+  const panelTab = renderedTab === 'settings' ? null : renderedTab
+  const panelOpen = Boolean(tab && tab !== 'settings')
+  const settingsOpen = tab === 'settings'
 
   useEffect(() => {
-    let timer
+    let timer: ReturnType<typeof setTimeout>
     if (tab) {
       timer = setTimeout(() => setRenderedTab(tab), 0)
     } else {
@@ -28,7 +62,7 @@ export default function Sidebar({
     return () => clearTimeout(timer)
   }, [tab])
 
-  const railBtn = (key, Ico, label) => (
+  const railBtn = (key: string, Ico: any, label: string) => (
     <button
       key={key}
       className={`rail-btn ${tab === key ? 'active' : ''}`}
@@ -42,12 +76,12 @@ export default function Sidebar({
   // Close the expanded panel when the user clicks/taps anywhere outside the
   // sidebar (panel + icon rail). Toggling via a rail button still works
   // because rail clicks are inside the sidebar root.
-  const railRef = useRef(null)
-  const panelRef = useRef(null)
+  const railRef = useRef<HTMLDivElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    if (!tab) return
-    const onPointerDown = (e) => {
-      const t = e.target
+    if (!tab || tab === 'settings') return
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node
       if (railRef.current?.contains(t)) return
       if (panelRef.current?.contains(t)) return
       setTab(null)
@@ -58,23 +92,22 @@ export default function Sidebar({
 
   return (
     <>
-      <div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${tab ? 'is-open' : ''} ${renderedTab && !tab ? 'is-closing' : ''}`}>
+      <div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${panelOpen ? 'is-open' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''}`}>
       <div className="icon-rail" ref={railRef}>
-        <div className="rail-brand" onClick={onHome} title="Library">F</div>
+        <button className="rail-brand" onClick={onHome} title="Library" aria-label="Library">
+          <img className="rail-brand-logo" src="/folio-monochrome-icon.png" alt="" draggable={false} />
+        </button>
         {railBtn('chapters', Icons.Chapters, 'Chapters')}
         {railBtn('bookmarks', Icons.Bookmark, 'Bookmarks')}
         {railBtn('search', Icons.Search, 'Search')}
         <div className="rail-spacer" />
         {railBtn('settings', Icons.Settings, 'Settings')}
-        <button className="rail-btn" onClick={onHome} title="Library">
-          <Icons.Library size={18} />
-        </button>
       </div>
 
-      {renderedTab && (
-        <div className={`sidebar-panel ${tab ? 'is-open' : 'is-closing'}`} ref={panelRef} aria-hidden={!tab}>
-          {renderedTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
-          {renderedTab === 'bookmarks' && (
+      {panelTab && (
+        <div className={`sidebar-panel ${panelOpen ? 'is-open' : 'is-closing'}`} ref={panelRef} aria-hidden={!panelOpen}>
+          {panelTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
+          {panelTab === 'bookmarks' && (
             <BookmarkPanel
               book={book}
               currentPage={currentPage}
@@ -84,30 +117,34 @@ export default function Sidebar({
               removeBookmark={removeBookmark}
             />
           )}
-          {renderedTab === 'search' && (
+          {panelTab === 'search' && (
             <SearchPanel
               book={book}
               currentPage={currentPage}
               onNavigateSearchResult={onNavigateSearchResult}
             />
           )}
-          {renderedTab === 'settings' && (
-            <SettingsPanel
-              theme={theme} setTheme={setTheme}
-              motion={motion} setMotion={setMotion}
-              wheelPaging={wheelPaging} setWheelPaging={setWheelPaging}
-              highlightStyle={highlightStyle} setHighlightStyle={setHighlightStyle}
-              voice={voice} setVoice={setVoice}
-            />
-          )}
         </div>
       )}
       </div>
+      {settingsOpen && createPortal(
+        <SettingsPanel
+          theme={theme}
+          setTheme={setTheme}
+          motion={motion} setMotion={setMotion}
+          wheelPaging={wheelPaging} setWheelPaging={setWheelPaging}
+          highlightStyle={highlightStyle} setHighlightStyle={setHighlightStyle}
+          voice={voice} setVoice={setVoice}
+          ttsEngine={ttsEngine} setTtsEngine={setTtsEngine}
+          onClose={() => setTab(null)}
+        />,
+        document.body,
+      )}
     </>
   )
-}
+})
 
-function ChapterPanel({ book, reflow, currentPage, goToPage }) {
+function ChapterPanel({ book, reflow, currentPage, goToPage }: any) {
   if (!book) return null
   const reflowChapters = reflow?.chapters || []
   const useReflow = reflowChapters.length > 0
@@ -127,7 +164,7 @@ function ChapterPanel({ book, reflow, currentPage, goToPage }) {
       <div className="panel-body">
         {toc.length === 0 ? (
           <div style={{ padding: 24, color: 'var(--ink-3)', fontStyle: 'italic', fontSize: 13.5, textAlign: 'center' }}>
-            No table of contents found in this PDF.
+            No table of contents found in this EPUB.
           </div>
         ) : (
           <div className="chapter-list">
@@ -156,7 +193,7 @@ function ChapterPanel({ book, reflow, currentPage, goToPage }) {
   )
 }
 
-function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookmark, removeBookmark }) {
+function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookmark, removeBookmark }: any) {
   if (!book) return null
   const bookmarks = book.bookmarks || []
   return (
@@ -190,7 +227,7 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
                     title="Remove bookmark"
                   ><Icons.X size={13} /></button>
                 </div>
-                <div className="bm-snip">"{bm.label || `Page ${bm.page + 1}, sentence ${bm.sentence_idx + 1}`}"</div>
+                <div className="bm-snip">{bm.label || `Page ${bm.page + 1}, sentence ${(bm.sentence_idx ?? 0) + 1}`}</div>
               </div>
             ))}
           </div>
@@ -200,14 +237,14 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
   )
 }
 
-function SearchPanel({ book, currentPage, onNavigateSearchResult }) {
+function SearchPanel({ book, currentPage, onNavigateSearchResult }: any) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [activeKey, setActiveKey] = useState('')
-  const inputRef = useRef(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -322,7 +359,7 @@ function SearchPanel({ book, currentPage, onNavigateSearchResult }) {
                 onClick={() => handleResultClick(result)}
               >
                 <div className="search-result-meta">
-                  <span>{book?.format === 'epub' ? result.location_label : `Page ${result.page + 1}`}</span>
+                  <span>{result.location_label || `Page ${result.page + 1}`}</span>
                   <span>Match {idx + 1}</span>
                 </div>
                 <div className="search-result-text">{highlightQuery(result.snippet || result.text, query)}</div>
@@ -353,12 +390,17 @@ function SettingsPanel({
   theme, setTheme, motion, setMotion, wheelPaging, setWheelPaging,
   highlightStyle, setHighlightStyle,
   voice, setVoice,
-}) {
+  ttsEngine, setTtsEngine,
+  onClose,
+}: any) {
   const [cacheInfo, setCacheInfo] = useState(null)
   const [clearingCache, setClearingCache] = useState(false)
   const [cacheMessage, setCacheMessage] = useState('')
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateMessage, setUpdateMessage] = useState('')
+  const activeEngine = normalizeTtsEngine(ttsEngine)
+  const voiceItems = voicesForEngine(activeEngine)
+  const activeVoice = normalizeVoiceForEngine(activeEngine, voice)
 
   useEffect(() => {
     apiFetch('/api/cache/info')
@@ -366,6 +408,14 @@ function SettingsPanel({
       .then(setCacheInfo)
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose?.()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
 
   const clearCache = async () => {
     setClearingCache(true)
@@ -410,122 +460,164 @@ function SettingsPanel({
   }
 
   return (
-    <>
-      <div className="panel-head">
-        <div className="pre">PREFERENCES</div>
-        <h2>Settings</h2>
-      </div>
-      <div className="panel-body settings-body">
-        <div className="settings-group">
-          <div className="label">Paper</div>
-          <div className="theme-switch">
-            {['light', 'sepia', 'dark'].map((t) => (
-              <button
-                key={t}
-                data-t={t}
-                className={`theme-option ${theme === t ? 'active' : ''}`}
-                onClick={() => setTheme(t)}
-              >
-                <span className="swatch" />
-                {t}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="settings-group">
-          <div className="label">Narrator</div>
-          <div className="voice-picker" role="radiogroup" aria-label="Kokoro voice">
-            {kokoroVoices.map((item) => {
-              const active = normalizeKokoroVoice(voice) === item.id
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`voice-card ${active ? 'active' : ''}`}
-                  onClick={() => setVoice(item.id)}
-                  role="radio"
-                  aria-checked={active}
-                >
-                  <span className="voice-card-head">
-                    <span className="voice-mark">{item.name.slice(0, 1)}</span>
-                    <span className="voice-title">
-                      <span className="voice-name">{item.name}</span>
-                      <span className="voice-id">{item.id}</span>
-                    </span>
-                    <span className="voice-tag">{item.tagline}</span>
-                  </span>
-                  <span className="voice-description">{item.description}</span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
-
-        <div className="settings-group">
-          <div className="label">Read-along highlight</div>
-          <div className="control-row">
-            <span className="k">Style</span>
-            <select value={highlightStyle} onChange={(e) => setHighlightStyle(e.target.value)}
-              style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--rule)', background: 'var(--paper)', color: 'var(--ink)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-              <option value="dim">Dim the rest</option>
-              <option value="underline">Underline cursor</option>
-              <option value="tint">Sentence tint</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="settings-group">
-          <div className="label">Motion</div>
-          <div className="control-row">
-            <span className="k">Page-turn animation</span>
-            <div className={`toggle ${motion ? 'on' : ''}`} onClick={() => setMotion(!motion)} />
-          </div>
-          <div className="control-row">
-            <span className="k">Scroll wheel flips pages</span>
-            <div className={`toggle ${wheelPaging ? 'on' : ''}`} onClick={() => setWheelPaging(!wheelPaging)} />
-          </div>
-        </div>
-
-        <div className="settings-group">
-          <div className="label">Updates</div>
-          <div style={{ padding: 14, background: 'var(--paper)', borderRadius: 8, border: '1px solid var(--rule)' }}>
-            <button
-              disabled={checkingUpdate}
-              onClick={checkForUpdates}
-              style={{
-                padding: '6px 14px', fontSize: 11, fontFamily: 'var(--font-mono)',
-                letterSpacing: '.14em', textTransform: 'uppercase',
-                background: 'var(--ink)', color: 'var(--paper)', borderRadius: 8,
-                opacity: checkingUpdate ? 0.6 : 1,
-              }}
-            >{checkingUpdate ? 'Checking...' : 'Check for updates'}</button>
-            {updateMessage && <p style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-3)', overflowWrap: 'anywhere' }}>{updateMessage}</p>}
-          </div>
-        </div>
-
-        {cacheInfo && (
-          <div className="settings-group">
-            <div className="label">Voice cache</div>
-            <div style={{ padding: 14, background: 'var(--paper)', borderRadius: 10, border: '1px solid var(--rule)' }}>
-              <div style={{ fontSize: 13, color: 'var(--ink-2)', marginBottom: 10 }}>
-                {cacheInfo.files} files · <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ember)' }}>{cacheInfo.size_mb} MB</span>
-              </div>
-              <button
-                disabled={clearingCache}
-                onClick={clearCache}
-                style={{
-                  padding: '6px 14px', fontSize: 11, fontFamily: 'var(--font-mono)',
-                  letterSpacing: '.14em', textTransform: 'uppercase',
-                  background: 'var(--ink)', color: 'var(--paper)', borderRadius: 999,
-                  opacity: clearingCache ? 0.6 : 1,
-                }}
-              >{clearingCache ? 'Clearing...' : 'Clear cache'}</button>
-              {cacheMessage && <p style={{ marginTop: 8, fontSize: 11, color: 'var(--ink-3)' }}>{cacheMessage}</p>}
+    <div
+      className={`settings-overlay theme-${theme}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose?.()
+      }}
+    >
+      <div className="settings-shell" onMouseDown={(event) => event.stopPropagation()}>
+        <section className="settings-main">
+          <header className="settings-full-head">
+            <div>
+              <h2>Settings</h2>
+              <p>Reader, narrator, and local storage controls.</p>
             </div>
+            <button className="settings-close" type="button" onClick={onClose} aria-label="Close settings">
+              <Icons.X size={18} />
+            </button>
+          </header>
+
+          <div className="settings-summary" aria-label="Current settings">
+            <span><Icons.Feather size={14} /> {theme}</span>
+            <span><Icons.Play size={14} /> {activeEngine === CHATTERBOX_ENGINE ? 'Chatterbox' : 'Kokoro'}</span>
+            <span><Icons.Settings size={14} /> {voiceItems.find((item) => item.id === activeVoice)?.name || activeVoice}</span>
           </div>
-        )}
-      </div>
-    </>
+
+          <div className="settings-full-body settings-body">
+            <div className="settings-group">
+              <div className="settings-card-head">
+                <div>
+                  <div className="label">Reader</div>
+                  <h3>Appearance</h3>
+                </div>
+                <span>{theme}</span>
+              </div>
+              <div className="theme-switch">
+                {['light', 'sepia', 'dark', 'folio'].map((t) => (
+                  <button
+                    key={t}
+                    data-t={t}
+                    className={`theme-option ${theme === t ? 'active' : ''}`}
+                    onClick={(e) => {
+                      spawnThemeRipple(e, t)
+                      setTheme(t)
+                    }}
+                  >
+                    <span className="swatch" />
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="control-row">
+                <span className="k">Highlight style</span>
+                <select value={highlightStyle} onChange={(e) => setHighlightStyle(e.target.value)}>
+                  <option value="dim">Dim the rest</option>
+                  <option value="underline">Underline cursor</option>
+                  <option value="tint">Sentence tint</option>
+                </select>
+              </div>
+              <div className="control-row">
+                <span className="k">Page-turn animation</span>
+                <div className={`toggle ${motion ? 'on' : ''}`} onClick={() => setMotion(!motion)} />
+              </div>
+              <div className="control-row">
+                <span className="k">Scroll wheel flips pages</span>
+                <div className={`toggle ${wheelPaging ? 'on' : ''}`} onClick={() => setWheelPaging(!wheelPaging)} />
+              </div>
+            </div>
+
+            <div className="settings-group settings-voice-card">
+              <div className="settings-card-head">
+                <div>
+                  <div className="label">Narrator</div>
+                  <h3>Engine and voice</h3>
+                </div>
+                <span>{activeVoice}</span>
+              </div>
+              <div className="tts-engine-switch">
+                {ttsEngines.map((engine) => (
+                  <button
+                    key={engine.id}
+                    type="button"
+                    className={`tts-engine-option ${activeEngine === engine.id ? 'active' : ''}`}
+                    onClick={() => setTtsEngine(engine.id)}
+                  >
+                    {engine.name}
+                  </button>
+                ))}
+              </div>
+              <div className="voice-picker" role="radiogroup" aria-label={`${activeEngine} voice`}>
+                {voiceItems.map((item) => {
+                  const active = activeVoice === item.id
+                  return (
+                    <div
+                      key={item.id}
+                      className={`voice-card ${active ? 'active' : ''}`}
+                      onClick={() => setVoice(item.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setVoice(item.id)
+                        }
+                      }}
+                      role="radio"
+                      aria-checked={active}
+                      tabIndex={0}
+                    >
+                      <span className="voice-card-head">
+                        <span className="voice-mark">{item.name.slice(0, 1)}</span>
+                        <span className="voice-title">
+                          <span className="voice-name">{item.name}</span>
+                          <span className="voice-id">{item.id}</span>
+                        </span>
+                        <span className="voice-tag">{item.tagline}</span>
+                      </span>
+                      <span className="voice-description">{item.description}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-card-head">
+                <div>
+                  <div className="label">Maintenance</div>
+                  <h3>Updates</h3>
+                </div>
+              </div>
+              <button className="settings-action" disabled={checkingUpdate} onClick={checkForUpdates}>
+                {checkingUpdate ? 'Checking...' : 'Check for updates'}
+              </button>
+              {updateMessage && <p className="settings-note">{updateMessage}</p>}
+            </div>
+
+            {cacheInfo && (
+              <div className="settings-group">
+                <div className="settings-card-head">
+                  <div>
+                    <div className="label">Storage</div>
+                    <h3>Voice cache</h3>
+                  </div>
+                  <span>{cacheInfo.size_mb} MB</span>
+                </div>
+                <div className="settings-metric">
+                  <span>Cached files</span>
+                  <strong>{cacheInfo.files}</strong>
+                </div>
+                <button className="settings-action" disabled={clearingCache} onClick={clearCache}>
+                  {clearingCache ? 'Clearing...' : 'Clear cache'}
+                </button>
+                {cacheMessage && <p className="settings-note">{cacheMessage}</p>}
+              </div>
+            )}
+          </div>
+        </section>
+        </div>
+    </div>
   )
 }

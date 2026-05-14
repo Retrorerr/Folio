@@ -13,6 +13,7 @@ import traceback
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(APP_DIR, "backend")
+BACKEND_VENV_DIR = os.path.join(BACKEND_DIR, ".venv")
 LOG_FILE = os.path.join(APP_DIR, "launcher.log")
 PORT = 8000
 URL = f"http://127.0.0.1:{PORT}"
@@ -25,27 +26,112 @@ def log(msg):
         f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
 
 
-# Add NVIDIA CUDA DLLs to PATH for GPU acceleration
-_site_packages = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Python",
-                              f"Python{sys.version_info.major}{sys.version_info.minor}", "site-packages")
-for _nvidia_bin in glob.glob(os.path.join(_site_packages, "nvidia", "*", "bin")):
-    if _nvidia_bin not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = _nvidia_bin + os.pathsep + os.environ.get("PATH", "")
+def prepend_path(env, path):
+    if not path or not os.path.exists(path):
+        return False
+    path = os.path.abspath(path)
+    current = env.get("PATH", "")
+    parts = [p.lower() for p in current.split(os.pathsep) if p]
+    if path.lower() not in parts:
+        env["PATH"] = path + os.pathsep + current
+        return True
+    return False
 
-# Add user Scripts to PATH so uvicorn can be found
-_scripts = os.path.join(_site_packages, "..", "Scripts")
-if os.path.exists(_scripts):
-    os.environ["PATH"] = os.path.abspath(_scripts) + os.pathsep + os.environ.get("PATH", "")
+
+def candidate_site_packages(python_exe):
+    """Return likely site-packages folders without importing app code."""
+    paths = []
+    venv_site = os.path.join(BACKEND_VENV_DIR, "Lib", "site-packages")
+    if python_exe.lower().startswith(BACKEND_VENV_DIR.lower()):
+        paths.append(venv_site)
+
+    version = None
+    try:
+        out = subprocess.check_output(
+            [python_exe, "-c", "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        version = out.strip()
+    except Exception:
+        version = f"{sys.version_info.major}{sys.version_info.minor}"
+
+    if version:
+        paths.extend(
+            [
+                os.path.join(
+                    os.path.expanduser("~"),
+                    "AppData",
+                    "Roaming",
+                    "Python",
+                    f"Python{version}",
+                    "site-packages",
+                ),
+                os.path.join(os.path.dirname(os.path.dirname(python_exe)), "Lib", "site-packages"),
+            ]
+        )
+
+    seen = set()
+    result = []
+    for path in paths:
+        key = os.path.abspath(path).lower()
+        if key not in seen and os.path.isdir(path):
+            seen.add(key)
+            result.append(path)
+    return result
+
+
+def configure_runtime_path(env, python_exe):
+    """Expose venv scripts and CUDA DLL folders for Torch, ONNX, and llama.cpp."""
+    scripts = os.path.join(os.path.dirname(python_exe))
+    if prepend_path(env, scripts):
+        log(f"PATH add: {scripts}")
+
+    for site_packages in candidate_site_packages(python_exe):
+        for path in glob.glob(os.path.join(site_packages, "nvidia", "*", "bin")):
+            if prepend_path(env, path):
+                log(f"PATH add: {path}")
+        for path in (os.path.join(site_packages, "torch", "lib"),):
+            if prepend_path(env, path):
+                log(f"PATH add: {path}")
+
+
+def python_works(python_exe):
+    try:
+        check = subprocess.run(
+            [python_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if check.returncode == 0:
+            return True
+        log(f"Python candidate failed: {python_exe} :: {check.stderr[:300]}")
+    except Exception as exc:
+        log(f"Python candidate unavailable: {python_exe} :: {exc}")
+    return False
 
 
 def find_python():
     """Find python.exe (not pythonw.exe) for running the server."""
+    preferred = os.environ.get("FOLIO_PYTHON") or os.environ.get("KOKORO_READER_PYTHON")
+    if preferred and os.path.exists(preferred) and python_works(preferred):
+        return preferred
+
+    venv_python = os.path.join(BACKEND_VENV_DIR, "Scripts", "python.exe")
+    if os.path.exists(venv_python) and python_works(venv_python):
+        return venv_python
+
     exe_dir = os.path.dirname(sys.executable)
     p = os.path.join(exe_dir, "python.exe")
-    if os.path.exists(p):
+    if os.path.exists(p) and python_works(p):
         return p
     import shutil
-    return shutil.which("python") or sys.executable
+    path_python = shutil.which("python")
+    if path_python and python_works(path_python):
+        return path_python
+    return sys.executable
 
 
 def find_browser_app_mode():
@@ -116,6 +202,7 @@ def main():
     log(f"Python: {python_exe}")
     log(f"Backend: {BACKEND_DIR}")
     log(f"CWD: {os.getcwd()}")
+    configure_runtime_path(env, python_exe)
 
     # Clean up orphan server from previous crash
     kill_orphan_server()

@@ -18,6 +18,7 @@ from ebooklib import epub, ITEM_DOCUMENT
 import text_chunker
 
 logger = logging.getLogger(__name__)
+REFLOW_VERSION = f"reflow-v2.3-2026-05-12|chunker:{text_chunker.CHUNKER_VERSION}"
 
 
 def get_book_id(filepath: str) -> str:
@@ -52,7 +53,7 @@ def _typographic(text: str) -> str:
     return text
 
 
-# ----- sentence splitting (mirrors pdf_service so audio pipeline stays consistent) -----
+# ----- sentence splitting for the audio pipeline -----
 
 _ABBREVIATIONS = {
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "v", "etc",
@@ -112,7 +113,21 @@ def _split_sentences(text: str) -> list[str]:
 # ----- EPUB extraction -----
 
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
-_BLOCK_TAGS = {"p", "div", "section"} | _HEADING_TAGS
+_PARAGRAPH_TAGS = {"p"}
+_LIST_TAGS = {"ol", "ul", "menu"}
+_LIST_ITEM_TAGS = {"li"}
+_BLOCKQUOTE_TAGS = {"blockquote"}
+_CONTAINER_TAGS = {
+    "body", "html", "main", "article", "section", "div", "chapter",
+    "aside", "header", "footer",
+}
+_SEMANTIC_BLOCK_TAGS = (
+    _HEADING_TAGS | _PARAGRAPH_TAGS | _LIST_TAGS | _LIST_ITEM_TAGS |
+    _BLOCKQUOTE_TAGS | {"hr"}
+)
+_SECTION_BREAK_TEXT_RE = re.compile(
+    r"^\s*(?:(?:\*\s*){3,}|(?:\.\s*){3,}|(?:[-_]\s*){3,}|(?:[\u2022\u00b7]\s*){3,})\s*$"
+)
 
 
 def _chapter_number_from_title(title: str) -> tuple[str | None, str]:
@@ -128,39 +143,105 @@ def _chapter_number_from_title(title: str) -> tuple[str | None, str]:
     return None, title.strip()
 
 
+def _is_section_break_text(text: str) -> bool:
+    return bool(text and _SECTION_BREAK_TEXT_RE.match(text))
+
+
+def _append_dinkus_block(blocks: list[dict]) -> None:
+    if blocks and blocks[-1].get("type") == "dinkus":
+        return
+    blocks.append({"type": "dinkus"})
+
+
+def _append_paragraph_block(blocks: list[dict], text: str, role: str = "prose", tag: str = "p") -> None:
+    if _is_section_break_text(text):
+        _append_dinkus_block(blocks)
+        return
+
+    text = _typographic(text)
+    if not text:
+        return
+    sentences = [{"text": s} for s in _split_sentences(text)]
+    if sentences:
+        block = {"type": "paragraph", "sentences": sentences}
+        if role != "prose":
+            block["role"] = role
+        if tag != "p":
+            block["tag"] = tag
+        blocks.append(block)
+
+
 def _extract_flat_blocks(soup: BeautifulSoup) -> list[dict]:
-    """Walk the body and return a flat block list. Headings are preserved
-    inline with their level so the caller can split into chapters."""
+    """Walk the EPUB body and return semantic blocks.
+
+    Real paragraph-like tags are the source of paragraph boundaries. Container
+    tags such as div/section are traversed first and are only treated as a
+    paragraph when the EPUB offers no nested paragraph/head/body structure.
+    This avoids spacing/rendering by sentence-ish wrapper divs.
+    """
     body = soup.body or soup
     blocks: list[dict] = []
 
-    for el in body.descendants:
-        name = getattr(el, "name", None)
-        if not name:
-            continue
-        if name == "hr":
-            blocks.append({"type": "dinkus"})
-            continue
-        if name not in _BLOCK_TAGS:
-            continue
-        if el.find(list(_BLOCK_TAGS), recursive=False):
-            continue
+    def visit(node, role: str = "prose") -> None:
+        for el in getattr(node, "children", []):
+            name = getattr(el, "name", None)
+            if not name:
+                text = str(el).strip()
+                if text:
+                    _append_paragraph_block(blocks, text, role=role, tag="#text")
+                continue
+            name = name.lower()
+            if name in {"script", "style", "svg", "nav", "img", "image"}:
+                continue
+            if name == "hr":
+                _append_dinkus_block(blocks)
+                continue
 
-        raw = el.get_text(" ", strip=True)
-        if not raw:
-            continue
+            raw = el.get_text(" ", strip=True)
+            if not raw:
+                continue
 
-        text = _typographic(raw)
-        if not text:
-            continue
+            if name in _HEADING_TAGS:
+                text = _typographic(raw)
+                if text:
+                    blocks.append({"type": "heading", "level": int(name[1]), "text": text})
+                continue
 
-        if name in _HEADING_TAGS:
-            blocks.append({"type": "heading", "level": int(name[1]), "text": text})
-        else:
-            sentences = [{"text": s} for s in _split_sentences(text)]
-            if sentences:
-                blocks.append({"type": "paragraph", "sentences": sentences})
+            if name in _BLOCKQUOTE_TAGS:
+                has_semantic_children = el.find(list(_SEMANTIC_BLOCK_TAGS), recursive=True) is not None
+                if has_semantic_children:
+                    visit(el, role="blockquote")
+                else:
+                    _append_paragraph_block(blocks, raw, role="blockquote", tag=name)
+                continue
 
+            if name in _LIST_TAGS:
+                visit(el, role=role)
+                continue
+
+            if name in _LIST_ITEM_TAGS:
+                _append_paragraph_block(blocks, raw, role="list-item", tag=name)
+                continue
+
+            if name in _PARAGRAPH_TAGS:
+                _append_paragraph_block(blocks, raw, role=role, tag=name)
+                continue
+
+            if name in _CONTAINER_TAGS:
+                has_semantic_children = el.find(list(_SEMANTIC_BLOCK_TAGS), recursive=True) is not None
+                if has_semantic_children:
+                    visit(el, role=role)
+                else:
+                    _append_paragraph_block(blocks, raw, role=role, tag=name)
+                continue
+
+            has_semantic_children = el.find(list(_SEMANTIC_BLOCK_TAGS), recursive=True) is not None
+            if has_semantic_children:
+                visit(el, role=role)
+            else:
+                _append_paragraph_block(blocks, raw, role=role, tag=name)
+
+    visit(body)
     return blocks
 
 
@@ -178,6 +259,9 @@ def _promote_chapter_markers(blocks: list[dict]) -> list[dict]:
     out: list[dict] = []
     for i, b in enumerate(blocks):
         if b.get("type") != "paragraph":
+            out.append(b)
+            continue
+        if b.get("role", "prose") != "prose":
             out.append(b)
             continue
         text = " ".join(s.get("text", "") for s in b.get("sentences", [])).strip()
@@ -274,16 +358,28 @@ def _chunk_chapter_blocks(blocks: list[dict], start_chunk_idx: int) -> tuple[lis
         if btype == "paragraph":
             chunks = text_chunker.chunk_blocks([block])
             new_sentences: list[dict] = []
+            role = block.get("role", "prose")
+            tag = block.get("tag")
             for ch in chunks:
+                kind = ch.get("kind", "prose")
+                if role == "list-item" and kind == "prose":
+                    kind = "list"
+                elif role == "blockquote" and kind == "prose":
+                    kind = "quote"
                 new_sentences.append({
                     "text": ch["text"],
                     "idx": chunk_idx,
                     "source_sentences": list(ch.get("source_sentences", [])),
-                    "kind": ch.get("kind", "prose"),
+                    "kind": kind,
                 })
                 chunk_idx += 1
             if new_sentences:
-                new_blocks.append({"type": "paragraph", "sentences": new_sentences})
+                new_block = {"type": "paragraph", "sentences": new_sentences}
+                if role != "prose":
+                    new_block["role"] = role
+                if tag:
+                    new_block["tag"] = tag
+                new_blocks.append(new_block)
         elif btype == "heading":
             new_blocks.append({
                 "type": "heading",
@@ -377,7 +473,8 @@ def build_reflow(filepath: str) -> dict:
 
     return {
         "format": "epub",
-        "version": text_chunker.CHUNKER_VERSION,
+        "version": REFLOW_VERSION,
+        "chunker_version": text_chunker.CHUNKER_VERSION,
         "metadata": {
             "title": _typographic(meta_title),
             "author": _typographic(meta_author),
@@ -449,15 +546,15 @@ def get_or_build_reflow(filepath: str, data_dir: str) -> dict:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-            # Reuse only if the cache was written by the current chunker. A
-            # missing or mismatched `version` means the cached blocks were
-            # split into raw sentences (or a different chunking scheme) and
-            # would feed the wrong chunks into the audio pipeline.
-            if cached.get("version") == text_chunker.CHUNKER_VERSION:
+            # Reuse only if the cache was written by the current reflow schema
+            # and chunker. A missing or mismatched `version` means cached
+            # blocks may have flattened paragraph boundaries or an outdated
+            # audio chunking scheme.
+            if cached.get("version") == REFLOW_VERSION:
                 return cached
             logger.info(
                 "Reflow cache version mismatch (%s != %s); rebuilding %s",
-                cached.get("version"), text_chunker.CHUNKER_VERSION, path,
+                cached.get("version"), REFLOW_VERSION, path,
             )
         except Exception:
             logger.exception("Failed to read cached reflow from %s; rebuilding", path)

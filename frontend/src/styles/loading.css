@@ -1,0 +1,479 @@
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 64% -12%, color-mix(in srgb, var(--ember) 18%, transparent), transparent 34%),
+    radial-gradient(circle at 100% 80%, color-mix(in srgb, var(--paper-3) 24%, transparent), transparent 32%),
+    linear-gradient(135deg, var(--paper) 0%, var(--paper-2) 44%, var(--paper-3) 100%);
+}
+
+.loading-screen::before {
+  content: "";
+  position: absolute;
+  inset: 52px 6vw 5.6vh;
+  border: 1px solid color-mix(in srgb, var(--rule) 82%, transparent);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--paper) 10%, transparent), transparent 18%),
+    radial-gradient(circle at 24% 42%, color-mix(in srgb, var(--ember) 12%, transparent), transparent 28%),
+    color-mix(in srgb, var(--paper) 88%, transparent);
+  box-shadow:
+    0 34px 100px color-mix(in srgb, var(--paper-edge) 60%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--paper) 28%, transparent);
+  backdrop-filter: blur(16px) saturate(120%);
+}
+
+.loading-aurora {
+  position: absolute;
+  inset: auto auto -18vh -8vw;
+  width: 54vw;
+  height: 54vw;
+  border-radius: 45% 55% 50% 50%;
+  background:
+    radial-gradient(circle at 35% 28%, color-mix(in srgb, var(--ember) 40%, var(--paper-3)), transparent 22%),
+    radial-gradient(circle at 68% 67%, color-mix(in srgb, var(--paper-3) 58%, var(--ink-2)), transparent 36%);
+  filter: blur(1px);
+  opacity: 0.72;
+  animation: loading-aurora 7s ease-in-out infinite alternate;
+}
+
+@keyframes loading-aurora {
+  from { transform: translate3d(0, 0, 0) rotate(-8deg) scale(1); }
+  to { transform: translate3d(4vw, -2vh, 0) rotate(6deg) scale(1.04); }
+}
+
+.loading-stage,
+.loading-footer {
+  position: relative;
+  z-index: 1;
+}
+
+.loading-stage {
+  flex: 1 0 auto;
+  width: 100%;
+  min-height: min(480px, calc(100vh - 270px));
+  display: grid;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(430px, 1.1fr);
+  gap: clamp(54px, 8vw, 128px);
+  align-items: center;
+  padding: 116px clamp(56px, 10vw, 180px) 32px;
+}
+
+.loading-hero {
+  animation: loading-panel-in 820ms cubic-bezier(0.18, 0.82, 0.22, 1) both;
+}
+
+.loading-brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.loading-logo {
+  width: 68px;
+  height: 68px;
+  border-radius: 14px;
+  box-shadow: 0 20px 42px rgba(0,0,0,0.45), 0 0 28px rgba(242,189,83,0.14);
+}
+
+.loading-brand-lockup h1 {
+  font-family: var(--font-serif);
+  font-size: clamp(56px, 5.2vw, 82px);
+  line-height: 0.9;
+  font-weight: 650;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.loading-kicker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: var(--ember);
+  margin-bottom: 28px;
+}
+
+.loading-hero p {
+  max-width: 470px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 18px;
+  line-height: 1.62;
+  color: var(--ink-2);
+}
+
+.hardware-card {
+  width: min(480px, 100%);
+  margin-top: 42px;
+  display: grid;
+  grid-template-columns: 1fr 0.86fr;
+  gap: 1px;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--paper) 10%, transparent), color-mix(in srgb, var(--paper-2) 6%, transparent)),
+    color-mix(in srgb, var(--paper) 88%, transparent);
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--paper) 22%, transparent);
+}
+
+.hardware-card > div {
+  padding: 22px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border-right: 1px solid color-mix(in srgb, var(--rule) 70%, transparent);
+}
+
+.hardware-card > div:last-child { border-right: 0; }
+.hardware-card span,
+.loading-metrics span {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.hardware-card strong {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.hardware-card small {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.hardware-card b {
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: var(--ember-wash);
+  color: var(--ember);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #5f6368;
+  box-shadow: 0 0 0 0 rgba(89, 214, 139, 0);
+}
+
+.status-dot.online {
+  background: #45d480;
+  box-shadow: 0 0 18px rgba(69, 212, 128, 0.42);
+}
+
+.loading-checklist {
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  box-shadow: 0 24px 70px color-mix(in srgb, var(--paper-edge) 38%, transparent), inset 0 1px 0 color-mix(in srgb, var(--paper) 18%, transparent);
+  animation: loading-panel-in 860ms cubic-bezier(0.18, 0.82, 0.22, 1) 120ms both;
+}
+
+.loading-step {
+  min-height: 84px;
+  display: grid;
+  grid-template-columns: 48px 1fr 42px;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 26px 18px 28px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  color: var(--ink-2);
+  transition: background 320ms var(--ease-out), color 320ms var(--ease-out);
+}
+
+.loading-step:last-child { border-bottom: 0; }
+.loading-step.active {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--ember) 12%, transparent), color-mix(in srgb, var(--ember) 4%, transparent)),
+    color-mix(in srgb, var(--paper) 4%, transparent);
+  color: var(--ink);
+}
+.loading-step.done { color: var(--ink); }
+
+.loading-step-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--ember);
+  background: var(--ember-wash);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--paper) 18%, transparent);
+}
+
+.loading-step strong {
+  display: block;
+  margin-bottom: 5px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.loading-step span {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
+.loading-step-state {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--ember) 30%, var(--rule));
+  justify-self: end;
+}
+
+.loading-step.done .loading-step-state {
+  border-color: var(--ember);
+  position: relative;
+}
+.loading-step.done .loading-step-state::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 4px;
+  width: 7px;
+  height: 12px;
+  border: solid var(--ember);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.loading-step.active .loading-step-state {
+  border-top-color: var(--ember);
+  animation: loading-spin 960ms linear infinite;
+}
+
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+
+.loading-footer {
+  flex: 0 0 auto;
+  position: relative;
+  width: calc(100% - (clamp(56px, 10vw, 180px) * 2));
+  margin: 0 clamp(56px, 10vw, 180px) 54px;
+  animation: loading-footer-in 720ms cubic-bezier(0.18, 0.82, 0.22, 1) 260ms both;
+}
+
+.loading-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 18px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: var(--ink);
+  margin-bottom: 16px;
+}
+
+.loading-status-row span {
+  min-width: min(100%, 260px);
+  overflow-wrap: anywhere;
+}
+
+.loading-status-row strong {
+  flex: 0 0 auto;
+  color: var(--ember);
+}
+
+.loading-progress {
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rule) 72%, transparent);
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--paper) 20%, transparent);
+}
+
+.loading-progress > div {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--ember), color-mix(in srgb, var(--ember-soft) 86%, var(--ember)));
+  box-shadow: 0 0 22px color-mix(in srgb, var(--ember) 38%, transparent);
+  transition: width 700ms cubic-bezier(0.18, 0.82, 0.22, 1);
+}
+
+.loading-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, max-content)) minmax(116px, 1fr);
+  align-items: center;
+  gap: clamp(22px, 4vw, 58px);
+  margin-top: 34px;
+  color: var(--ink);
+}
+
+.loading-metrics > div {
+  display: grid;
+  grid-template-columns: 20px minmax(0, max-content);
+  column-gap: 12px;
+  row-gap: 3px;
+  align-items: center;
+  min-width: 0;
+}
+
+.loading-metrics > div > svg,
+.loading-metrics > div > .status-dot {
+  grid-row: span 2;
+  color: var(--ember);
+}
+
+.loading-metrics strong {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.view-logs-btn {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 20px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  transition: transform 180ms var(--ease-out), background 180ms var(--ease-out), border-color 180ms var(--ease-out);
+}
+
+.view-logs-btn:hover {
+  transform: translateY(-1px);
+  background: var(--ember-wash);
+  border-color: color-mix(in srgb, var(--ember) 28%, var(--rule));
+}
+
+@keyframes loading-panel-in {
+  from { opacity: 0; transform: translateY(24px) scale(0.985); filter: blur(8px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+
+@keyframes loading-footer-in {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: none; }
+}
+
+.app-shell.app-enter {
+  animation: app-enter 680ms cubic-bezier(0.18, 0.82, 0.22, 1) both;
+}
+
+@keyframes app-enter {
+  from { opacity: 0; transform: scale(0.992); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+
+@media (max-width: 980px) {
+  .loading-screen::before { inset: 48px 22px 24px; }
+  .loading-stage {
+    grid-template-columns: 1fr;
+    gap: 34px;
+    flex: 0 0 auto;
+    min-height: 0;
+    padding: 92px 34px 28px;
+  }
+  .loading-footer {
+    width: auto;
+    margin: 0 34px 34px;
+  }
+  .loading-metrics {
+    grid-template-columns: 1fr 1fr;
+    gap: 18px 24px;
+  }
+  .view-logs-btn { justify-self: start; }
+}
+
+@media (max-width: 640px), (max-height: 720px) {
+  .loading-screen::before { inset: 46px 14px 14px; }
+  .loading-stage {
+    gap: 24px;
+    padding: 76px 22px 24px;
+  }
+  .loading-brand-lockup {
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .loading-logo {
+    width: 54px;
+    height: 54px;
+  }
+  .loading-kicker {
+    letter-spacing: 0.28em;
+    margin-bottom: 18px;
+  }
+  .loading-hero p {
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .hardware-card {
+    grid-template-columns: 1fr;
+    margin-top: 26px;
+  }
+  .hardware-card > div {
+    padding: 18px 20px;
+    border-right: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--rule) 70%, transparent);
+  }
+  .hardware-card > div:last-child { border-bottom: 0; }
+  .loading-step {
+    min-height: 72px;
+    grid-template-columns: 40px minmax(0, 1fr) 30px;
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .loading-step-icon {
+    width: 40px;
+    height: 40px;
+  }
+  .loading-step strong { font-size: 15px; }
+  .loading-step span { font-size: 13px; }
+  .loading-step-state {
+    width: 22px;
+    height: 22px;
+    border-width: 2px;
+  }
+  .loading-step.done .loading-step-state::after {
+    left: 6px;
+    top: 3px;
+    width: 6px;
+    height: 11px;
+  }
+  .loading-footer {
+    margin: 0 22px 24px;
+  }
+  .loading-status-row {
+    align-items: flex-start;
+    gap: 8px 14px;
+    margin-bottom: 12px;
+  }
+  .loading-metrics {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    margin-top: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-aurora,
+  .loading-step.active .loading-step-state,
+  .loading-hero,
+  .loading-checklist,
+  .loading-footer,
+  .app-shell.app-enter {
+    animation: none !important;
+  }
+}

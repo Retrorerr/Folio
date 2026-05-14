@@ -1,0 +1,28 @@
+# Base backend dependencies. Installable in one step.
+#
+# Torch stays here for the existing Windows CUDA DLL/runtime setup used by the
+# local ONNX paths, but Chatterbox Turbo itself now runs through ONNXRuntime,
+# not the chatterbox-tts PyTorch package.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+numpy==2.2.6
+torch==2.11.0+cu128; platform_system == "Windows" and python_version < "3.13"
+torchaudio==2.11.0+cu128; platform_system == "Windows" and python_version < "3.13"
+kokoro-onnx==0.4.7
+transformers==4.56.2
+tokenizers>=0.22.0,<=0.23.0
+onnxruntime-gpu
+huggingface_hub
+fastapi
+uvicorn
+orjson
+python-multipart
+pillow
+soundfile
+librosa
+tqdm
+resemble-perth
+ebooklib
+beautifulsoup4
+lxml
+psutil

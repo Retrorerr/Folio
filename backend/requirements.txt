@@ -1,9 +1,6 @@
-kokoro-onnx
-pymupdf
-fastapi
-uvicorn
-python-multipart
-soundfile
-ebooklib
-beautifulsoup4
-lxml
+# Aggregated backend requirements. This is now safe to install in one pass:
+# Chatterbox Turbo uses the ONNX model repo directly and no longer depends on
+# chatterbox-tts or its conflicting PyTorch pins.
+
+-r requirements-base.txt
+-r requirements-chatterbox.txt

@@ -86,6 +86,27 @@
   color-scheme: dark;
 }
 
+/* ============ Folio (premium gold) ============ */
+.theme-folio {
+  --paper:      #090a0c;
+  --paper-2:    #0f1013;
+  --paper-3:    #191815;
+  --paper-edge: #020304;
+  --rule:       #2d2a22;
+  --ink:        #f6f0e3;
+  --ink-2:      #cfc5b2;
+  --ink-3:      #8f8574;
+  --ember:      #f2bd53;
+  --ember-soft: #ffda76;
+  --ember-wash: rgba(242, 189, 83, 0.14);
+  --gold:       #b9852d;
+  --shadow-1:   0 1px 2px rgba(0, 0, 0, 0.34);
+  --shadow-2:   0 10px 30px -14px rgba(0, 0, 0, 0.72);
+  --shadow-3:   0 28px 72px -18px rgba(0, 0, 0, 0.86);
+  --grain-opacity: 0.18;
+  color-scheme: dark;
+}
+
 /* ============ base ============ */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root { height: 100%; }
@@ -116,6 +137,10 @@ body {
 .theme-dark.grain::before {
   mix-blend-mode: screen;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.55  0 0 0 0 0.68  0 0 0 0 0.8  0 0 0 0.045 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.theme-folio.grain::before {
+  mix-blend-mode: screen;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' seed='8'/><feColorMatrix values='0 0 0 0 0.82  0 0 0 0 0.61  0 0 0 0 0.27  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
 button, input, select { font: inherit; color: inherit; }
