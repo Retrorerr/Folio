@@ -17,6 +17,11 @@ class BookMeta(BaseModel):
 class Position(BaseModel):
     page: int
     sentence_idx: int
+    content_page: int | None = None
+    pages_per_view: int | None = None
+    layout_key: str | None = None
+    chunk_progress: float | None = None
+    saved_at: float | None = None
 
 class Bookmark(BaseModel):
     page: int
@@ -38,6 +43,13 @@ class BookState(BaseModel):
     speed: float = 0.95
     last_position: Position = Field(default_factory=lambda: Position(page=0, sentence_idx=0))
     bookmarks: list[Bookmark] = Field(default_factory=list)
+    imported_at: float | None = None
+    last_opened_at: float | None = None
+    updated_at: float | None = None
+    collections: list[str] = Field(default_factory=list)
+    genres: list[str] = Field(default_factory=list)
+    reading_ms_total: int = 0
+    visual_page_count: int | None = None
 
 class WordInfo(BaseModel):
     text: str

@@ -1,7 +1,7 @@
 """Download Folio's Kokoro v1.0 model assets.
 
-The app never downloads models during startup. Run this script explicitly when
-the full-quality model or voices file is missing.
+Folio downloads these assets automatically on first use. This script remains
+useful for development, offline preparation, and CI smoke checks.
 """
 
 from __future__ import annotations

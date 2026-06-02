@@ -5,6 +5,11 @@ export type PreloadStatus = 'idle' | 'verifying' | 'current-ready' | 'preloading
 export interface Position {
   page: number
   sentence_idx: number
+  content_page?: number | null
+  pages_per_view?: number | null
+  layout_key?: string | null
+  chunk_progress?: number | null
+  saved_at?: number | null
 }
 
 export interface Bookmark extends Position {
@@ -31,6 +36,16 @@ export interface BookState {
   speed: number
   last_position: Position
   bookmarks: Bookmark[]
+  imported_at?: number | null
+  last_opened_at?: number | null
+  updated_at?: number | null
+  collections?: string[]
+  genres?: string[]
+  reading_ms_total?: number
+  visual_page_count?: number | null
+  exists?: boolean
+  progress?: number
+  has_reading_progress?: boolean
 }
 
 export interface WordInfo {
@@ -73,8 +88,27 @@ export interface TtsRuntimeInfo {
   download_active?: boolean
   download_bytes?: number
   download_total_bytes?: number
+  download_label?: string | null
+  download_error?: string | null
   fallback_reason?: string | null
   last_load_error?: string | null
+  [key: string]: unknown
+}
+
+export interface ModelInstallInfo {
+  engine: string
+  label: string
+  state: 'not_installed' | 'download_queued' | 'downloading' | 'verifying' | 'ready' | 'failed'
+  ready: boolean
+  installed?: boolean
+  downloaded_bytes: number
+  total_bytes: number
+  progress: number
+  error?: string | null
+  download_active?: boolean
+  download_label?: string | null
+  download_error?: string | null
+  approx_download_bytes?: number
   [key: string]: unknown
 }
 
@@ -86,6 +120,7 @@ export interface TtsStatus {
   active_tts_engine: string
   tts_runtime?: TtsRuntimeInfo
   tts_engines?: Record<string, TtsRuntimeInfo>
+  models?: Record<string, ModelInstallInfo>
   system?: {
     ram?: {
       used_bytes: number
@@ -100,9 +135,17 @@ export interface TtsStatus {
   }
 }
 
+export interface ModelRequiredErrorPayload {
+  error: 'model_required'
+  detail: string
+  engine: string
+  install: ModelInstallInfo
+}
+
 export interface PreloadState {
   state: PreloadStatus
   ready: number
+  readyIndices?: number[]
   total: number
   failed: number[]
 }
@@ -155,4 +198,69 @@ export interface TtsBufferResponse {
 export interface PreloadChapterResponse {
   total: number
   queued: number
+}
+
+export interface DashboardHighlight {
+  id: string
+  type: 'highlight' | 'note' | 'bookmark'
+  book_id?: string | null
+  book_title: string
+  author?: string
+  page: number
+  sentence_idx?: number
+  text: string
+  note?: string
+  created_at?: number
+}
+
+export interface WeeklyStat {
+  date: string
+  label: string
+  reading_ms: number
+  minutes: number
+  pages: number
+}
+
+export interface DashboardPayload {
+  books: BookState[]
+  recent_books: BookState[]
+  recently_added: BookState[]
+  continue_book: BookState | null
+  counts: {
+    books: number
+    authors: number
+    collections: number
+    genres: number
+    audiobooks: number
+    highlights: number
+    notes: number
+    history: number
+    pages_total: number
+    pages_read: number
+  }
+  collections: string[]
+  genres: string[]
+  authors: string[]
+  weekly_stats: WeeklyStat[]
+  reading_goal: {
+    daily_goal_minutes: number
+    today_ms: number
+    today_minutes: number
+    progress: number
+  }
+  highlights: DashboardHighlight[]
+  notes: DashboardHighlight[]
+  backend?: {
+    reachable?: boolean
+    active_tts_engine?: string
+    gpu?: boolean
+    version?: string | null
+    models?: Record<string, ModelInstallInfo>
+  }
+}
+
+export interface LibrarySearchResponse {
+  query: string
+  total: number
+  books: BookState[]
 }

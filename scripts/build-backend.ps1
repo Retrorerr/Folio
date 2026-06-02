@@ -5,15 +5,20 @@ $backend = Join-Path $root "backend"
 $dist = Join-Path $root "dist\backend"
 $resources = Join-Path $root "src-tauri\resources"
 $binResources = Join-Path $resources "bin"
-$modelResources = Join-Path $resources "backend\models"
 $pythonExe = $env:FOLIO_PYTHON
 
 if (-not $pythonExe) {
-  $python313 = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"
-  if (Test-Path $python313) {
-    $pythonExe = $python313
-  } else {
-    $pythonExe = "python"
+  $pythonCandidates = @(
+    (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"),
+    (Join-Path $backend ".venv\Scripts\python.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+    "python"
+  )
+  foreach ($candidate in $pythonCandidates) {
+    if ($candidate -eq "python" -or (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+      $pythonExe = $candidate
+      break
+    }
   }
 }
 
@@ -68,18 +73,4 @@ foreach ($providerDll in @("onnxruntime_providers_cuda.dll", "onnxruntime_provid
   if (Test-Path $providerPath) {
     Remove-Item -Force $providerPath
   }
-}
-
-New-Item -ItemType Directory -Force -Path $modelResources | Out-Null
-Copy-Item -Force (Join-Path $backend "models\kokoro-v1.0.onnx") $modelResources
-Copy-Item -Force (Join-Path $backend "models\voices-v1.0.bin") $modelResources
-
-$chatterboxModels = Join-Path $backend "models\chatterbox"
-if (Test-Path $chatterboxModels) {
-  Copy-Item -Recurse -Force $chatterboxModels $modelResources
-}
-
-$fallback = Join-Path $backend "models\kokoro-v1.0.int8.onnx"
-if (Test-Path $fallback) {
-  Copy-Item -Force $fallback $modelResources
 }

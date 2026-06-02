@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import type { GlobalSettings, SearchResult, TtsRuntimeInfo, TtsStatus } from './types'
+import { AnimatePresence, MotionConfig, motion as m } from 'motion/react'
+import type { GlobalSettings, ModelInstallInfo, Position, SearchResult, TtsRuntimeInfo, TtsStatus } from './types'
 import useBookState from './hooks/useBookState'
 import useAudioPlayback from './hooks/useAudioPlayback'
 import Welcome from './components/Welcome'
@@ -8,12 +9,26 @@ import ReflowViewer from './components/ReflowViewer'
 import Pill from './components/Pill'
 import Sidebar from './components/Sidebar'
 import { Icons } from './components/icons'
-import { apiFetch } from './api'
+import {
+  apiFetch,
+  getBackendLogPath,
+  isPreviewWatchdogEnabled,
+  isTauriRuntime,
+  listenForOpenFile,
+  openBackendLog,
+  sendPreviewHeartbeat,
+  startBackend,
+  stopBackend,
+  takePendingOpenFile,
+} from './api'
 import CursorHalo from './components/CursorHalo'
 import TitleBar from './components/TitleBar'
+import { fadeIn, pageTransition, spring } from './motion'
 import './App.css'
 
 const THEMES = ['sepia', 'light', 'dark', 'folio']
+const PAGE_TOTAL_DEBOUNCE_MS = 500
+const PAGE_TOTAL_STABILITY_MS = 6000
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseFloat(String(value))
@@ -29,13 +44,14 @@ export default function App() {
   })
   const [motion, setMotion] = useState(() => localStorage.getItem('motion') !== 'false')
   const [wheelPaging, setWheelPaging] = useState(() => localStorage.getItem('wheelPaging') === 'true')
-  const [highlightStyle, setHighlightStyle] = useState(() => localStorage.getItem('highlightStyle') || 'dim')
   const [sidebarTab, setSidebarTab] = useState(() => {
     const t = localStorage.getItem('sidebarTab')
     return t === 'null' || t === '' ? null : (t || null)
   })
   const [searchTarget, setSearchTarget] = useState<any>(null)
   const [followAlongMode, setFollowAlongMode] = useState(false)
+  const [pageNavHidden, setPageNavHidden] = useState(false)
+  const pageNavHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [gpuEnabled, setGpuEnabled] = useState<boolean | null>(null)
   const [backendReachable, setBackendReachable] = useState(false)
@@ -43,8 +59,13 @@ export default function App() {
   const [modelLoading, setModelLoading] = useState(false)
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null)
   const [ttsEngineStatus, setTtsEngineStatus] = useState<Record<string, TtsRuntimeInfo>>({})
+  const [modelStatus, setModelStatus] = useState<Record<string, ModelInstallInfo>>({})
+  const [installPromptEngine, setInstallPromptEngine] = useState<string | null>(null)
   const [startupMinElapsed, setStartupMinElapsed] = useState(false)
   const [startupTimedOut, setStartupTimedOut] = useState(false)
+  const [backendStartCommandFailed, setBackendStartCommandFailed] = useState(false)
+  const [backendLogPath, setBackendLogPath] = useState<string | null>(null)
+  const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null)
   const settingsHydrated = useRef(false)
 
   const saveSetting = useCallback((key: string, value: unknown) => {
@@ -60,7 +81,6 @@ export default function App() {
   useEffect(() => { saveSetting('theme', theme) }, [theme, saveSetting])
   useEffect(() => { saveSetting('motion', motion) }, [motion, saveSetting])
   useEffect(() => { saveSetting('wheelPaging', wheelPaging) }, [wheelPaging, saveSetting])
-  useEffect(() => { saveSetting('highlightStyle', highlightStyle) }, [highlightStyle, saveSetting])
   useEffect(() => { saveSetting('sidebarTab', sidebarTab ?? '') }, [sidebarTab, saveSetting])
 
   useEffect(() => {
@@ -78,6 +98,7 @@ export default function App() {
         setModelLoading(d.model_loading)
         setTtsStatus(d)
         setTtsEngineStatus(d.tts_engines || {})
+        setModelStatus(d.models || {})
       } catch {
         if (!cancelled) {
           setBackendReachable(false)
@@ -85,15 +106,79 @@ export default function App() {
           setModelLoading(false)
           setTtsStatus(null)
           setTtsEngineStatus({})
+          setModelStatus({})
         }
       } finally {
         if (!cancelled) timer = setTimeout(poll, 1000)
       }
     }
-    poll()
+    startBackend()
+      .then((started) => {
+        if (!started && isTauriRuntime()) setBackendStartCommandFailed(true)
+      })
+      .catch(() => {
+        if (isTauriRuntime()) setBackendStartCommandFailed(true)
+      })
+      .finally(poll)
     return () => {
       cancelled = true
       if (timer) clearTimeout(timer)
+    }
+  }, [])
+
+  useEffect(() => {
+    getBackendLogPath().then(setBackendLogPath).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+
+    takePendingOpenFile().then((filepath) => {
+      if (!cancelled && filepath) setPendingOpenFile(filepath)
+    })
+
+    listenForOpenFile((filepath) => {
+      setPendingOpenFile(filepath)
+    }).then((dispose) => {
+      if (cancelled) dispose()
+      else unlisten = dispose
+    })
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      if (isTauriRuntime()) stopBackend().catch(() => {})
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isPreviewWatchdogEnabled()) return
+
+    sendPreviewHeartbeat()?.catch(() => {})
+    const heartbeat = window.setInterval(() => {
+      sendPreviewHeartbeat()?.catch(() => {})
+    }, 3000)
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        sendPreviewHeartbeat()?.catch(() => {})
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.clearInterval(heartbeat)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
 
@@ -109,15 +194,31 @@ export default function App() {
   const [reflow, setReflow] = useState<any>(null)
   const [reflowProgress, setReflowProgress] = useState<any>(null) // {current, total}
   const reflowNavRef = useRef<any>({})
+  const latestVisualPositionRef = useRef<Position | null>(null)
+  const visualPageCountPersistRef = useRef<Record<string, number>>({})
+  const visualPageCountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const visualPageCountPendingRef = useRef<{ bookId: string; total: number; stable: boolean } | null>(null)
 
   const bookState = useBookState()
   const {
     book, pageData, currentPage, loading, textLoading, recentBooks, recentLoaded,
     openBook, uploadBook, goToPage, savePosition, addBookmark, removeBookmark, closeBook, deleteBook,
   } = bookState
+  const activeBookId = book?.id ?? null
+
+  useEffect(() => {
+    if (!pendingOpenFile || !backendReachable) return
+    const filepath = pendingOpenFile
+    setPendingOpenFile(null)
+    openBook(filepath).catch((error) => {
+      const message = error instanceof Error ? error.message : 'Could not open that EPUB.'
+      window.alert(message)
+    })
+  }, [backendReachable, openBook, pendingOpenFile])
 
   const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition })
-  const { setVolume: setAudioVolume, seekToSentence } = audio
+  const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio } = audio
+  const audioChunkProgressRef = useRef(0)
   const activeTtsStatus = ttsEngineStatus?.[audio.ttsEngine] || null
   const activeModelLoaded = audio.ttsEngine === 'chatterbox-turbo'
     ? (activeTtsStatus?.model_loaded ?? false)
@@ -127,22 +228,74 @@ export default function App() {
     ? (activeTtsStatus?.selected_device ? activeTtsStatus.selected_device === 'cuda' : null)
     : gpuEnabled
   const activeRuntime = activeTtsStatus || ttsStatus?.tts_runtime || null
-  const startupLoadFailed = Boolean(activeRuntime?.last_load_error)
-  const startupModelSettled = activeModelLoaded || startupLoadFailed || startupTimedOut
-  const startupReady = backendReachable && recentLoaded && startupModelSettled && startupMinElapsed
+  const activeInstall = modelStatus?.[audio.ttsEngine] || null
+  const startupReady = backendReachable && startupMinElapsed && (recentLoaded || startupTimedOut)
+
+  useEffect(() => {
+    audioChunkProgressRef.current = audio.chunkProgress || 0
+  }, [audio.chunkProgress])
+
+  useEffect(() => {
+    const onModelRequired = (event: Event) => {
+      const detail = (event as CustomEvent<{ engine?: string }>).detail
+      setInstallPromptEngine(typeof detail?.engine === 'string' ? detail.engine : audio.ttsEngine)
+      setSidebarTab('settings')
+    }
+    window.addEventListener('folio:model-required', onModelRequired as EventListener)
+    return () => window.removeEventListener('folio:model-required', onModelRequired as EventListener)
+  }, [audio.ttsEngine])
 
   // Fetch reflow JSON for the active EPUB.
   useEffect(() => {
-    if (!book) return
+    if (!activeBookId) {
+      setReflow(null)
+      setReflowProgress(null)
+      return
+    }
     let cancelled = false
     setReflow(null)
     setReflowProgress(null)
-    apiFetch(`/api/book/${book.id}/reflow`)
+    apiFetch(`/api/book/${activeBookId}/reflow`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (!cancelled) setReflow(d) })
       .catch(() => { if (!cancelled) setReflow(null) })
     return () => { cancelled = true }
-  }, [book])
+  }, [activeBookId])
+
+  useEffect(() => {
+    latestVisualPositionRef.current = book?.last_position || null
+  }, [activeBookId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleVisualPositionChange = useCallback((position: Position) => {
+    latestVisualPositionRef.current = position
+    Promise.resolve(savePosition(position)).catch(() => {})
+  }, [savePosition])
+
+  const flushCurrentVisualPosition = useCallback((keepalive = false) => {
+    if (!activeBookId) return Promise.resolve()
+    const livePosition = reflowNavRef.current?.getVisualPosition?.()
+    const latest = livePosition || latestVisualPositionRef.current
+    if (!latest) return Promise.resolve()
+    const position = { ...latest, saved_at: Date.now() }
+    latestVisualPositionRef.current = position
+    return Promise.resolve(savePosition(position, 0, { keepalive })).catch(() => {})
+  }, [activeBookId, savePosition])
+
+  useEffect(() => {
+    const flushKeepalive = () => flushCurrentVisualPosition(true)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushKeepalive()
+    }
+
+    window.addEventListener('beforeunload', flushKeepalive, { capture: true })
+    window.addEventListener('pagehide', flushKeepalive, { capture: true })
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('beforeunload', flushKeepalive, { capture: true })
+      window.removeEventListener('pagehide', flushKeepalive, { capture: true })
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [flushCurrentVisualPosition])
 
   const setVolume = useCallback((v: unknown) => {
     const next = clampNumber(v, 0, 1, 1)
@@ -156,7 +309,7 @@ export default function App() {
     const p = audio.readingPage
     const s = audio.currentSentence
     if (p == null) return
-    reflowNavRef.current?.goToSentence?.(p, s)
+    reflowNavRef.current?.goToReadingPosition?.(p, s, audioChunkProgressRef.current)
   }, [audio.readingPage, audio.currentSentence])
 
   const exitFollowAlong = useCallback(() => {
@@ -179,14 +332,17 @@ export default function App() {
   }, [exitFollowAlong])
 
   const goToPageFromUser = useCallback((page: number) => {
+    flushCurrentVisualPosition()
     exitFollowAlong()
-    return goToPage(page)
-  }, [exitFollowAlong, goToPage])
+    const result = goToPage(page)
+    savePosition(page, 0)
+    return result
+  }, [exitFollowAlong, flushCurrentVisualPosition, goToPage, savePosition])
 
-  const seekToSentenceFromUser = useCallback((page: number, sentence: number) => {
-    exitFollowAlong()
-    seekToSentence(page, sentence)
-  }, [seekToSentence, exitFollowAlong])
+  const seekToSentenceFromUser = useCallback((page: number, sentence: number, options: any = {}) => {
+    flushCurrentVisualPosition()
+    seekToSentence(page, sentence, options)
+  }, [seekToSentence, flushCurrentVisualPosition])
 
   useEffect(() => {
     if (!followAlongMode) return
@@ -214,15 +370,47 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [followAlongMode])
 
-  // Page-turn animation overlay
-  const [turning, setTurning] = useState<'next' | 'prev' | null>(null)
-  const turnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const triggerTurn = useCallback((direction: 'next' | 'prev') => {
-    if (!motion) return
-    setTurning(direction)
-    if (turnTimeoutRef.current) clearTimeout(turnTimeoutRef.current)
-    turnTimeoutRef.current = setTimeout(() => setTurning(null), 720)
-  }, [motion])
+  const revealPageNav = useCallback(() => {
+    setPageNavHidden(false)
+    if (pageNavHideTimerRef.current) {
+      clearTimeout(pageNavHideTimerRef.current)
+      pageNavHideTimerRef.current = null
+    }
+    if (followAlongMode && audio.isPlaying) {
+      pageNavHideTimerRef.current = setTimeout(() => {
+        setPageNavHidden(true)
+      }, 2000)
+    }
+  }, [audio.isPlaying, followAlongMode])
+
+  useEffect(() => {
+    if (!followAlongMode || !audio.isPlaying) {
+      setPageNavHidden(false)
+      if (pageNavHideTimerRef.current) {
+        clearTimeout(pageNavHideTimerRef.current)
+        pageNavHideTimerRef.current = null
+      }
+      return
+    }
+
+    revealPageNav()
+    const onActivity = () => revealPageNav()
+    window.addEventListener('mousemove', onActivity, { passive: true })
+    window.addEventListener('keydown', onActivity)
+    window.addEventListener('touchstart', onActivity, { passive: true })
+    window.addEventListener('wheel', onActivity, { passive: true })
+    return () => {
+      window.removeEventListener('mousemove', onActivity)
+      window.removeEventListener('keydown', onActivity)
+      window.removeEventListener('touchstart', onActivity)
+      window.removeEventListener('wheel', onActivity)
+      if (pageNavHideTimerRef.current) {
+        clearTimeout(pageNavHideTimerRef.current)
+        pageNavHideTimerRef.current = null
+      }
+    }
+  }, [audio.isPlaying, followAlongMode, revealPageNav])
+
   useEffect(() => {
     apiFetch('/api/settings')
       .then(r => r.ok ? r.json() : {})
@@ -231,7 +419,6 @@ export default function App() {
         else if (s.darkMode !== undefined) { const t = s.darkMode ? 'dark' : 'sepia'; setTheme(t); localStorage.setItem('theme', t) }
         if (s.motion !== undefined) { setMotion(!!s.motion); localStorage.setItem('motion', String(!!s.motion)) }
         if (s.wheelPaging !== undefined) { setWheelPaging(!!s.wheelPaging); localStorage.setItem('wheelPaging', String(!!s.wheelPaging)) }
-        if (typeof s.highlightStyle === 'string') { setHighlightStyle(s.highlightStyle); localStorage.setItem('highlightStyle', s.highlightStyle) }
         if (s.sidebarTab !== undefined) {
           const t = typeof s.sidebarTab === 'string' && s.sidebarTab !== '' ? s.sidebarTab : null
           setSidebarTab(t); localStorage.setItem('sidebarTab', t ?? '')
@@ -247,13 +434,14 @@ export default function App() {
 
   const onHome = useCallback(() => {
     exitFollowAlong()
-    audio.stop()
-    closeBook()
-  }, [audio.stop, closeBook, exitFollowAlong])
+    stopAudio()
+    void flushCurrentVisualPosition().finally(() => closeBook())
+  }, [closeBook, exitFollowAlong, flushCurrentVisualPosition, stopAudio])
 
   const handleSearchNavigate = useCallback(async (result: SearchResult) => {
     if (!result || result.page == null) return
 
+    flushCurrentVisualPosition()
     exitFollowAlong()
     await goToPage(result.page)
     setSearchTarget({
@@ -263,12 +451,41 @@ export default function App() {
       globalSentenceIdx: result.global_sentence_idx ?? null,
       nonce: `${result.page}:${result.sentence_idx ?? ''}:${result.global_sentence_idx ?? ''}:${Date.now()}`,
     })
-  }, [book?.id, exitFollowAlong, goToPage])
+  }, [book?.id, exitFollowAlong, flushCurrentVisualPosition, goToPage])
 
-  const handleReflowProgress = useCallback((next: { current: number; total: number }) => {
+  const persistVisualPageCount = useCallback((bookId: string, visualPageCount: number) => {
+    if (visualPageCountPersistRef.current[bookId] === visualPageCount) return
+    visualPageCountPersistRef.current[bookId] = visualPageCount
+    apiFetch(`/api/book/${bookId}/metadata`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visual_page_count: visualPageCount }),
+    }).catch(() => {
+      delete visualPageCountPersistRef.current[bookId]
+    })
+  }, [])
+
+  const handleReflowProgress = useCallback((next: { current: number; total: number; stable?: boolean; allChaptersMeasured?: boolean }) => {
     setReflowProgress((prev: any) => (
       prev?.current === next.current && prev?.total === next.total ? prev : next
     ))
+    const visualPageCount = Math.max(1, Math.round(Number(next?.total || 0)))
+    if (!activeBookId || visualPageCountPersistRef.current[activeBookId] === visualPageCount) return
+
+    if (visualPageCountTimerRef.current) clearTimeout(visualPageCountTimerRef.current)
+    const stable = Boolean(next?.stable || next?.allChaptersMeasured)
+    visualPageCountPendingRef.current = { bookId: activeBookId, total: visualPageCount, stable }
+    visualPageCountTimerRef.current = setTimeout(() => {
+      const pending = visualPageCountPendingRef.current
+      visualPageCountTimerRef.current = null
+      visualPageCountPendingRef.current = null
+      if (!pending) return
+      persistVisualPageCount(pending.bookId, pending.total)
+    }, stable ? PAGE_TOTAL_DEBOUNCE_MS : PAGE_TOTAL_STABILITY_MS)
+  }, [activeBookId, persistVisualPageCount])
+
+  useEffect(() => () => {
+    if (visualPageCountTimerRef.current) clearTimeout(visualPageCountTimerRef.current)
   }, [])
 
   const statusBadges = useMemo(() => (
@@ -290,10 +507,165 @@ export default function App() {
     </>
   ), [backendReachable, activeModelLoading, activeModelLoaded, activeGpuEnabled])
 
-  if (!book && !startupReady) {
+  const appView = !book && !startupReady ? 'loading' : !book ? 'library' : 'reader'
+
+  const renderReader = () => {
+    if (!book) return null
+    const progressCurrent = reflowProgress?.current ?? currentPage + 1
+    const progressTotal = reflowProgress?.total ?? book.page_count
+
     return (
+      <m.div key="reader" className="app-motion-view" variants={pageTransition} initial="initial" animate="animate" exit="exit">
+        <div className={`app-shell theme-${theme} grain ${followAlongMode ? 'follow-along-active' : ''}`}>
+          <TitleBar
+            bookTitle={book.title}
+            author={book.author}
+            progress={{ current: progressCurrent, total: progressTotal }}
+            gpuEnabled={activeGpuEnabled}
+            followAlong={followAlongMode}
+            onBookmark={() => addBookmark(currentPage, audio.currentSentence, `Page ${currentPage + 1}`)}
+          />
+          <CursorHalo motion={motion} disabled={followAlongMode} />
+          <AnimatePresence>
+            {loading && (
+              <m.div className="loading-bar" variants={fadeIn} initial="initial" animate="animate" exit="exit" />
+            )}
+          </AnimatePresence>
+
+          <m.div className="reader-shell" layout transition={spring.layout}>
+            <Sidebar
+              book={book}
+              reflow={reflow}
+              currentPage={currentPage}
+              currentSentence={audio.currentSentence}
+              goToPage={goToPageFromUser}
+              addBookmark={addBookmark}
+              removeBookmark={removeBookmark}
+              voice={audio.voice}
+              setVoice={audio.setVoice}
+              ttsEngine={audio.ttsEngine}
+              setTtsEngine={audio.setTtsEngine}
+              modelStatus={modelStatus}
+              installPromptEngine={installPromptEngine}
+              clearInstallPrompt={() => setInstallPromptEngine(null)}
+              speed={audio.speed}
+              theme={theme}
+              setTheme={setTheme}
+              motion={motion}
+              setMotion={setMotion}
+              wheelPaging={wheelPaging}
+              setWheelPaging={setWheelPaging}
+              tab={sidebarTab}
+              setTab={handleSidebarTab}
+              onNavigateSearchResult={handleSearchNavigate}
+              onHome={onHome}
+              hidden={followAlongMode}
+            />
+
+            <m.div className={`reader-main ${followAlongMode ? 'follow-along' : ''}`} layout transition={spring.layout}>
+              <ReflowViewer
+                bookId={book.id}
+                reflow={reflow}
+                chapterIdx={currentPage}
+                setChapterIdx={goToPageFromUser}
+                runningHead={book.title}
+                currentSentence={audio.currentSentence}
+                activeChapterIdx={audio.readingPage ?? currentPage}
+                chunkProgress={audio.chunkProgress}
+                isPlaying={audio.isPlaying}
+                onProgress={handleReflowProgress}
+                navRef={reflowNavRef}
+                motion={motion}
+                wheelPaging={followAlongMode ? false : wheelPaging}
+                searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+                followAlongMode={followAlongMode}
+                onSentenceSelect={seekToSentenceFromUser}
+                theme={theme}
+                resumePosition={book.last_position}
+                onVisualPositionChange={handleVisualPositionChange}
+              />
+
+              <div
+                className={`page-nav-reveal-zone ${followAlongMode && pageNavHidden ? 'active' : ''}`}
+                onPointerEnter={revealPageNav}
+                onPointerMove={revealPageNav}
+              />
+              <m.button
+                layout
+                transition={spring.quick}
+                whileHover={{ y: -1, scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                className={`page-nav prev ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
+                onPointerEnter={revealPageNav}
+                onFocus={revealPageNav}
+                onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
+              >
+                <Icons.ChevronLeft size={18} />
+              </m.button>
+              <m.button
+                layout
+                transition={spring.quick}
+                whileHover={{ y: -1, scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                className={`page-nav next ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
+                onPointerEnter={revealPageNav}
+                onFocus={revealPageNav}
+                onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
+              >
+                <Icons.ChevronRight size={18} />
+              </m.button>
+            </m.div>
+          </m.div>
+
+          <Pill
+            isPlaying={audio.isPlaying}
+            isGenerating={audio.isGenerating}
+            generationError={audio.generationError}
+            textLoading={textLoading}
+            modelLoaded={activeModelLoaded}
+            modelLoading={activeModelLoading}
+            installState={activeInstall}
+            downloadActive={!!activeTtsStatus?.download_active}
+            downloadBytes={activeTtsStatus?.download_bytes ?? 0}
+            downloadTotalBytes={activeTtsStatus?.download_total_bytes ?? 0}
+            engineFallbackReason={activeTtsStatus?.fallback_reason ?? null}
+            engineLoadError={activeTtsStatus?.last_load_error ?? null}
+            play={audio.play}
+            pause={audio.pause}
+            stop={audio.stop}
+            skipSentence={audio.skipSentence}
+            currentPage={currentPage}
+            pageCount={book.page_count}
+            goToPage={goToPageFromUser}
+            speed={audio.speed}
+            setSpeed={audio.setSpeed}
+            volume={audio.volume}
+            setVolume={setVolume}
+            ttsEngine={audio.ttsEngine}
+            voice={audio.voice}
+            currentSentence={audio.currentSentence}
+            sentenceCount={pageData?.sentences?.length || 0}
+            pageData={pageData}
+            sleepTimer={audio.sleepTimer}
+            setSleepTimer={audio.setSleepTimer}
+            preloadState={audio.preloadState}
+            preloadChapter={audio.preloadChapter}
+            readingPage={audio.readingPage}
+            jumpToReader={jumpToReader}
+            followAlongMode={followAlongMode}
+            toggleFollowAlong={toggleFollowAlong}
+            book={book}
+          />
+        </div>
+      </m.div>
+    )
+  }
+
+  const appContent = appView === 'loading' ? (
+    <m.div key="loading" className="app-motion-view" variants={pageTransition} initial="initial" animate="animate" exit="exit">
       <LoadingScreen
         theme={theme}
+        motion={motion}
         status={ttsStatus}
         backendReachable={backendReachable}
         recentLoaded={recentLoaded}
@@ -302,172 +674,47 @@ export default function App() {
         activeModelLoaded={activeModelLoaded}
         activeModelLoading={activeModelLoading}
         timedOut={startupTimedOut}
+        backendStartCommandFailed={backendStartCommandFailed}
+        backendLogPath={backendLogPath}
+        onOpenBackendLog={openBackendLog}
       />
-    )
-  }
-
-  if (!book) {
-    return (
+    </m.div>
+  ) : appView === 'library' ? (
+    <m.div key="library" className="app-motion-view" variants={pageTransition} initial="initial" animate="animate" exit="exit">
       <div className={`app-shell app-enter theme-${theme} grain`}>
         <TitleBar />
         <CursorHalo motion={motion} />
         <Welcome
+          theme={theme}
+          setTheme={setTheme}
+          motion={motion}
+          setMotion={setMotion}
           onUpload={uploadBook}
           recentBooks={recentBooks}
           onOpenRecent={openBook}
           onDeleteRecent={deleteBook}
           statusBadges={statusBadges}
+          settingsPanelProps={{
+            wheelPaging,
+            setWheelPaging,
+            voice: audio.voice,
+            setVoice: audio.setVoice,
+            ttsEngine: audio.ttsEngine,
+            setTtsEngine: audio.setTtsEngine,
+            modelStatus,
+            installPromptEngine,
+            clearInstallPrompt: () => setInstallPromptEngine(null),
+          }}
         />
       </div>
-    )
-  }
+    </m.div>
+  ) : renderReader()
 
   return (
-    <div className={`app-shell theme-${theme} grain ${followAlongMode ? 'follow-along-active' : ''}`}>
-      <TitleBar />
-      <CursorHalo motion={motion} disabled={followAlongMode} />
-      {loading && <div className="loading-bar" />}
-
-      <div className="reader-shell">
-        <Sidebar
-          book={book}
-          reflow={reflow}
-          currentPage={currentPage}
-          currentSentence={audio.currentSentence}
-          goToPage={goToPageFromUser}
-          addBookmark={addBookmark}
-          removeBookmark={removeBookmark}
-          voice={audio.voice}
-          setVoice={audio.setVoice}
-          ttsEngine={audio.ttsEngine}
-          setTtsEngine={audio.setTtsEngine}
-          speed={audio.speed}
-          theme={theme}
-          setTheme={setTheme}
-          motion={motion}
-          setMotion={setMotion}
-          wheelPaging={wheelPaging}
-          setWheelPaging={setWheelPaging}
-          highlightStyle={highlightStyle}
-          setHighlightStyle={setHighlightStyle}
-          tab={sidebarTab}
-          setTab={handleSidebarTab}
-          onNavigateSearchResult={handleSearchNavigate}
-          onHome={onHome}
-          hidden={followAlongMode}
-        />
-
-        <div className={`reader-main ${followAlongMode ? 'follow-along' : ''}`}>
-          <div className="reader-topbar">
-            <div className="topbar-title">
-              <span className="t">{book.title}</span>
-              {book.author && <><span className="dot" /><span className="a">{book.author}</span></>}
-            </div>
-
-            <div className="reading-progress">
-              {(() => {
-                const cur = reflowProgress?.current ?? currentPage + 1
-                const tot = reflowProgress?.total ?? book.page_count
-                const pct = tot ? (cur / tot) * 100 : 0
-                return (
-                  <>
-                    <div className="bar"><div className="fill" style={{ width: `${pct}%` }} /></div>
-                    <div className="lbl">
-                      <span>P. {cur} / {tot}</span>
-                      <span>{Math.round(pct)}%</span>
-                    </div>
-                  </>
-                )
-              })()}
-            </div>
-
-            <div className="topbar-actions">
-              {activeGpuEnabled !== null && activeGpuEnabled !== undefined && (
-                <span className={`gpu-badge small ${activeGpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
-                  {activeGpuEnabled ? 'GPU' : 'CPU'}
-                </span>
-              )}
-              <button
-                className="icon-btn"
-                onClick={() => addBookmark(currentPage, audio.currentSentence, `Page ${currentPage + 1}`)}
-                title="Add bookmark"
-              ><Icons.Bookmark size={17} /></button>
-            </div>
-          </div>
-
-          <ReflowViewer
-            reflow={reflow}
-            chapterIdx={currentPage}
-            setChapterIdx={goToPage}
-            runningHead={book.title}
-            currentSentence={audio.currentSentence}
-            activeChapterIdx={audio.readingPage ?? currentPage}
-            chunkProgress={audio.chunkProgress}
-            isPlaying={audio.isPlaying}
-            onProgress={handleReflowProgress}
-            navRef={reflowNavRef}
-            onPageTurn={triggerTurn}
-            pageTurn={turning}
-            motion={motion}
-            wheelPaging={followAlongMode ? false : wheelPaging}
-            searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-            followAlongMode={followAlongMode}
-            onSentenceSelect={seekToSentenceFromUser}
-          />
-
-          <button
-            className="page-nav prev"
-            onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
-          >
-            <Icons.ChevronLeft size={18} />
-          </button>
-          <button
-            className="page-nav next"
-            onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
-          >
-            <Icons.ChevronRight size={18} />
-          </button>
-        </div>
-      </div>
-
-      <Pill
-        isPlaying={audio.isPlaying}
-        isGenerating={audio.isGenerating}
-        generationError={audio.generationError}
-        textLoading={textLoading}
-        modelLoaded={activeModelLoaded}
-        modelLoading={activeModelLoading}
-        downloadActive={!!activeTtsStatus?.download_active}
-        downloadBytes={activeTtsStatus?.download_bytes ?? 0}
-        downloadTotalBytes={activeTtsStatus?.download_total_bytes ?? 0}
-        engineFallbackReason={activeTtsStatus?.fallback_reason ?? null}
-        engineLoadError={activeTtsStatus?.last_load_error ?? null}
-        play={audio.play}
-        pause={audio.pause}
-        stop={audio.stop}
-        skipSentence={audio.skipSentence}
-        currentPage={currentPage}
-        pageCount={book.page_count}
-        goToPage={goToPageFromUser}
-        speed={audio.speed}
-        setSpeed={audio.setSpeed}
-        volume={audio.volume}
-        setVolume={setVolume}
-        ttsEngine={audio.ttsEngine}
-        voice={audio.voice}
-        currentSentence={audio.currentSentence}
-        sentenceCount={pageData?.sentences?.length || 0}
-        pageData={pageData}
-        sleepTimer={audio.sleepTimer}
-        setSleepTimer={audio.setSleepTimer}
-        preloadState={audio.preloadState}
-        preloadChapter={audio.preloadChapter}
-        readingPage={audio.readingPage}
-        jumpToReader={jumpToReader}
-        followAlongMode={followAlongMode}
-        toggleFollowAlong={toggleFollowAlong}
-        book={book}
-      />
-    </div>
+    <MotionConfig reducedMotion={motion ? 'user' : 'always'} transition={spring.quick}>
+      <AnimatePresence mode="wait" initial={false}>
+        {appContent}
+      </AnimatePresence>
+    </MotionConfig>
   )
 }

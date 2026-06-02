@@ -17,26 +17,40 @@ export default function CursorHalo({ motion = true, disabled = false }: { motion
     if (!el) return
 
     let raf = 0
+    let hideTimer: ReturnType<typeof window.setTimeout> | null = null
     let pendingX = 0, pendingY = 0
     const apply = () => {
       el.style.setProperty('--cx', `${pendingX}px`)
       el.style.setProperty('--cy', `${pendingY}px`)
       raf = 0
     }
+    const scheduleHide = () => {
+      if (hideTimer) window.clearTimeout(hideTimer)
+      hideTimer = window.setTimeout(() => {
+        el.classList.remove('is-active')
+        hideTimer = null
+      }, 700)
+    }
 
     const onMove = (e: MouseEvent) => {
       pendingX = e.clientX
       pendingY = e.clientY
       el.classList.add('is-active')
+      scheduleHide()
       if (!raf) raf = requestAnimationFrame(apply)
     }
-    const onLeave = () => el.classList.remove('is-active')
+    const onLeave = () => {
+      if (hideTimer) window.clearTimeout(hideTimer)
+      hideTimer = null
+      el.classList.remove('is-active')
+    }
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseleave', onLeave)
     return () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseleave', onLeave)
+      if (hideTimer) window.clearTimeout(hideTimer)
       cancelAnimationFrame(raf)
     }
   }, [motion, disabled])

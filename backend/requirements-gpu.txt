@@ -1,0 +1,9 @@
+# Optional GPU acceleration for advanced local installs.
+#
+# Do not include this from requirements.txt. The default Folio backend is
+# CPU-safe so it starts on ordinary Windows PCs without CUDA drivers.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+onnxruntime-gpu
+torch==2.11.0+cu128; platform_system == "Windows" and python_version < "3.13"
+torchaudio==2.11.0+cu128; platform_system == "Windows" and python_version < "3.13"

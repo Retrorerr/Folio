@@ -1,6 +1,32 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { apiFetch, apiJson } from '../api'
-import type { BookState, PageText } from '../types'
+import type { BookState, PageText, Position } from '../types'
+
+function mergePosition(previous: Position | null | undefined, next: Position): Position {
+  const merged: Position = { ...next }
+  if (previous?.page === next.page) {
+    if (merged.content_page == null) merged.content_page = previous.content_page
+    if (merged.pages_per_view == null) merged.pages_per_view = previous.pages_per_view
+    if (merged.layout_key == null) merged.layout_key = previous.layout_key
+  }
+  if (previous?.page === next.page && previous?.sentence_idx === next.sentence_idx && merged.chunk_progress == null) {
+    merged.chunk_progress = previous.chunk_progress
+  } else if (merged.chunk_progress == null) {
+    merged.chunk_progress = 0
+  }
+  return merged
+}
+
+function sameReadablePosition(a: Position | null | undefined, b: Position | null | undefined): boolean {
+  return (
+    a?.page === b?.page &&
+    a?.sentence_idx === b?.sentence_idx &&
+    a?.content_page === b?.content_page &&
+    a?.pages_per_view === b?.pages_per_view &&
+    a?.layout_key === b?.layout_key &&
+    a?.chunk_progress === b?.chunk_progress
+  )
+}
 
 export default function useBookState() {
   const [book, setBook] = useState<BookState | null>(null)
@@ -11,6 +37,8 @@ export default function useBookState() {
   const [recentBooks, setRecentBooks] = useState<BookState[]>([])
   const [recentLoaded, setRecentLoaded] = useState(false)
   const loadRequestRef = useRef(0)
+  const activeBookId = book?.id ?? null
+  const activeBookPageCount = book?.page_count ?? 0
 
   const fetchRecent = useCallback(async () => {
     try {
@@ -67,14 +95,15 @@ export default function useBookState() {
   }, [fetchRecent])
 
   const loadPage = useCallback(async (pageNum: number) => {
-    if (!book) return
+    if (!activeBookId) return
     const requestId = ++loadRequestRef.current
     setLoading(true)
     setTextLoading(true)
     setCurrentPage(pageNum)
+    setPageData(null)
     let loadedPageData: PageText | null = null
     try {
-      const textRes = await apiFetch(`/api/book/${book.id}/page/${pageNum}/text`)
+      const textRes = await apiFetch(`/api/book/${activeBookId}/page/${pageNum}/text`)
       if (textRes.ok && loadRequestRef.current === requestId) {
         const json = await textRes.json() as PageText
         // Re-check after the JSON parse — if the user navigated away while the
@@ -92,33 +121,62 @@ export default function useBookState() {
       }
     }
     return loadedPageData
-  }, [book])
+  }, [activeBookId])
 
   useEffect(() => {
-    if (book) loadPage(currentPage)
-  }, [book]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (activeBookId) loadPage(currentPage)
+  }, [activeBookId, loadPage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const goToPage = useCallback((pageNum: number) => {
-    if (!book || pageNum < 0 || pageNum >= book.page_count) return
+    if (!activeBookId || pageNum < 0 || pageNum >= activeBookPageCount) return
     return loadPage(pageNum)
-  }, [book, loadPage])
+  }, [activeBookId, activeBookPageCount, loadPage])
 
-  const savePosition = useCallback(async (page: number, sentenceIdx: number) => {
-    if (!book) return
+  const savePosition = useCallback(async (
+    pageOrPosition: number | Position,
+    sentenceIdx = 0,
+    options: Partial<Position> & { keepalive?: boolean } = {}
+  ) => {
+    if (!activeBookId) return
+    const { keepalive = false, ...extra } = options
+    const position: Position = typeof pageOrPosition === 'number'
+      ? { page: pageOrPosition, sentence_idx: sentenceIdx, ...extra }
+      : { ...pageOrPosition, ...extra }
+    if (position.saved_at == null) position.saved_at = Date.now()
     // Swallow errors: callers are split between fire-and-forget (pause/stop)
     // and awaited (seek). Letting the error bubble up to fire-and-forget call
     // sites produces unhandled rejections on transient backend hiccups, and
     // there is no useful UI recovery — position re-saves on every navigation.
     try {
-      await apiFetch(`/api/book/${book.id}/position`, {
+      const res = await apiFetch(`/api/book/${activeBookId}/position`, {
         method: 'POST',
+        keepalive,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ page, sentence_idx: sentenceIdx }),
+        body: JSON.stringify(position),
+      })
+      if (!res.ok) return
+      setBook(prev => {
+        if (prev?.id !== activeBookId) return prev
+        const lastPosition = mergePosition(prev.last_position, position)
+        return sameReadablePosition(prev.last_position, lastPosition)
+          ? prev
+          : { ...prev, last_position: lastPosition }
+      })
+      setRecentBooks(prev => {
+        let changed = false
+        const next = prev.map(item => {
+          if (item.id !== activeBookId) return item
+          const lastPosition = mergePosition(item.last_position, position)
+          if (sameReadablePosition(item.last_position, lastPosition)) return item
+          changed = true
+          return { ...item, last_position: lastPosition }
+        })
+        return changed ? next : prev
       })
     } catch {
       // Position will be re-saved on the next navigation / pause / stop.
     }
-  }, [book])
+  }, [activeBookId])
 
   const addBookmark = useCallback(async (page: number, sentenceIdx: number, label = '') => {
     if (!book) return

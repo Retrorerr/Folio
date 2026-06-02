@@ -2,8 +2,8 @@
    FLOURISH — visual upgrade layer
    ============================================================================
    Sits on top of tokens / welcome / reader / pill. Adds richer motion, depth,
-   ambient lighting, refined hover states, staggered entrances, ink-bleed
-   highlights. Does not replace existing rules — only augments.
+   ambient lighting, refined hover states, staggered entrances, and paper
+   motion. Does not replace existing rules — only augments.
 ============================================================================ */
 
 /* ---- additional tokens ---- */
@@ -84,7 +84,7 @@
       transparent 65%);
   filter: blur(2px);
   opacity: 0.85;
-  animation: ambient-drift 22s ease-in-out infinite alternate;
+  animation: none;
   will-change: transform, opacity;
 }
 @keyframes ambient-drift {
@@ -122,7 +122,7 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  animation: brand-shine 5.4s ease-in-out 1.6s infinite;
+  animation: brand-shine 1.6s ease-out 1 both;
 }
 @keyframes brand-rise {
   from { opacity: 0; transform: translateY(-6px); letter-spacing: 0.1em; }
@@ -156,7 +156,7 @@
      embers settling. */
   background-size: 100% 220%;
   background-position: 0 0;
-  animation: ember-settle 6.4s ease-in-out 1.2s infinite;
+  animation: none;
 }
 .welcome-hero p {
   animation: hero-p-in 880ms var(--ease-paper) 380ms both;
@@ -174,9 +174,8 @@
   to   { width: 18px; opacity: 1; }
 }
 @keyframes hero-h1-in {
-  from { opacity: 0; transform: translateY(14px) scale(0.985); filter: blur(6px); }
-  60%  { filter: blur(0); }
-  to   { opacity: 1; transform: none; filter: none; }
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
 }
 @keyframes hero-p-in {
   from { opacity: 0; transform: translateY(10px); }
@@ -219,7 +218,7 @@
       color-mix(in srgb, var(--ember) 22%, transparent) 50%,
       transparent 100%) bottom / 30% 1px no-repeat;
   opacity: 0.6;
-  animation: dash-march 4.8s linear infinite;
+  animation: none;
 }
 .drop-zone.drop-compact::after {
   border-radius: var(--radius-pill);
@@ -281,7 +280,7 @@
     color-mix(in srgb, var(--ember) 28%, transparent) 50%,
     transparent 100%);
   transform: translateX(-120%);
-  animation: badge-sweep 4.6s ease-in-out 1.6s infinite;
+  animation: none;
   pointer-events: none;
 }
 @keyframes badge-sweep {
@@ -379,13 +378,10 @@
   from {
     opacity: 0;
     transform: translateY(28px) rotateX(8deg) scale(0.94);
-    filter: blur(4px);
   }
-  60% { filter: blur(0); }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
   }
 }
 
@@ -434,7 +430,7 @@
    EMPTY LIBRARY CALLOUT — ornament gently floats
 ============================================================================ */
 .empty-library .empty-mark {
-  animation: ornament-float 6s ease-in-out 1.4s infinite;
+  animation: none;
   will-change: transform;
   filter: drop-shadow(0 6px 16px color-mix(in srgb, var(--ember) 24%, transparent));
 }
@@ -506,7 +502,7 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  animation: brand-shine 8s ease-in-out 2s infinite;
+  animation: brand-shine 1.6s ease-out 500ms 1 both;
 }
 
 /* ============================================================================
@@ -521,7 +517,7 @@
 }
 .reading-progress .bar::after {
   /* Soft moving sheen, only visible while there's progress */
-  content: "";
+  content: none;
   position: absolute;
   top: 0; bottom: 0;
   width: 30%;
@@ -546,9 +542,7 @@
 ============================================================================ */
 .page-nav {
   animation: nav-in 760ms var(--ease-paper) 320ms both;
-  backdrop-filter: saturate(140%) blur(8px);
-  -webkit-backdrop-filter: saturate(140%) blur(8px);
-  background: color-mix(in srgb, var(--paper-2) 85%, transparent);
+  background: color-mix(in srgb, var(--ink) 94%, transparent);
 }
 .page-nav.prev { animation-name: nav-in-left; }
 .page-nav.next { animation-name: nav-in-right; }
@@ -761,19 +755,15 @@
 ============================================================================ */
 .spread {
   animation: spread-settle 880ms var(--ease-paper) both;
-  will-change: transform, opacity;
 }
 @keyframes spread-settle {
   from {
     opacity: 0;
     transform: translateY(18px) scale(0.985) rotateX(2deg);
-    filter: blur(4px);
   }
-  60% { filter: blur(0); }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
   }
 }
 
@@ -807,9 +797,7 @@
   animation: opener-title-in 1200ms var(--ease-paper) 320ms both;
 }
 .chapter-opener .fleuron {
-  animation:
-    opener-fleuron-in 900ms var(--ease-paper) 720ms both,
-    fleuron-glow 4s ease-in-out 2s infinite;
+  animation: opener-fleuron-in 900ms var(--ease-paper) 720ms both;
   display: inline-block;
 }
 @keyframes opener-rise {
@@ -824,14 +812,11 @@
   from {
     opacity: 0;
     transform: translateY(14px) scale(0.96);
-    filter: blur(8px);
     letter-spacing: 0.04em;
   }
-  60% { filter: blur(0); }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
     letter-spacing: -0.01em;
   }
 }
@@ -852,11 +837,9 @@
   from {
     opacity: 0;
     transform: scale(0.7) rotate(-4deg);
-    filter: blur(4px);
   }
   60% {
     transform: scale(1.04) rotate(0);
-    filter: blur(0);
   }
   to {
     opacity: 1;
@@ -865,64 +848,16 @@
 }
 
 /* ============================================================================
-   ACTIVE SENTENCE — ink-bleed entrance, soft glow
-============================================================================ */
-.reflow-viewport .sentence.active-s,
-.page-body.tts-active .active-s {
-  animation: ink-bleed-in 540ms var(--ease-ink);
-}
-@keyframes ink-bleed-in {
-  from {
-    background-color: color-mix(in srgb, var(--ember-wash) 0%, transparent);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ember) 0%, transparent);
-  }
-  60% {
-    box-shadow: 0 0 14px -2px color-mix(in srgb, var(--ember-soft) 30%, transparent);
-  }
-  to {
-    background-color: color-mix(in srgb, var(--ember-wash) 26%, transparent);
-    box-shadow: 0 0 0 0 transparent;
-  }
-}
-
-/* Active word gets a gentle breathing glow when in tint mode */
-.hl-tint .word-highlight.active-word {
-  animation: word-breathe 1.6s ease-in-out infinite;
-}
-@keyframes word-breathe {
-  0%, 100% {
-    box-shadow:
-      0 0 12px var(--ember-soft),
-      0 0 0 0 color-mix(in srgb, var(--ember) 40%, transparent);
-  }
-  50% {
-    box-shadow:
-      0 0 18px var(--ember-soft),
-      0 0 0 4px color-mix(in srgb, var(--ember) 0%, transparent);
-  }
-}
-
-/* ============================================================================
    PILL — refined cover gradient, waveform sheen, button micro-interactions
 ============================================================================ */
-/* Animate the wrap, not the pill — the wrap owns horizontal centering
-   (translateX(-50%) on wider viewports, none on mobile) and we don't want
-   to clobber that. */
-.pill-wrap {
-  animation: pill-wrap-rise 760ms var(--ease-paper) 240ms both;
-}
 @keyframes pill-wrap-rise {
   from { opacity: 0; }
   to   { opacity: 1; }
-}
-.pill {
-  animation: pill-rise 760ms var(--ease-paper) 240ms both;
 }
 @keyframes pill-rise {
   from { opacity: 0; transform: translateY(20px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-.pill-wrap.auto-hidden { animation: none; }
 
 .pill-cover {
   background:
@@ -1002,7 +937,7 @@
 }
 
 /* Pill icon button hover micro-glow */
-.pill-btn:not(.play):hover {
+.pill-btn:not(.play):not(.follow-along-btn):hover {
   background:
     radial-gradient(circle at center,
       rgba(255,255,255,0.14) 0%,
@@ -1014,8 +949,6 @@
 ============================================================================ */
 .page-indicator {
   background: color-mix(in srgb, var(--paper-2) 78%, transparent);
-  backdrop-filter: saturate(140%) blur(10px);
-  -webkit-backdrop-filter: saturate(140%) blur(10px);
 }
 
 /* ============================================================================

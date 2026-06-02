@@ -1,6 +1,6 @@
-# Aggregated backend requirements. This is now safe to install in one pass:
-# Chatterbox Turbo uses the ONNX model repo directly and no longer depends on
-# chatterbox-tts or its conflicting PyTorch pins.
+# Aggregated backend requirements. This default set is CPU-safe for ordinary
+# Windows PCs. GPU acceleration is optional; install requirements-gpu.txt only
+# on machines with a known-good CUDA/ONNXRuntime setup.
 
 -r requirements-base.txt
 -r requirements-chatterbox.txt

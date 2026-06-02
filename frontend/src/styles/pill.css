@@ -12,7 +12,6 @@
     transform var(--dur-slow) var(--ease-out),
     opacity var(--dur) var(--ease-out),
     bottom var(--dur-slow) var(--ease-out);
-  will-change: transform, opacity;
 }
 .pill-wrap.follow-mode {
   bottom: 18px;
@@ -108,9 +107,17 @@
 .pill-collapsed-content {
   width: 100%;
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+}
+.pill-now-group {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 14px;
+  grid-column: 1;
 }
 .pill-expanded-content {
   width: 100%;
@@ -293,9 +300,7 @@
 }
 
 .pill-controls {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+  display: contents;
 }
 /* Transport (rewind / play / forward) — fixed footprint; the play button's
    horizontal anchor never shifts when the prep cluster morphs. */
@@ -303,6 +308,8 @@
   display: flex;
   gap: 2px;
   align-items: center;
+  grid-column: 2;
+  justify-self: center;
   flex: 0 0 auto;
 }
 /* Prep (divider / preload / follow-along / expand) — reserves enough width
@@ -313,11 +320,12 @@
   display: flex;
   gap: 4px;
   align-items: center;
+  grid-column: 3;
+  justify-self: end;
   flex: 0 0 auto;
   justify-content: flex-end;
-  /* Width budget = divider + ~150px follow + 4px gap + 32px preload-compact +
-     4px gap + 36px expand. ~228px covers both variants without overflow. */
-  min-width: 232px;
+  /* Width budget holds the widest prep state so transport stays anchored. */
+  min-width: 248px;
 }
 .pill-btn {
   width: 36px; height: 36px;
@@ -379,113 +387,177 @@
   flex: 0 0 auto;
 }
 
-/* Shared morph easing — slow-in / slow-out cubic for a refined feel.
-   400ms reads as a deliberate state change without dragging. */
+/* Shared prep-control easing. The shape morph is intentionally CSS-driven so
+   Motion layout only moves the control group, avoiding double animation. */
 .pill-preload-control,
 .pill-btn.follow-along-btn {
-  --pill-morph-dur: 360ms;
-  --pill-morph-ease: cubic-bezier(0.32, 0.72, 0.24, 1);
+  --pill-control-dur: 520ms;
+  --pill-control-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --pill-control-bg: color-mix(in srgb, var(--pill-fg) 8%, transparent);
+  --pill-control-bg-hover: color-mix(in srgb, var(--pill-fg) 13%, transparent);
+  --pill-control-line: color-mix(in srgb, var(--pill-fg) 13%, transparent);
+  --pill-control-line-hover: color-mix(in srgb, var(--pill-fg) 24%, transparent);
+  position: relative;
+  isolation: isolate;
+  transform: translateZ(0);
 }
 
 .pill-preload-control {
-  height: 32px;
-  padding: 0 12px;
+  height: 34px;
+  inline-size: 112px;
+  padding: 0 13px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--ink-2);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  justify-content: center;
+  gap: 7px;
+  color: color-mix(in srgb, var(--pill-fg) 76%, var(--ember-soft) 24%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pill-fg) 10%, transparent), color-mix(in srgb, var(--pill-fg) 4%, transparent)),
+    var(--pill-control-bg);
+  border: 1px solid var(--pill-control-line);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--pill-fg) 10%, transparent),
+    0 8px 18px -16px rgba(0, 0, 0, 0.8);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
   transition:
-    width var(--pill-morph-dur) var(--pill-morph-ease),
-    padding var(--pill-morph-dur) var(--pill-morph-ease),
+    inline-size var(--pill-control-dur) var(--pill-control-ease),
+    padding var(--pill-control-dur) var(--pill-control-ease),
+    gap var(--pill-control-dur) var(--pill-control-ease),
     color var(--dur-fast) var(--ease-out),
     background var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
     opacity var(--dur-fast) var(--ease-out);
   overflow: hidden;
   white-space: nowrap;
   flex: 0 0 auto;
 }
+.pill-preload-control::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--ember-soft) 34%, transparent),
+      color-mix(in srgb, var(--gold) 18%, transparent));
+  opacity: 0;
+  transform: scaleX(var(--preload-progress, 0));
+  transform-origin: left center;
+  transition:
+    transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.pill-preload-control > *,
+.pill-btn.follow-along-btn > * {
+  position: relative;
+  z-index: 1;
+}
 .pill-preload-control:hover:not(:disabled) {
   color: var(--pill-fg);
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.18);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pill-fg) 14%, transparent), color-mix(in srgb, var(--pill-fg) 6%, transparent)),
+    var(--pill-control-bg-hover);
+  border-color: var(--pill-control-line-hover);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--pill-fg) 15%, transparent),
+    0 12px 22px -18px rgba(0, 0, 0, 0.86);
 }
 .pill-preload-control:disabled {
   cursor: default;
-  opacity: 0.75;
+  opacity: 0.86;
 }
 /* Prominent (paused): full chip with label visible. */
 .pill-preload-control.is-prominent {
-  width: auto;
+  inline-size: 112px;
 }
 /* Compact (playing): icon-only circle, label collapses smoothly. */
 .pill-preload-control.is-compact {
-  width: 32px;
+  inline-size: 34px;
   padding: 0;
   justify-content: center;
   gap: 0;
 }
+.pill-preload-control .preload-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
 .pill-preload-control .preload-short-label {
   display: inline-block;
-  max-width: 80px;
+  max-width: 72px;
   opacity: 1;
   white-space: nowrap;
   transition:
-    max-width var(--pill-morph-dur) var(--pill-morph-ease),
-    opacity calc(var(--pill-morph-dur) * 0.55) var(--pill-morph-ease),
-    margin var(--pill-morph-dur) var(--pill-morph-ease);
+    max-width var(--pill-control-dur) var(--pill-control-ease),
+    opacity calc(var(--pill-control-dur) * 0.58) var(--pill-control-ease);
 }
 .pill-preload-control.is-compact .preload-short-label {
   max-width: 0;
   opacity: 0;
-  margin-left: 0;
   pointer-events: none;
-  /* Fade label fast at the START of the compact morph so the icon centers
-     visually before the width finishes collapsing. */
-  transition:
-    max-width var(--pill-morph-dur) var(--pill-morph-ease),
-    opacity calc(var(--pill-morph-dur) * 0.4) var(--pill-morph-ease),
-    margin var(--pill-morph-dur) var(--pill-morph-ease);
 }
 .pill-preload-control.is-compact:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.28);
+  border-color: color-mix(in srgb, var(--pill-fg) 28%, transparent);
 }
-/* Icon stays put through the morph — no scale, no margin shift. */
 .pill-preload-control svg {
   flex: 0 0 auto;
-  transition: opacity var(--dur-fast) var(--ease-out);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 .pill-preload-control.preload-preloading,
 .pill-preload-control.preload-verifying,
+.pill-preload-control.preload-current-ready,
 .preload-chip.preload-preloading,
-.preload-chip.preload-verifying {
+.preload-chip.preload-verifying,
+.preload-chip.preload-current-ready {
   color: var(--ember-soft);
-  border-color: color-mix(in srgb, var(--ember-soft) 34%, transparent);
+  border-color: color-mix(in srgb, var(--ember-soft) 44%, transparent);
+}
+.pill-preload-control.preload-preloading::before,
+.pill-preload-control.preload-verifying::before,
+.pill-preload-control.preload-current-ready::before {
+  opacity: 1;
+}
+.pill-preload-control.preload-verifying::before {
+  transform: scaleX(0.38);
+  animation: preload-progress-scan 1.8s ease-in-out infinite;
 }
 .pill-preload-control.preload-ready,
 .preload-chip.preload-ready {
   color: var(--gold);
-  background: rgba(212, 168, 96, 0.14);
-  border-color: rgba(212, 168, 96, 0.34);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--gold) 18%, transparent), color-mix(in srgb, var(--gold) 9%, transparent)),
+    color-mix(in srgb, var(--gold) 12%, transparent);
+  border-color: color-mix(in srgb, var(--gold) 42%, transparent);
+}
+.pill-preload-control.preload-error,
+.preload-chip.preload-error {
+  color: #ffb8a8;
+  border-color: color-mix(in srgb, #ff8f76 44%, transparent);
 }
 .pill-preload-control.preload-preloading svg,
 .pill-preload-control.preload-verifying svg,
 .preload-chip.preload-preloading svg,
 .preload-chip.preload-verifying svg {
-  animation: preload-icon-pulse 1.2s ease-in-out infinite;
+  animation: preload-icon-breathe 2.2s ease-in-out infinite;
 }
-@keyframes preload-icon-pulse {
-  0%, 100% { opacity: 0.45; transform: translateY(0); }
-  50% { opacity: 1; transform: translateY(1px); }
+@keyframes preload-progress-scan {
+  0% { transform: translateX(-34%) scaleX(0.38); opacity: 0.42; }
+  45% { opacity: 0.78; }
+  100% { transform: translateX(168%) scaleX(0.38); opacity: 0.42; }
+}
+@keyframes preload-icon-breathe {
+  0%, 100% { opacity: 0.58; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
 }
 
 /* ====== expanded layout ====== */
@@ -764,6 +836,9 @@
   }
 
   .pill-collapsed-content {
+    column-gap: 8px;
+  }
+  .pill-now-group {
     gap: 10px;
   }
 
@@ -803,7 +878,14 @@
   }
 
   .pill-collapsed-content {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+  }
+  .pill-now-group {
     gap: 8px;
+  }
+  .pill-controls-prep {
+    display: none;
   }
 
   .pill-btn {
@@ -848,48 +930,95 @@
    (during pause — secondary, the play-then-follow path). The transition
    happens smoothly when isPlaying flips. */
 .pill-btn.follow-along-btn {
-  height: 32px;
-  width: auto;
-  padding: 0 12px;
-  gap: 6px;
+  height: 34px;
+  inline-size: 154px;
+  padding: 0 13px;
+  gap: 8px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--ember-soft);
-  background: color-mix(in srgb, var(--ember) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ember) 38%, transparent);
+  color: color-mix(in srgb, var(--pill-fg) 82%, var(--ember-soft) 18%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pill-fg) 10%, transparent), color-mix(in srgb, var(--pill-fg) 4%, transparent)),
+    var(--pill-control-bg);
+  border: 1px solid var(--pill-control-line);
   border-radius: 999px;
   cursor: pointer;
   overflow: hidden;
   white-space: nowrap;
   flex: 0 0 auto;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--pill-fg) 10%, transparent),
+    0 8px 18px -16px rgba(0, 0, 0, 0.8);
   transition:
-    width var(--pill-morph-dur) var(--pill-morph-ease),
-    padding var(--pill-morph-dur) var(--pill-morph-ease),
-    gap var(--pill-morph-dur) var(--pill-morph-ease),
+    inline-size var(--pill-control-dur) var(--pill-control-ease),
+    padding var(--pill-control-dur) var(--pill-control-ease),
+    gap var(--pill-control-dur) var(--pill-control-ease),
     color var(--dur-fast) var(--ease-out),
     background var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur) var(--ease-out);
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.pill-btn.follow-along-btn::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--ember) 82%, transparent),
+      color-mix(in srgb, var(--ember-soft) 64%, transparent));
+  opacity: 0;
+  transform: scaleX(0.7);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pill-btn.follow-along-btn:hover,
 .pill-btn.follow-along-btn.active {
-  color: var(--paper);
-  background: color-mix(in srgb, var(--ember) 72%, transparent);
-  border-color: color-mix(in srgb, var(--ember-soft) 74%, transparent);
-  box-shadow: 0 6px 18px -10px color-mix(in srgb, var(--ember) 80%, transparent);
+  color: var(--pill-fg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pill-fg) 12%, transparent), color-mix(in srgb, var(--pill-fg) 5%, transparent)),
+    color-mix(in srgb, var(--ember) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ember-soft) 54%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--pill-fg) 14%, transparent),
+    0 14px 28px -20px color-mix(in srgb, var(--ember) 92%, transparent);
+}
+.pill-btn.follow-along-btn.active::before {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.pill-btn.follow-along-btn .follow-status-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent);
 }
 .pill-btn.follow-along-btn .live-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 70%, transparent);
-  animation: live-dot-pulse 1.6s ease-in-out infinite;
-  flex: 0 0 auto;
+  transform: scale(0.86);
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+.pill-btn.follow-along-btn:hover .live-dot,
+.pill-btn.follow-along-btn.active .live-dot {
+  transform: scale(1);
+}
+.pill-btn.follow-along-btn.is-live .live-dot {
+  animation: live-dot-pulse 2.4s ease-in-out infinite;
 }
 .pill-btn.follow-along-btn .live-label {
   line-height: 1;
@@ -898,11 +1027,11 @@
   max-width: 140px;
   opacity: 1;
   transition:
-    max-width var(--pill-morph-dur) var(--pill-morph-ease),
-    opacity calc(var(--pill-morph-dur) * 0.55) var(--pill-morph-ease);
+    max-width var(--pill-control-dur) var(--pill-control-ease),
+    opacity calc(var(--pill-control-dur) * 0.58) var(--pill-control-ease);
 }
 .pill-btn.follow-along-btn.is-compact {
-  width: 32px;
+  inline-size: 34px;
   padding: 0;
   gap: 0;
   justify-content: center;
@@ -911,17 +1040,15 @@
   max-width: 0;
   opacity: 0;
   pointer-events: none;
-  transition:
-    max-width var(--pill-morph-dur) var(--pill-morph-ease),
-    opacity calc(var(--pill-morph-dur) * 0.4) var(--pill-morph-ease);
 }
 .pill-btn.follow-along-btn.is-prominent {
-  /* Slightly punchier border + subtle inner glow when this is the primary CTA. */
-  background: color-mix(in srgb, var(--ember) 18%, transparent);
-  border-color: color-mix(in srgb, var(--ember) 48%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--ember-soft) 12%, transparent), color-mix(in srgb, var(--ember) 7%, transparent)),
+    color-mix(in srgb, var(--ember) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ember) 42%, transparent);
 }
 .pill-btn.follow-along-btn.is-prominent.active {
-  background: color-mix(in srgb, var(--ember) 76%, transparent);
+  background: color-mix(in srgb, var(--ember) 18%, transparent);
 }
 /* Stub mode: rendered to hold prep-cluster width steady before the user has
    ever pressed play. Invisible to users + assistive tech, doesn't intercept
@@ -932,7 +1059,23 @@
   visibility: hidden;
 }
 @keyframes live-dot-pulse {
-  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 65%, transparent); }
-  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent); }
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 42%, transparent);
+    opacity: 0.78;
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill-preload-control.preload-verifying::before,
+  .pill-preload-control.preload-preloading svg,
+  .pill-preload-control.preload-verifying svg,
+  .preload-chip.preload-preloading svg,
+  .preload-chip.preload-verifying svg,
+  .pill-btn.follow-along-btn.is-live .live-dot {
+    animation: none !important;
+  }
 }

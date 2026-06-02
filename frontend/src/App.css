@@ -1,34 +1,163 @@
 /* App-specific styles that complement the design tokens/reader/welcome/pill CSS. */
 
+.app-motion-view {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-motion-view > .app-shell,
+.app-motion-view > .loading-screen {
+  height: 100%;
+  min-height: 0;
+}
+
 /* ===========================================================================
    Custom desktop titlebar
 =========================================================================== */
 .app-titlebar {
-  flex: 0 0 42px;
-  min-height: 42px;
+  --titlebar-height: 48px;
+  --titlebar-control-width: 46px;
+  --titlebar-controls-width: calc(var(--titlebar-control-width) * 3);
+  flex: 0 0 var(--titlebar-height);
+  min-height: var(--titlebar-height);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   position: relative;
-  z-index: 30;
-  padding-left: 12px;
+  z-index: 3000;
+  padding-left: 14px;
+  padding-right: var(--titlebar-controls-width);
   background:
+    radial-gradient(circle at 16% 0%,
+      color-mix(in srgb, var(--ember) 12%, transparent),
+      transparent 34%),
     linear-gradient(180deg,
-      color-mix(in srgb, var(--paper) 94%, transparent),
-      color-mix(in srgb, var(--paper-2) 86%, transparent));
-  border-bottom: 0;
+      color-mix(in srgb, var(--paper) 96%, transparent),
+      color-mix(in srgb, var(--paper-2) 91%, transparent));
+  border-bottom: 1px solid color-mix(in srgb, var(--rule) 72%, transparent);
   color: var(--ink);
   user-select: none;
   -webkit-user-select: none;
+  box-shadow: 0 10px 28px -30px color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+.app-titlebar.is-library {
+  --titlebar-height: 44px;
+  position: absolute;
+  inset: 0 8px auto auto;
+  width: var(--titlebar-controls-width);
+  min-height: 36px;
+  padding-left: 0;
+  padding-right: 0;
+  gap: 0;
+  background: transparent;
+  border-bottom: 0;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+.app-titlebar.is-reader {
+  position: absolute;
+  inset: 0 0 auto var(--reader-chrome-offset, 60px);
+  padding-left: 12px;
+  padding-right: var(--titlebar-controls-width);
+  background: transparent;
+  border-bottom: 0;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+.app-titlebar.is-reader::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--paper) 88%, transparent),
+      color-mix(in srgb, var(--paper) 54%, transparent) 70%,
+      transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.02);
+  backdrop-filter: blur(14px) saturate(1.02);
+}
+
+.app-titlebar.is-reader .titlebar-main,
+.app-titlebar.is-reader .titlebar-controls {
+  pointer-events: auto;
+}
+
+.app-titlebar.is-reader .titlebar-main {
+  position: relative;
+  z-index: 30;
+}
+
+.app-titlebar.is-reader .titlebar-controls {
+  z-index: 100;
+}
+
+.app-titlebar.is-reader .titlebar-book {
+  max-width: min(46vw, 520px);
+}
+
+.app-titlebar.is-library .titlebar-main {
+  display: none;
+}
+
+.app-titlebar.is-library .titlebar-controls {
+  pointer-events: auto;
+  top: 0;
+  right: 0;
+  bottom: auto;
+  height: 36px;
+  gap: 0;
+  align-items: center;
+}
+
+.app-titlebar.is-library .titlebar-control {
+  width: 42px;
+  height: 36px;
+  border: 0;
+  border-radius: 0;
+  opacity: 1;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.app-titlebar.is-library .titlebar-control:hover {
+  opacity: 1;
 }
 
 .theme-folio .app-titlebar {
   background:
+    radial-gradient(circle at 18% -10%,
+      color-mix(in srgb, var(--ember) 18%, transparent),
+      transparent 36%),
     linear-gradient(180deg,
       color-mix(in srgb, var(--paper) 92%, #15110a 8%),
       color-mix(in srgb, var(--paper-2) 88%, #1f170b 12%));
+  border-bottom-color: color-mix(in srgb, var(--ember) 16%, transparent);
+}
+
+.theme-folio .app-titlebar.is-reader {
+  background: transparent;
   border-bottom-color: transparent;
-  box-shadow: none;
+}
+
+.theme-folio .app-titlebar.is-reader::before {
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--paper) 84%, transparent),
+      color-mix(in srgb, var(--paper) 46%, transparent) 70%,
+      transparent);
+}
+
+.theme-folio .app-titlebar.is-library {
+  background: transparent;
+  border-bottom-color: transparent;
 }
 
 .titlebar-brand {
@@ -39,8 +168,9 @@
   min-width: 0;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  flex: 0 0 auto;
 }
 
 .titlebar-logo {
@@ -50,32 +180,150 @@
   filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--ember) 28%, transparent));
 }
 
-.titlebar-drag-space {
+.titlebar-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.titlebar-book {
+  flex: 1 1 auto;
+  min-width: 90px;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  overflow: hidden;
+}
+
+.titlebar-book-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-style: italic;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.titlebar-dot {
+  width: 3px;
+  height: 3px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink-3) 76%, transparent);
+}
+
+.titlebar-book-author,
+.titlebar-empty {
+  color: var(--ink-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.titlebar-empty {
   flex: 1 1 auto;
   align-self: stretch;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.titlebar-progress {
+  flex: 0 0 clamp(140px, 18vw, 240px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.titlebar-progress-bar {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rule) 86%, transparent);
+}
+
+.titlebar-progress-bar .fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ember) 72%, transparent),
+    var(--ember),
+    color-mix(in srgb, var(--ember) 82%, var(--gold, #d4a860))
+  );
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.titlebar-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.titlebar-app-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.titlebar-action {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--ink-2);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.titlebar-action:hover {
+  background: color-mix(in srgb, var(--paper-3) 86%, transparent);
+  color: var(--ink);
+  transform: translateY(-1px);
 }
 
 .titlebar-controls {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3200;
   display: flex;
   align-items: stretch;
-  align-self: stretch;
+  height: var(--titlebar-height);
 }
 
 .titlebar-control {
-  width: 46px;
-  height: 42px;
+  width: var(--titlebar-control-width);
+  height: var(--titlebar-height);
   display: grid;
   place-items: center;
   color: var(--ink-2);
   border-radius: 0;
   transition:
     background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 
 .titlebar-control:hover {
   background: color-mix(in srgb, var(--paper-3) 82%, transparent);
   color: var(--ink);
+  transform: translateY(-1px);
 }
 
 .titlebar-control.titlebar-close:hover {
@@ -98,6 +346,31 @@
   border-radius: 2px;
 }
 
+@media (max-width: 760px) {
+  .app-titlebar {
+    gap: 10px;
+  }
+  .titlebar-book-author,
+  .titlebar-dot,
+  .titlebar-empty {
+    display: none;
+  }
+  .titlebar-progress {
+    flex-basis: 118px;
+  }
+}
+
+@media (max-width: 560px) {
+  .app-titlebar {
+    --titlebar-control-width: 42px;
+  }
+
+  .titlebar-progress,
+  .titlebar-app-actions .gpu-badge {
+    display: none;
+  }
+}
+
 /* ===========================================================================
    View transitions — welcome ↔ reader
    ===========================================================================
@@ -107,24 +380,19 @@
    view's gentle blur-fade-up reads as a smooth handoff. Reduced-motion users
    get the existing app-wide animation-duration override from tokens.css.
 =========================================================================== */
+.dashboard-home,
 .welcome,
 .reader-shell {
-  animation: app-view-in 420ms cubic-bezier(0.32, 0.72, 0.24, 1) both;
-  will-change: opacity, transform, filter;
+  animation: none;
 }
 @keyframes app-view-in {
   from {
     opacity: 0;
     transform: scale(0.985) translateY(6px);
-    filter: blur(3px);
-  }
-  55% {
-    filter: blur(0);
   }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
   }
 }
 
@@ -141,42 +409,6 @@
 @keyframes loading-slide {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
-}
-
-/* Word / sentence highlight overlays painted on top of the page image */
-.word-highlight {
-  border-radius: 2px;
-  transition:
-    background-color var(--dur) var(--ease-out),
-    box-shadow var(--dur) var(--ease-out),
-    opacity var(--dur) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
-}
-.word-highlight.search-hit {
-  background: color-mix(in srgb, var(--ember) 18%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ember) 35%, transparent);
-}
-/* Style variants driven by --highlight-style class on the reading pane */
-.hl-dim .word-highlight.active-sentence {
-  background: var(--ember-wash);
-}
-.hl-dim .word-highlight.active-word {
-  background: var(--ember);
-  opacity: 0.35;
-  transform: scaleY(1.04);
-}
-.hl-underline .word-highlight.active-sentence { background: transparent; }
-.hl-underline .word-highlight.active-word {
-  background: linear-gradient(180deg, transparent 70%, var(--ember) 70%, var(--ember) 92%, transparent 92%);
-}
-.hl-tint .word-highlight.active-sentence {
-  background: var(--ember-wash);
-}
-.hl-tint .word-highlight.active-word {
-  background: var(--ember);
-  opacity: 0.45;
-  box-shadow: 0 0 12px var(--ember-soft);
-  transform: scaleY(1.04);
 }
 
 .page-indicator {
@@ -227,10 +459,6 @@
   color: var(--ink-3);
   background: color-mix(in srgb, var(--paper) 60%, transparent);
   white-space: nowrap;
-  /* Subtle frosted-glass effect — gracefully ignored on browsers that don't
-     support backdrop-filter. */
-  backdrop-filter: saturate(140%) blur(6px);
-  -webkit-backdrop-filter: saturate(140%) blur(6px);
   transition:
     color var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
@@ -398,17 +626,6 @@
   color: var(--ember);
   padding: 6px 8px 0 0;
   margin-top: 4px;
-}
-.reflow-flow .sentence.active-s {
-  background: color-mix(in srgb, var(--ember-wash) 26%, transparent);
-  border-radius: 3px;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
-}
-.reflow-flow .sentence.search-s {
-  background: color-mix(in srgb, var(--ember) 18%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ember) 35%, transparent);
-  border-radius: 3px;
 }
 @media (max-width: 820px) {
   .page-indicator {

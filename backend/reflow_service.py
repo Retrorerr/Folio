@@ -8,9 +8,14 @@ No LLM, no OCR. Deterministic extraction + typographic regex cleanup.
 """
 import hashlib
 import json
-import os
-import re
 import logging
+import os
+import posixpath
+import re
+import tempfile
+import urllib.parse
+import zipfile
+from xml.etree import ElementTree as ET
 
 from bs4 import BeautifulSoup
 from ebooklib import epub, ITEM_DOCUMENT
@@ -24,6 +29,81 @@ REFLOW_VERSION = f"reflow-v2.3-2026-05-12|chunker:{text_chunker.CHUNKER_VERSION}
 def get_book_id(filepath: str) -> str:
     normalized = os.path.normpath(filepath).replace("\\", "/").lower()
     return hashlib.md5(normalized.encode()).hexdigest()[:12]
+
+
+def _read_epub(filepath: str):
+    try:
+        return epub.read_epub(filepath, options={"ignore_ncx": False})
+    except AttributeError as exc:
+        message = str(exc)
+        if "get_name" not in message:
+            raise
+        logger.warning(
+            "EPUB has a broken or missing NCX reference; retrying without NCX filepath=%s",
+            filepath,
+        )
+        return _read_epub_without_broken_ncx(filepath)
+
+
+def _read_epub_without_broken_ncx(filepath: str):
+    patched = _epub_bytes_without_broken_ncx(filepath)
+    if patched is None:
+        return epub.read_epub(filepath, options={"ignore_ncx": True})
+
+    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+        tmp.write(patched)
+        tmp_path = tmp.name
+    try:
+        return epub.read_epub(tmp_path, options={"ignore_ncx": True})
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def _epub_bytes_without_broken_ncx(filepath: str) -> bytes | None:
+    try:
+        with zipfile.ZipFile(filepath, "r") as source:
+            container = ET.fromstring(source.read("META-INF/container.xml"))
+            rootfile = container.find(
+                ".//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile"
+            )
+            if rootfile is None:
+                return None
+
+            opf_path = rootfile.get("full-path")
+            if not opf_path:
+                return None
+
+            opf_bytes = source.read(opf_path)
+            opf_root = ET.fromstring(opf_bytes)
+            spine = opf_root.find("{http://www.idpf.org/2007/opf}spine")
+            manifest = opf_root.find("{http://www.idpf.org/2007/opf}manifest")
+            toc_id = spine.get("toc") if spine is not None else None
+            if not toc_id or manifest is None:
+                return None
+
+            manifest_ids = {item.get("id") for item in manifest}
+            if toc_id in manifest_ids:
+                return None
+
+            del spine.attrib["toc"]
+            patched_opf = ET.tostring(opf_root, encoding="utf-8", xml_declaration=True)
+
+            with tempfile.TemporaryFile() as buffer:
+                with zipfile.ZipFile(buffer, "w") as target:
+                    for info in source.infolist():
+                        data = patched_opf if info.filename == opf_path else source.read(info.filename)
+                        patched_info = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                        patched_info.compress_type = info.compress_type
+                        patched_info.external_attr = info.external_attr
+                        target.writestr(patched_info, data)
+                buffer.seek(0)
+                return buffer.read()
+    except Exception:
+        logger.exception("Failed to patch broken NCX reference in EPUB filepath=%s", filepath)
+        return None
 
 
 # ----- typographic cleanup -----
@@ -395,7 +475,7 @@ def _chunk_chapter_blocks(blocks: list[dict], start_chunk_idx: int) -> tuple[lis
 
 def build_reflow(filepath: str) -> dict:
     """Parse an EPUB and return the reflow document tree."""
-    book = epub.read_epub(filepath, options={"ignore_ncx": False})
+    book = _read_epub(filepath)
 
     meta_title = ""
     meta_author = ""
@@ -485,9 +565,61 @@ def build_reflow(filepath: str) -> dict:
     }
 
 
-def get_metadata(filepath: str) -> dict:
+def _normalize_epub_path(path: str) -> str:
+    if not path:
+        return ""
+    # Strip fragment and query
+    path = path.split("#", 1)[0].split("?", 1)[0]
+    # URL-decode (e.g. %20 -> space)
+    path = urllib.parse.unquote(path)
+    # Standardize separators
+    path = path.replace("\\", "/").strip().lstrip("/")
+    # Resolve relative segments (e.g. a/b/../c -> a/c)
+    return posixpath.normpath(path)
+
+
+def _source_fingerprint(filepath: str) -> dict:
+    stat = os.stat(filepath)
+    return {
+        "path": os.path.abspath(filepath),
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def get_metadata(filepath: str, data_dir: str | None = None) -> dict:
     """Cheap metadata fetch for book-open (no full reflow yet)."""
-    book = epub.read_epub(filepath, options={"ignore_ncx": False})
+    book_id = get_book_id(filepath)
+    if data_dir:
+        cache_path = cached_reflow_path(data_dir, book_id)
+        if os.path.exists(cache_path):
+            try:
+                source = _source_fingerprint(filepath)
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if cached.get("version") == REFLOW_VERSION and cached.get("source") == source:
+                    meta = cached.get("metadata", {})
+                    # Reconstruct TOC from cached chapters
+                    toc = []
+                    for idx, ch in enumerate(cached.get("chapters", [])):
+                        toc.append({
+                            "title": ch.get("title") or f"Chapter {idx + 1}",
+                            "page": idx
+                        })
+                    logger.info("EPUB metadata loaded from cached reflow book_id=%s path=%s", book_id, cache_path)
+                    return {
+                        "id": book_id,
+                        "filepath": filepath,
+                        "title": meta.get("title", ""),
+                        "author": meta.get("author", "Unknown"),
+                        "page_count": max(1, len(cached.get("chapters", []))),
+                        "toc": toc,
+                        "format": "epub",
+                    }
+            except Exception:
+                logger.exception("Failed to load metadata from cached reflow %s", cache_path)
+
+    book = _read_epub(filepath)
     title = ""
     author = ""
     try:
@@ -506,24 +638,67 @@ def get_metadata(filepath: str) -> dict:
         author = "Unknown"
 
     # Chapter count via spine; TOC via book.toc
-    chapter_count = sum(1 for _ in book.get_items_of_type(ITEM_DOCUMENT))
+    docs = list(book.get_items_of_type(ITEM_DOCUMENT))
+    chapter_count = len(docs)
+
+    # Map normalized document file names to their raw indices
+    file_to_page = {}
+    norm_docs = []
+    for idx, doc in enumerate(docs):
+        norm_name = _normalize_epub_path(doc.file_name)
+        file_to_page[norm_name] = idx
+        norm_docs.append(norm_name)
+
+    def get_page_num(link, current_len: int) -> int:
+        href = getattr(link, "href", "") or ""
+        norm_href = _normalize_epub_path(href)
+        if not norm_href:
+            return current_len
+
+        # Rule 1: Direct match
+        if norm_href in file_to_page:
+            return file_to_page[norm_href]
+
+        # Rule 2: Path suffix match (matching from the right)
+        best_idx = None
+        best_match_parts = 0
+        href_parts = norm_href.split("/")
+
+        for idx, doc_name in enumerate(norm_docs):
+            doc_parts = doc_name.split("/")
+            match_count = 0
+            for h_p, d_p in zip(reversed(href_parts), reversed(doc_parts)):
+                if h_p == d_p:
+                    match_count += 1
+                else:
+                    break
+            if match_count > best_match_parts:
+                best_match_parts = match_count
+                best_idx = idx
+
+        if best_idx is not None and best_match_parts > 0:
+            return best_idx
+
+        return current_len
 
     toc: list[dict] = []
     def walk(entries, depth=0):
         for e in entries:
             if isinstance(e, tuple):
                 link, children = e[0], e[1]
-                toc.append({"title": getattr(link, "title", "") or "", "page": len(toc)})
+                page_val = get_page_num(link, len(toc))
+                toc.append({"title": getattr(link, "title", "") or "", "page": page_val})
                 walk(children, depth + 1)
             else:
-                toc.append({"title": getattr(e, "title", "") or "", "page": len(toc)})
+                page_val = get_page_num(e, len(toc))
+                toc.append({"title": getattr(e, "title", "") or "", "page": page_val})
     try:
         walk(book.toc)
     except Exception:
         logger.exception("Failed to walk EPUB TOC for %s", filepath)
 
     return {
-        "id": get_book_id(filepath),
+        "id": book_id,
         "filepath": filepath,
         "title": _typographic(title),
         "author": _typographic(author),
@@ -542,6 +717,7 @@ def cached_reflow_path(data_dir: str, book_id: str) -> str:
 def get_or_build_reflow(filepath: str, data_dir: str) -> dict:
     book_id = get_book_id(filepath)
     path = cached_reflow_path(data_dir, book_id)
+    source = _source_fingerprint(filepath)
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -550,15 +726,16 @@ def get_or_build_reflow(filepath: str, data_dir: str) -> dict:
             # and chunker. A missing or mismatched `version` means cached
             # blocks may have flattened paragraph boundaries or an outdated
             # audio chunking scheme.
-            if cached.get("version") == REFLOW_VERSION:
+            if cached.get("version") == REFLOW_VERSION and cached.get("source") == source:
                 return cached
             logger.info(
-                "Reflow cache version mismatch (%s != %s); rebuilding %s",
-                cached.get("version"), REFLOW_VERSION, path,
+                "Reflow cache stale (cached_version=%s expected_version=%s cached_source=%s expected_source=%s); rebuilding %s",
+                cached.get("version"), REFLOW_VERSION, cached.get("source"), source, path,
             )
         except Exception:
             logger.exception("Failed to read cached reflow from %s; rebuilding", path)
     doc = build_reflow(filepath)
+    doc["source"] = source
     os.makedirs(data_dir, exist_ok=True)
     # Write to a temp file in the same dir + atomic rename so a crash during
     # write can't leave a half-written JSON that future reads would silently

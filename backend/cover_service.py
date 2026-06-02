@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import posixpath
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from PIL import Image, UnidentifiedImageError
 
 logger = logging.getLogger("uvicorn.error")
 
+EXTRACTOR_VERSION = 1
 THUMBNAIL_MAX_SIZE = (420, 640)
 IMAGE_MEDIA_PREFIX = "image/"
 FALLBACK_COVER_NAMES = {
@@ -53,19 +55,39 @@ def ensure_cover_thumbnail(epub_path: str, book_id: str, data_dir: str) -> Cover
     thumb_path = covers_dir / f"{book_id}.jpg"
     meta_path = covers_dir / f"{book_id}.json"
 
-    if thumb_path.exists() and meta_path.exists() and thumb_path.stat().st_mtime >= os.path.getmtime(epub_path):
-        source = _read_cached_source(meta_path) or "cache"
-        logger.info(
-            "EPUB cover thumbnail reused book_id=%s source=%s cache=true output=%s",
-            book_id,
-            source,
-            thumb_path,
-        )
-        return CoverResult(path=str(thumb_path), source=source)
+    if meta_path.exists():
+        try:
+            mtime = os.path.getmtime(epub_path)
+            if meta_path.stat().st_mtime >= mtime:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+                source = data.get("source")
+                ext_version = data.get("extractor_version", 0)
+                if ext_version == EXTRACTOR_VERSION:
+                    if source == "none":
+                        logger.info("EPUB cover thumbnail cache reused book_id=%s source=none cache=true", book_id)
+                        return None
+                    elif source == "failed":
+                        created_at = data.get("created_at", 0.0)
+                        if time.time() - created_at < 3600.0:
+                            logger.info("EPUB cover thumbnail cache reused book_id=%s source=failed cache=true", book_id)
+                            return None
+                        else:
+                            logger.info("EPUB cover thumbnail cache expired for book_id=%s source=failed (TTL exceeded)", book_id)
+                    elif source and thumb_path.exists():
+                        logger.info(
+                            "EPUB cover thumbnail cache reused book_id=%s source=%s cache=true output=%s",
+                            book_id,
+                            source,
+                            thumb_path,
+                        )
+                        return CoverResult(path=str(thumb_path), source=source)
+        except Exception:
+            logger.exception("Failed to validate cover cache for book_id=%s path=%s", book_id, epub_path)
 
     try:
         cover = _extract_cover_bytes(epub_path)
         if cover is None:
+            _write_cached_source(meta_path, "none", "")
             logger.info("EPUB cover default fallback book_id=%s path=%s reason=no-cover", book_id, epub_path)
             return None
         data, source, zip_path = cover
@@ -80,6 +102,7 @@ def ensure_cover_thumbnail(epub_path: str, book_id: str, data_dir: str) -> Cover
         )
         return CoverResult(path=str(thumb_path), source=source)
     except Exception:
+        _write_cached_source(meta_path, "failed", "")
         logger.exception("EPUB cover default fallback book_id=%s path=%s reason=extract-failed", book_id, epub_path)
         return None
 
@@ -126,20 +149,17 @@ def _extract_cover_bytes(epub_path: str) -> tuple[bytes, str, str] | None:
     return None
 
 
-def _read_cached_source(meta_path: Path) -> str | None:
-    try:
-        if not meta_path.exists():
-            return None
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-        source = data.get("source")
-        return source if isinstance(source, str) and source else None
-    except Exception:
-        return None
-
-
 def _write_cached_source(meta_path: Path, source: str, zip_path: str) -> None:
     meta_path.write_text(
-        json.dumps({"source": source, "zip_path": zip_path}, indent=2),
+        json.dumps(
+            {
+                "source": source,
+                "zip_path": zip_path,
+                "extractor_version": EXTRACTOR_VERSION,
+                "created_at": time.time(),
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
 

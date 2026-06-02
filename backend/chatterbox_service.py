@@ -63,6 +63,13 @@ for _candidate in _site_package_candidates:
 import onnxruntime as ort
 import soundfile as sf
 
+from model_manager import (
+    ModelInstallRequired,
+    load_state,
+    save_state,
+    set_state,
+    user_install_info,
+)
 from paths import AUDIO_CACHE_DIR, MODELS_DIR
 
 try:
@@ -93,10 +100,12 @@ DEFAULT_MAX_NEW_TOKENS = int(os.environ.get("CHATTERBOX_MAX_NEW_TOKENS", "1024")
 DEFAULT_REPETITION_PENALTY = float(os.environ.get("CHATTERBOX_REPETITION_PENALTY", "1.2"))
 DEFAULT_MAX_SEGMENT_CHARS = int(os.environ.get("CHATTERBOX_MAX_SEGMENT_CHARS", "96"))
 GENERATION_CONFIG_VERSION = "chatterbox-turbo-onnx-v1"
+ENGINE_LABEL = "Chatterbox Turbo"
 
 CACHE_DIR = str(AUDIO_CACHE_DIR)
 REFERENCE_DIR = MODELS_DIR / "chatterbox"
 DEFAULT_REFERENCE_PATH = str(REFERENCE_DIR / "default_reference.wav")
+REFERENCE_SEED_PATH = os.environ.get("FOLIO_CHATTERBOX_REFERENCE_SEED", "").strip()
 
 # Approximate fp16 repo size. Only used for first-run progress display; actual
 # completion is determined by hf_hub_download returning successfully.
@@ -145,6 +154,10 @@ _download_active = False
 _download_bytes = 0
 _download_total_bytes = EXPECTED_DOWNLOAD_BYTES
 _load_failed_permanently = False
+_install_lock = threading.Lock()
+_install_thread: threading.Thread | None = None
+_install_cancel = threading.Event()
+_install_state = load_state(ENGINE_ID, ENGINE_LABEL, EXPECTED_DOWNLOAD_BYTES)
 
 _model_lock = threading.Lock()
 _generation_slots = threading.BoundedSemaphore(1)
@@ -295,6 +308,39 @@ def _reference_hash() -> str:
     return digest.hexdigest()[:16]
 
 
+def _seed_reference_audio() -> None:
+    if os.path.exists(DEFAULT_REFERENCE_PATH):
+        return
+    seed_path = _resolve_reference_seed_path()
+    if not seed_path:
+        raise FileNotFoundError(
+            "Chatterbox default reference voice is not available yet. Download the engine assets first."
+        )
+    REFERENCE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(seed_path, "rb") as src, open(DEFAULT_REFERENCE_PATH, "wb") as dst:
+        dst.write(src.read())
+
+
+def _resolve_reference_seed_path() -> str | None:
+    candidates = []
+    if REFERENCE_SEED_PATH:
+        candidates.append(REFERENCE_SEED_PATH)
+
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(backend_dir)
+    candidates.extend(
+        [
+            os.path.join(repo_root, "src-tauri", "resources", "chatterbox", "default_reference.wav"),
+            os.path.join(repo_root, "src-tauri", "target", "release", "resources", "chatterbox", "default_reference.wav"),
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def _load_reference_audio(path: str) -> np.ndarray:
     import librosa
 
@@ -364,6 +410,181 @@ def _download_model_part(name: str, dtype: str) -> str:
     return graph
 
 
+def _required_assets_ready() -> bool:
+    if not os.path.exists(DEFAULT_REFERENCE_PATH):
+        return False
+    cache_dir = _hf_cache_dir()
+    return _required_cache_files_present(_normalize_onnx_dtype()) and os.path.isdir(cache_dir)
+
+
+def _sync_install_state() -> dict:
+    global _install_state
+    if _required_assets_ready():
+        _install_state = set_state(
+            _install_state,
+            "ready",
+            ready=True,
+            error=None,
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), _download_bytes),
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+    elif _install_state.get("state") == "ready":
+        _install_state = set_state(
+            _install_state,
+            "not_installed",
+            ready=False,
+            error=None,
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), 0),
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+    else:
+        save_state(_install_state)
+    return _install_state
+
+
+def get_install_info() -> dict:
+    state = user_install_info(_sync_install_state())
+    state.update(
+        {
+            "installed": _required_assets_ready(),
+            "download_active": _download_active,
+            "download_label": "Chatterbox Turbo model assets",
+            "download_error": _last_load_error or state.get("error"),
+            "reference_path": DEFAULT_REFERENCE_PATH,
+            "approx_download_bytes": max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        }
+    )
+    if _download_active:
+        total = max(_download_total_bytes, EXPECTED_DOWNLOAD_BYTES)
+        downloaded = max(_download_bytes, _dir_size_bytes(_hf_cache_dir()))
+        state["state"] = "downloading"
+        state["downloaded_bytes"] = downloaded
+        state["total_bytes"] = total
+        state["progress"] = max(0.0, min(1.0, downloaded / total)) if total else 0.0
+    return state
+
+
+def require_ready_for_generation() -> None:
+    info = get_install_info()
+    if not info["ready"]:
+        if info["state"] == "failed":
+            message = info.get("error") or "Chatterbox install failed. Retry the download."
+        elif info["state"] in {"download_queued", "downloading", "verifying"}:
+            message = "Chatterbox is still being installed."
+        else:
+            message = "Chatterbox is not installed yet."
+        raise ModelInstallRequired(ENGINE_ID, str(info["state"]), message)
+
+
+def _install_worker() -> None:
+    global _install_thread, _install_state, _last_load_error
+    global _download_active, _download_bytes, _download_total_bytes
+    try:
+        _install_state = set_state(
+            _install_state,
+            "downloading",
+            ready=False,
+            error=None,
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), 0),
+            total_bytes=EXPECTED_DOWNLOAD_BYTES,
+        )
+        _last_load_error = None
+        _download_active = True
+        _download_total_bytes = EXPECTED_DOWNLOAD_BYTES
+        _seed_reference_audio()
+        dtype = _normalize_onnx_dtype()
+        for part in _MODEL_PARTS:
+            if _install_cancel.is_set():
+                raise RuntimeError("Download cancelled")
+            _download_model_part(part, dtype)
+        _download_bytes = _dir_size_bytes(_hf_cache_dir())
+        _install_state = set_state(
+            _install_state,
+            "verifying",
+            ready=False,
+            error=None,
+            downloaded_bytes=_download_bytes,
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+        if not _required_assets_ready():
+            raise RuntimeError("Chatterbox install finished but required assets are still missing.")
+        _install_state = set_state(
+            _install_state,
+            "ready",
+            ready=True,
+            error=None,
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), _download_bytes),
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+        reset_load_failure()
+    except Exception as exc:
+        _last_load_error = str(exc)
+        _install_state = set_state(
+            _install_state,
+            "failed",
+            ready=False,
+            error=str(exc),
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), _download_bytes),
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+    finally:
+        _download_active = False
+        with _install_lock:
+            _install_thread = None
+
+
+def start_install() -> dict:
+    global _install_thread, _install_state
+    with _install_lock:
+        if _required_assets_ready():
+            _sync_install_state()
+            return get_install_info()
+        if _install_thread and _install_thread.is_alive():
+            return get_install_info()
+        _install_cancel.clear()
+        _install_state = set_state(
+            _install_state,
+            "download_queued",
+            ready=False,
+            error=None,
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), 0),
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+        _install_thread = threading.Thread(target=_install_worker, name="chatterbox-install", daemon=True)
+        _install_thread.start()
+    return get_install_info()
+
+
+def cancel_install() -> dict:
+    global _install_state
+    _install_cancel.set()
+    if _download_active or (_install_thread and _install_thread.is_alive()):
+        _install_state = set_state(
+            _install_state,
+            "failed",
+            ready=False,
+            error="Download cancelled.",
+            downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), _download_bytes),
+            total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+        )
+    return get_install_info()
+
+
+def retry_install() -> dict:
+    global _install_state
+    reset_load_failure()
+    _install_cancel.clear()
+    _install_state = set_state(
+        _install_state,
+        "not_installed",
+        ready=False,
+        error=None,
+        downloaded_bytes=max(_dir_size_bytes(_hf_cache_dir()), 0),
+        total_bytes=max(EXPECTED_DOWNLOAD_BYTES, _download_total_bytes),
+    )
+    return start_install()
+
+
 def _load_runtime_sessions(paths: dict[str, str], provider: str, reference_audio: np.ndarray):
     speech_encoder_session = None
     embed_tokens_session = None
@@ -406,29 +627,11 @@ def _load_runtime(device: str) -> tuple[ChatterboxOnnxRuntime, RuntimeConfig]:
     provider, selected_device, fallback_reason = _resolve_provider(requested_device)
     _last_fallback_reason = fallback_reason
 
+    require_ready_for_generation()
+
     ref_hash = _reference_hash()
     reference_audio = _load_reference_audio(DEFAULT_REFERENCE_PATH)
-
-    needs_download = not _required_cache_files_present(dtype)
-    stop_event = threading.Event()
-    watcher: threading.Thread | None = None
-    if needs_download:
-        _download_active = True
-        _download_bytes = _dir_size_bytes(_hf_cache_dir())
-        _download_total_bytes = EXPECTED_DOWNLOAD_BYTES
-        watcher = _start_download_watcher(stop_event)
-        print(
-            f"Chatterbox ONNX first-run download starting repo={HF_REPO_ID} "
-            f"dtype={dtype} expected~{EXPECTED_DOWNLOAD_BYTES // (1024 ** 2)} MB"
-        )
-
-    try:
-        paths = {part: _download_model_part(part, dtype) for part in _MODEL_PARTS}
-    finally:
-        stop_event.set()
-        if watcher is not None:
-            watcher.join(timeout=2.0)
-        _download_active = False
+    paths = {part: _download_model_part(part, dtype) for part in _MODEL_PARTS}
 
     print(f"Chatterbox ONNX loading repo={HF_REPO_ID} dtype={dtype} provider={provider}")
 
@@ -502,6 +705,7 @@ def get_model(device: str | None = None) -> ChatterboxOnnxRuntime:
     global _model, _runtime_config, _model_loading, _last_load_error, _load_failed_permanently
 
     device = normalize_device(device)
+    require_ready_for_generation()
     if _load_failed_permanently:
         raise RuntimeError(
             f"Chatterbox Turbo unavailable (previous load failed): {_last_load_error or 'unknown error'}. "
@@ -872,6 +1076,7 @@ def unload_model() -> bool:
 
 
 def get_runtime_info() -> dict:
+    install = get_install_info()
     config = _runtime_config
     return {
         "engine": ENGINE_ID,
@@ -899,6 +1104,10 @@ def get_runtime_info() -> dict:
         "download_active": _download_active,
         "download_bytes": _download_bytes,
         "download_total_bytes": _download_total_bytes,
+        "install_state": install["state"],
+        "install_ready": install["ready"],
+        "installed": install["installed"],
+        "install_error": install.get("error"),
         "reference_path": config.reference_path if config else DEFAULT_REFERENCE_PATH,
         "reference_hash": config.reference_hash if config else None,
         "max_new_tokens": DEFAULT_MAX_NEW_TOKENS,

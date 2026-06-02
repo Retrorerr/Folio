@@ -4,23 +4,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Backend install. Chatterbox Turbo now uses the official ONNXRuntime model
-# repo directly, so the old chatterbox-tts two-phase/no-deps workaround is gone.
-# Override Python with $env:FOLIO_PYTHON or pass -Python.
+# Backend install. The default requirements are CPU-safe for ordinary Windows
+# PCs. GPU users can separately install backend\requirements-gpu.txt after this
+# succeeds. Override Python with $env:FOLIO_PYTHON or pass -Python.
 
 $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
 
 if (-not $Python) {
-  $venvPython = Join-Path $backend ".venv\Scripts\python.exe"
-  if (Test-Path $venvPython) {
-    $Python = $venvPython
-  } else {
-    $python313 = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"
-    if (Test-Path $python313) {
-      $Python = $python313
-    } else {
-      $Python = "python"
+  $pythonCandidates = @(
+    (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"),
+    (Join-Path $backend ".venv\Scripts\python.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+    "python"
+  )
+  foreach ($candidate in $pythonCandidates) {
+    if ($candidate -eq "python" -or (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+      $Python = $candidate
+      break
     }
   }
 }

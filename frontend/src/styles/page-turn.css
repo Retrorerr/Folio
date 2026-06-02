@@ -11,9 +11,12 @@
   --pt-sheen-mid: rgba(255, 245, 225, 0.45);
   --pt-edge-light: rgba(255, 240, 210, 0.7);
   --pt-edge-dark: rgba(120, 80, 40, 0.4);
-  --pt-duration: 720ms;
-  --pt-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  --pt-duration: 640ms;
+  --pt-easing: cubic-bezier(0.22, 0.64, 0.24, 1);
+  perspective: 2300px;
+  perspective-origin: 50% 50%;
   transform-style: preserve-3d;
+  isolation: isolate;
 }
 
 .theme-dark .pt-spread {
@@ -47,6 +50,7 @@
   bottom: 0;
   width: 50%;
   transform-style: preserve-3d;
+  transform: translate3d(0, 0, 2px);
   z-index: 5;
   pointer-events: none;
   will-change: transform;
@@ -63,14 +67,18 @@
 }
 
 @keyframes pt-flip-next {
-  0%   { transform: translateZ(0) rotateY(0deg); }
-  50%  { transform: translateZ(10px) rotateY(-90deg); }
-  100% { transform: translateZ(0) rotateY(-180deg); }
+  0%   { transform: translate3d(0, 0, 2px) rotateY(0deg); }
+  18%  { transform: translate3d(0, 0, 24px) rotateY(-32deg); }
+  50%  { transform: translate3d(0, 0, 42px) rotateY(-90deg); }
+  74%  { transform: translate3d(0, 0, 20px) rotateY(-148deg); }
+  100% { transform: translate3d(0, 0, 2px) rotateY(-180deg); }
 }
 @keyframes pt-flip-prev {
-  0%   { transform: translateZ(0) rotateY(0deg); }
-  50%  { transform: translateZ(10px) rotateY(90deg); }
-  100% { transform: translateZ(0) rotateY(180deg); }
+  0%   { transform: translate3d(0, 0, 2px) rotateY(0deg); }
+  18%  { transform: translate3d(0, 0, 24px) rotateY(32deg); }
+  50%  { transform: translate3d(0, 0, 42px) rotateY(90deg); }
+  74%  { transform: translate3d(0, 0, 20px) rotateY(148deg); }
+  100% { transform: translate3d(0, 0, 2px) rotateY(180deg); }
 }
 
 .pt-face {
@@ -79,13 +87,96 @@
   background: var(--pt-paper);
   display: flex;
   flex-direction: column;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  transform-style: preserve-3d;
+  backface-visibility: visible;
+  -webkit-backface-visibility: visible;
   overflow: hidden;
   box-shadow:
     0 1px 0 rgba(0, 0, 0, 0.05),
     0 20px 40px -12px rgba(62, 40, 18, 0.22),
     0 40px 80px -20px rgba(62, 40, 18, 0.15);
+}
+
+.pt-front {
+  z-index: 2;
+  animation: pt-face-front var(--pt-duration) linear forwards;
+}
+
+.pt-back {
+  z-index: 3;
+  opacity: 0;
+  animation: pt-face-back var(--pt-duration) linear forwards;
+}
+
+.pt-back::before,
+.pt-back::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.pt-back::before {
+  inset: 0;
+  z-index: 4;
+  mix-blend-mode: multiply;
+  animation: pt-back-surface var(--pt-duration) var(--pt-easing) forwards;
+}
+
+.pt-back::after {
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  z-index: 5;
+  animation: pt-back-edge var(--pt-duration) var(--pt-easing) forwards;
+}
+
+.pt-flipper-next .pt-back::before {
+  background: linear-gradient(90deg, var(--pt-shadow-mid) 0%, var(--pt-shadow-soft) 22%, transparent 58%);
+}
+
+.pt-flipper-prev .pt-back::before {
+  background: linear-gradient(270deg, var(--pt-shadow-mid) 0%, var(--pt-shadow-soft) 22%, transparent 58%);
+}
+
+.pt-flipper-next .pt-back::after {
+  left: 0;
+  background: linear-gradient(90deg, var(--pt-edge-dark) 0%, var(--pt-edge-light) 35%, transparent 100%);
+}
+
+.pt-flipper-prev .pt-back::after {
+  right: 0;
+  background: linear-gradient(270deg, var(--pt-edge-dark) 0%, var(--pt-edge-light) 35%, transparent 100%);
+}
+
+@keyframes pt-face-front {
+  0%,
+  49.8% { opacity: 1; }
+  49.9%,
+  100% { opacity: 0; }
+}
+
+@keyframes pt-face-back {
+  0%,
+  49.8% { opacity: 0; }
+  49.9%,
+  100% { opacity: 1; }
+}
+
+@keyframes pt-back-surface {
+  0%,
+  49.8% { opacity: 0; }
+  52% { opacity: 0.6; }
+  74% { opacity: 0.32; }
+  100% { opacity: 0; }
+}
+
+@keyframes pt-back-edge {
+  0%,
+  49.8% { opacity: 0; }
+  54% { opacity: 0.9; }
+  82% { opacity: 0.42; }
+  100% { opacity: 0; }
 }
 
 .pt-page-text {
@@ -228,6 +319,28 @@
   z-index: 4;
   opacity: 0;
 }
+
+.pt-cover-hold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  z-index: 3;
+  pointer-events: none;
+  overflow: hidden;
+  background: var(--pt-paper);
+  display: flex;
+  flex-direction: column;
+}
+
+.pt-cover-next {
+  left: 0;
+}
+
+.pt-cover-prev {
+  left: 50%;
+}
+
 .pt-cast-next {
   left: 50%;
   transform-origin: left center;

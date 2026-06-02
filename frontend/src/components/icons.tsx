@@ -13,10 +13,19 @@ const Icon = ({ d, size = 18, stroke = 1.5, fill = 'none', style, children }: Ic
 type IconComponent = (props: any) => React.ReactElement
 
 export const Icons: Record<string, IconComponent> = {
+  Home: (p) => <Icon {...p}><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></Icon>,
   Book: (p) => <Icon {...p}><path d="M4 4v16a2 2 0 0 1 2-2h14V4"/><path d="M4 4a2 2 0 0 1 2 2v14"/><path d="M20 4H6a2 2 0 0 0-2 2"/></Icon>,
   Library: (p) => <Icon {...p}><path d="M6 3v18"/><path d="M10 3v18"/><path d="M14 3h6v18h-6z"/><path d="M14 9h6"/></Icon>,
   Chapters: (p) => <Icon {...p}><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h12"/></Icon>,
   Bookmark: (p) => <Icon {...p}><path d="M6 3h12v18l-6-4-6 4z"/></Icon>,
+  Clock: (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></Icon>,
+  User: (p) => <Icon {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></Icon>,
+  Users: (p) => <Icon {...p}><path d="M16 21a6 6 0 0 0-12 0"/><circle cx="10" cy="8" r="4"/><path d="M22 21a5 5 0 0 0-5-5"/><path d="M17 4a4 4 0 0 1 0 8"/></Icon>,
+  Tag: (p) => <Icon {...p}><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1"/></Icon>,
+  Headphones: (p) => <Icon {...p}><path d="M4 14a8 8 0 0 1 16 0"/><path d="M4 14v4a2 2 0 0 0 2 2h2v-7H6a2 2 0 0 0-2 2z"/><path d="M20 14v4a2 2 0 0 1-2 2h-2v-7h2a2 2 0 0 1 2 2z"/></Icon>,
+  Note: (p) => <Icon {...p}><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v5h5"/><path d="M10 12h6"/><path d="M10 16h6"/></Icon>,
+  Highlight: (p) => <Icon {...p}><path d="m6 20 9.5-9.5a2.1 2.1 0 0 0-3-3L3 17v3z"/><path d="m14 6 4 4"/><path d="M13 20h8"/></Icon>,
+  Sun: (p) => <Icon {...p}><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></Icon>,
   Settings: (p) => <Icon {...p}><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></Icon>,
   Search: (p) => <Icon {...p}><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></Icon>,
   Play: (p) => <Icon fill="currentColor" stroke="none" {...p}><path d="M7 4v16l14-8z"/></Icon>,

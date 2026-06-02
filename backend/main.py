@@ -1,17 +1,20 @@
 import json
 import os
 import re
+import secrets
 import signal
 import logging
+import hashlib
 import shutil
 import subprocess
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
@@ -39,11 +42,15 @@ MODELS_DIR = str(MODELS_DIR)
 logger = logging.getLogger(__name__)
 
 BOOKS: dict[str, dict] = {}
-TTS_MANAGER = TTSQueue(worker_count=3)
+# Keep TTS generation strictly single-lane. Both engines can reserve large
+# memory arenas, so parallel jobs are more dangerous than helpful on desktop.
+TTS_MANAGER = TTSQueue(worker_count=1)
 SEARCH_INDEXES: dict[str, dict] = {}
 DEFAULT_TTS_ENGINE = "kokoro"
 _active_tts_engine: str | None = None
 _tts_engine_runtime_lock = threading.RLock()
+_TTS_PRELOAD_ON_SWITCH = os.environ.get("FOLIO_PRELOAD_TTS_ON_SWITCH", "").strip().lower() in {"1", "true", "yes", "on"}
+_MAX_BACKGROUND_TTS_JOBS = int(os.environ.get("FOLIO_MAX_BACKGROUND_TTS_JOBS", "6") or "6")
 _original_kokoro_provider_env = os.environ.get(tts_service.PROVIDER_ENV)
 _kokoro_provider_pinned_for_inactive_engine = False
 
@@ -59,6 +66,21 @@ _PAGE_TEXT_EPUB_CACHE_LIMIT = 128
 _hardware_cache: dict | None = None
 _hardware_cache_time: float = 0.0
 _HARDWARE_CACHE_TTL = 3.0
+_PREVIEW_HEARTBEAT_FILE = os.environ.get("FOLIO_PREVIEW_HEARTBEAT_FILE", "").strip()
+_PREVIEW_DISCONNECT_FILE = os.environ.get("FOLIO_PREVIEW_DISCONNECT_FILE", "").strip()
+
+
+def _preview_touch(path: str) -> None:
+    if not path:
+        return
+    path = path.strip().strip("\"'")
+    if not path:
+        return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "a", encoding="ascii"):
+        os.utime(path, None)
 
 
 def _cover_url(book_id: str) -> str:
@@ -147,6 +169,33 @@ def _normalize_voice_for_engine(engine: str, voice: str | None) -> str:
     return tts_service.normalize_voice(voice)
 
 
+def _engine_service(engine: str):
+    engine = _normalize_tts_engine(engine)
+    return chatterbox_service if engine == chatterbox_service.ENGINE_ID else tts_service
+
+
+def _engine_install_info(engine: str) -> dict:
+    return _engine_service(engine).get_install_info()
+
+
+def _model_required_response(engine: str, status_code: int | None = None):
+    info = _engine_install_info(engine)
+    state = str(info.get("state") or "not_installed")
+    message = (
+        info.get("error")
+        or ("Model install is still in progress." if state in {"download_queued", "downloading", "verifying"} else "Model is not installed yet.")
+    )
+    return JSONResponse(
+        status_code=status_code or (423 if state in {"download_queued", "downloading", "verifying"} else 409),
+        content={
+            "error": "model_required",
+            "detail": message,
+            "engine": engine,
+            "install": info,
+        },
+    )
+
+
 def _set_kokoro_provider_for_active_engine(engine: str) -> None:
     """Avoid incidental Kokoro CUDA loads, but restore CUDA when Kokoro is active."""
     global _kokoro_provider_pinned_for_inactive_engine
@@ -170,6 +219,7 @@ def _activate_tts_engine(engine: str) -> None:
     global _active_tts_engine
     engine = _normalize_tts_engine(engine)
     with _tts_engine_runtime_lock:
+        _cancel_pending_tts_for_inactive_engine(engine)
         # Always evict the inactive engine — even when the active flag matches —
         # so a stray load (e.g. a cache-key computation that called get_kokoro
         # under the hood) doesn't leave a multi-GB arena resident forever.
@@ -187,7 +237,22 @@ def _activate_tts_engine(engine: str) -> None:
             _save_global_settings({"tts_engine": engine})
         except Exception:
             logger.exception("Failed to persist tts_engine=%s", engine)
-        _preload_engine_in_background(engine)
+        if _TTS_PRELOAD_ON_SWITCH:
+            _preload_engine_in_background(engine)
+
+
+def _job_engine_from_key(key: str) -> str:
+    return str(key).split("|", 1)[0]
+
+
+def _cancel_pending_tts_for_inactive_engine(active_engine: str) -> None:
+    active_engine = _normalize_tts_engine(active_engine)
+    cancelled = TTS_MANAGER.cancel_pending(
+        lambda key: _job_engine_from_key(key) != active_engine,
+        reason=f"Cancelled because {active_engine} became the active TTS engine.",
+    )
+    if cancelled:
+        logger.info("Cancelled %s pending TTS job(s) for inactive engines.", cancelled)
 
 
 def _preload_engine_in_background(engine: str) -> None:
@@ -199,11 +264,15 @@ def _preload_engine_in_background(engine: str) -> None:
         try:
             with _tts_engine_runtime_lock:
                 if engine == chatterbox_service.ENGINE_ID:
+                    if not chatterbox_service.get_install_info().get("ready"):
+                        return
                     if not chatterbox_service.is_model_loaded() and not chatterbox_service.is_model_loading():
                         chatterbox_service.get_model()
                     if _active_tts_engine != chatterbox_service.ENGINE_ID and chatterbox_service.is_model_loaded():
                         chatterbox_service.unload_model()
                 else:
+                    if not tts_service.get_install_info().get("ready"):
+                        return
                     if not tts_service.is_model_loaded() and not tts_service.is_model_loading():
                         tts_service.get_kokoro()
                     if _active_tts_engine != DEFAULT_TTS_ENGINE and tts_service.is_model_loaded():
@@ -283,12 +352,19 @@ def _atomic_write_text(path: str, text: str):
 
 
 _settings_lock = threading.Lock()
+_dashboard_lock = threading.Lock()
+_DASHBOARD_FILENAME = "dashboard.json"
 
 
 def _save_state(book_id: str):
     if book_id in BOOKS:
         state = BOOKS[book_id]["state"]
-        _atomic_write_text(_state_path(book_id), state.model_dump_json(indent=2))
+        _write_state(book_id, state)
+    _invalidate_recent_cache()
+
+
+def _write_state(book_id: str, state: BookState):
+    _atomic_write_text(_state_path(book_id), state.model_dump_json(indent=2))
     _invalidate_recent_cache()
 
 
@@ -327,6 +403,17 @@ def _load_state(book_id: str) -> BookState | None:
     return None
 
 
+def _clamp_position(position: Position, page_count: int) -> Position:
+    last_page = max(0, page_count - 1)
+    if position.page < 0:
+        position.page = 0
+    elif position.page > last_page:
+        position.page = last_page
+    if position.sentence_idx < 0:
+        position.sentence_idx = 0
+    return position
+
+
 def _settings_path() -> str:
     return os.path.join(DATA_DIR, "settings.json")
 
@@ -350,6 +437,387 @@ def _save_global_settings(updates: dict):
         _atomic_write_text(_settings_path(), json.dumps(existing, indent=2))
 
 
+def _dashboard_path() -> str:
+    return os.path.join(DATA_DIR, _DASHBOARD_FILENAME)
+
+
+def _default_dashboard_store() -> dict:
+    return {
+        "daily_goal_minutes": 60,
+        "reading_events": [],
+        "notes": [],
+    }
+
+
+def _coerce_dashboard_store(data: dict | None) -> dict:
+    store = _default_dashboard_store()
+    if isinstance(data, dict):
+        goal = data.get("daily_goal_minutes", store["daily_goal_minutes"])
+        try:
+            store["daily_goal_minutes"] = max(1, min(1440, int(goal)))
+        except (TypeError, ValueError):
+            pass
+        if isinstance(data.get("reading_events"), list):
+            store["reading_events"] = [
+                event for event in data["reading_events"]
+                if isinstance(event, dict)
+            ]
+        if isinstance(data.get("notes"), list):
+            store["notes"] = [
+                note for note in data["notes"]
+                if isinstance(note, dict)
+            ]
+    return store
+
+
+def _load_dashboard_store() -> dict:
+    path = _dashboard_path()
+    if os.path.exists(path):
+        try:
+            return _coerce_dashboard_store(json.loads(_read_text_lenient(path)))
+        except Exception:
+            logger.exception("Failed to load dashboard store from %s", path)
+    return _default_dashboard_store()
+
+
+def _save_dashboard_store(store: dict):
+    _atomic_write_text(_dashboard_path(), json.dumps(_coerce_dashboard_store(store), indent=2))
+
+
+def _is_book_state_filename(name: str) -> bool:
+    return (
+        name.endswith(".json")
+        and name not in {"settings.json", _DASHBOARD_FILENAME}
+        and not name.endswith(".reflow.json")
+        and ".tmp." not in name
+    )
+
+
+def _iter_book_state_files() -> list[Path]:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return [
+        path for path in Path(DATA_DIR).glob("*.json")
+        if _is_book_state_filename(path.name)
+    ]
+
+
+def _now_ms() -> float:
+    return time.time() * 1000
+
+
+def _date_key_from_ms(timestamp_ms: float | int | None = None) -> str:
+    if timestamp_ms is None:
+        timestamp_ms = _now_ms()
+    try:
+        return datetime.fromtimestamp(float(timestamp_ms) / 1000).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        return datetime.now().date().isoformat()
+
+
+def _sanitize_tag_list(values) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text[:64])
+    return cleaned[:24]
+
+
+def _book_progress_from_state(state: BookState) -> float:
+    page_count = max(1, int(state.page_count or 1))
+    page = max(0, min(page_count, int(state.last_position.page if state.last_position else 0)))
+    return min(1.0, max(0.0, page / page_count))
+
+
+def _book_has_reading_progress(state: BookState) -> bool:
+    position = state.last_position
+    if not position:
+        return False
+    return bool(
+        (position.page or 0) > 0
+        or (position.sentence_idx or 0) > 0
+        or (position.content_page or 0) > 0
+    )
+
+
+def _book_summary_from_state(state: BookState, state_path: Path | None = None) -> dict:
+    resolved = _resolve_filepath(state.filepath)
+    state_mtime = int(os.path.getmtime(state_path) * 1000) if state_path and os.path.exists(state_path) else None
+    file_mtime = int(os.path.getmtime(resolved) * 1000) if os.path.exists(resolved) else None
+    fallback_time = state_mtime or file_mtime or 0
+    imported_at = state.imported_at or file_mtime or fallback_time
+    last_opened_at = state.last_opened_at or state.last_position.saved_at or state.updated_at or fallback_time
+    updated_at = state.updated_at or state.last_position.saved_at or fallback_time
+    cover_url, cover_source = state.cover_url, state.cover_source
+    if os.path.exists(resolved):
+        cover_url, cover_source = _ensure_book_cover(resolved, state.id)
+    return {
+        "id": state.id,
+        "title": state.title,
+        "author": state.author,
+        "filepath": resolved,
+        "page_count": state.page_count,
+        "format": state.format or "epub",
+        "cover_url": cover_url,
+        "cover_source": cover_source,
+        "last_position": state.last_position.model_dump(),
+        "bookmarks": [bookmark.model_dump() for bookmark in state.bookmarks],
+        "exists": os.path.exists(resolved),
+        "imported_at": imported_at,
+        "last_opened_at": last_opened_at,
+        "updated_at": updated_at,
+        "collections": list(state.collections or []),
+        "genres": list(state.genres or []),
+        "reading_ms_total": int(state.reading_ms_total or 0),
+        "visual_page_count": int(state.visual_page_count) if state.visual_page_count else None,
+        "progress": _book_progress_from_state(state),
+        "has_reading_progress": _book_has_reading_progress(state),
+    }
+
+
+def _load_library_books() -> list[dict]:
+    _flush_debounced_saves()
+    books: list[dict] = []
+    for path in _iter_book_state_files():
+        try:
+            text = _read_text_lenient(path)
+            if not text.strip():
+                try:
+                    path.unlink()
+                except Exception:
+                    logger.exception("Failed to delete empty state file %s", path)
+                continue
+            state = BookState.model_validate_json(text)
+            resolved = _resolve_filepath(state.filepath)
+            if os.path.splitext(resolved)[1].lower() != ".epub":
+                continue
+            books.append(_book_summary_from_state(state, path))
+        except Exception:
+            logger.exception("Failed to load book state from %s", path)
+    return books
+
+
+def _sort_recent_books(books: list[dict]) -> list[dict]:
+    return sorted(
+        books,
+        key=lambda b: (float(b.get("last_opened_at") or 0), float(b.get("updated_at") or 0)),
+        reverse=True,
+    )
+
+
+def _sort_recently_added_books(books: list[dict]) -> list[dict]:
+    return sorted(
+        books,
+        key=lambda b: float(b.get("imported_at") or b.get("updated_at") or 0),
+        reverse=True,
+    )
+
+
+def _append_reading_event(book_id: str, elapsed_ms: int, pages_touched: list[int], timestamp_ms: float | None = None):
+    if elapsed_ms <= 0:
+        return
+    timestamp_ms = timestamp_ms or _now_ms()
+    event = {
+        "date": _date_key_from_ms(timestamp_ms),
+        "book_id": book_id,
+        "elapsed_ms": int(elapsed_ms),
+        "pages_touched": sorted({int(page) for page in pages_touched if isinstance(page, int) and page >= 0}),
+        "created_at": timestamp_ms,
+    }
+    with _dashboard_lock:
+        store = _load_dashboard_store()
+        events = store.get("reading_events", [])
+        events.append(event)
+        cutoff = datetime.now().date() - timedelta(days=180)
+        store["reading_events"] = [
+            item for item in events[-4000:]
+            if str(item.get("date", "9999-99-99")) >= cutoff.isoformat()
+        ]
+        _save_dashboard_store(store)
+
+
+def _weekly_stats(reading_events: list[dict]) -> list[dict]:
+    today = datetime.now().date()
+    days = [today - timedelta(days=offset) for offset in range(6, -1, -1)]
+    by_date = {
+        day.isoformat(): {
+            "date": day.isoformat(),
+            "label": day.strftime("%a"),
+            "reading_ms": 0,
+            "pages": set(),
+        }
+        for day in days
+    }
+    for event in reading_events:
+        key = str(event.get("date") or "")
+        if key not in by_date:
+            continue
+        try:
+            by_date[key]["reading_ms"] += max(0, int(event.get("elapsed_ms") or 0))
+        except (TypeError, ValueError):
+            pass
+        for page in event.get("pages_touched") or []:
+            if isinstance(page, int):
+                by_date[key]["pages"].add(page)
+    stats = []
+    for day in days:
+        row = by_date[day.isoformat()]
+        reading_ms = int(row["reading_ms"])
+        stats.append({
+            "date": row["date"],
+            "label": row["label"],
+            "reading_ms": reading_ms,
+            "minutes": round(reading_ms / 60000, 1),
+            "pages": len(row["pages"]),
+        })
+    return stats
+
+
+def _recent_notes_and_highlights(books: list[dict], store: dict) -> list[dict]:
+    book_map = {book["id"]: book for book in books}
+    records: list[dict] = []
+    for note in store.get("notes", []):
+        if not isinstance(note, dict):
+            continue
+        book = book_map.get(note.get("book_id"))
+        records.append({
+            "id": note.get("id") or hashlib.sha1(json.dumps(note, sort_keys=True).encode("utf-8")).hexdigest()[:12],
+            "type": "note" if note.get("note") else "highlight",
+            "book_id": note.get("book_id"),
+            "book_title": book.get("title") if book else "Unknown book",
+            "author": book.get("author") if book else "",
+            "page": note.get("page", 0),
+            "sentence_idx": note.get("sentence_idx", 0),
+            "text": note.get("text") or note.get("snippet") or "",
+            "note": note.get("note") or "",
+            "created_at": note.get("created_at") or 0,
+        })
+    for book in books:
+        for idx, bookmark in enumerate(book.get("bookmarks") or []):
+            label = bookmark.get("label") or f"Page {int(bookmark.get('page') or 0) + 1}"
+            records.append({
+                "id": f"{book['id']}:bookmark:{idx}",
+                "type": "bookmark",
+                "book_id": book["id"],
+                "book_title": book["title"],
+                "author": book.get("author") or "",
+                "page": bookmark.get("page", 0),
+                "sentence_idx": bookmark.get("sentence_idx", 0),
+                "text": label,
+                "note": "",
+                "created_at": book.get("updated_at") or book.get("last_opened_at") or 0,
+            })
+    return sorted(records, key=lambda item: float(item.get("created_at") or 0), reverse=True)
+
+
+def _app_version() -> str | None:
+    package_path = Path(BASE_DIR).parent / "package.json"
+    try:
+        return json.loads(_read_text_lenient(package_path)).get("version")
+    except Exception:
+        return None
+
+
+def _dashboard_status_summary() -> dict:
+    active_engine = _active_tts_engine or _normalize_tts_engine(_load_global_settings().get("tts_engine"))
+    return {
+        "reachable": True,
+        "active_tts_engine": active_engine,
+        "gpu": bool(_gpu_metrics()),
+        "models": {
+            "kokoro": _engine_install_info("kokoro"),
+            chatterbox_service.ENGINE_ID: _engine_install_info(chatterbox_service.ENGINE_ID),
+        },
+        "version": _app_version(),
+    }
+
+
+def _dashboard_payload() -> dict:
+    books = _load_library_books()
+    recent_books = _sort_recent_books(books)
+    recently_added = _sort_recently_added_books(books)
+    continue_book = next((book for book in recent_books if book.get("has_reading_progress")), None)
+    if continue_book is None and recently_added:
+        continue_book = recently_added[0]
+    store = _load_dashboard_store()
+    weekly_stats = _weekly_stats(store.get("reading_events", []))
+    today = datetime.now().date().isoformat()
+    today_ms = sum(
+        max(0, int(event.get("elapsed_ms") or 0))
+        for event in store.get("reading_events", [])
+        if event.get("date") == today
+    )
+    goal_minutes = int(store.get("daily_goal_minutes") or 60)
+    highlights = _recent_notes_and_highlights(books, store)
+    collections = sorted({tag for book in books for tag in book.get("collections", [])}, key=str.casefold)
+    genres = sorted({tag for book in books for tag in book.get("genres", [])}, key=str.casefold)
+    authors = sorted({book.get("author") for book in books if book.get("author")}, key=str.casefold)
+    pages_total = sum(int(book.get("visual_page_count") or book.get("page_count") or 0) for book in books)
+    pages_read = sum(
+        min(int(book.get("page_count") or 0), int((book.get("last_position") or {}).get("page") or 0) + 1)
+        for book in books
+        if book.get("has_reading_progress")
+    )
+    note_count = sum(1 for item in highlights if item.get("type") == "note")
+    return {
+        "books": recent_books,
+        "recent_books": recent_books[:12],
+        "recently_added": recently_added[:12],
+        "continue_book": continue_book,
+        "counts": {
+            "books": len(books),
+            "authors": len(authors),
+            "collections": len(collections),
+            "genres": len(genres),
+            "audiobooks": 0,
+            "highlights": len(highlights),
+            "notes": note_count,
+            "history": len([book for book in books if book.get("last_opened_at")]),
+            "pages_total": pages_total,
+            "pages_read": pages_read,
+        },
+        "collections": collections,
+        "genres": genres,
+        "authors": authors,
+        "weekly_stats": weekly_stats,
+        "reading_goal": {
+            "daily_goal_minutes": goal_minutes,
+            "today_ms": today_ms,
+            "today_minutes": round(today_ms / 60000, 1),
+            "progress": min(1.0, today_ms / max(1, goal_minutes * 60000)),
+        },
+        "highlights": highlights[:16],
+        "notes": [item for item in highlights if item.get("type") == "note"][:16],
+        "backend": _dashboard_status_summary(),
+    }
+
+
+def _search_library_books(q: str) -> list[dict]:
+    query = _normalize_search_text(q)
+    if not query:
+        return _sort_recent_books(_load_library_books())
+    matches = []
+    for book in _load_library_books():
+        fields = [
+            book.get("title") or "",
+            book.get("author") or "",
+            " ".join(book.get("genres") or []),
+            " ".join(book.get("collections") or []),
+        ]
+        haystack = _normalize_search_text(" ".join(fields))
+        if query in haystack:
+            matches.append(book)
+    return _sort_recent_books(matches)
+
+
 def _resolve_filepath(filepath: str) -> str:
     """Return filepath if it exists, otherwise try basename in current uploads dir.
     Handles the case where the project folder was moved and saved states still
@@ -362,6 +830,18 @@ def _resolve_filepath(filepath: str) -> str:
     return filepath
 
 
+def _safe_upload_filename(filename: str | None, content: bytes) -> str:
+    basename = os.path.basename(filename or "") or "upload.epub"
+    stem, ext = os.path.splitext(basename)
+    if ext.lower() != ".epub":
+        raise HTTPException(400, "Choose an EPUB file.")
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", stem).strip(" .-_")
+    if not stem:
+        stem = "upload"
+    digest = hashlib.sha256(content).hexdigest()[:12]
+    return f"{stem[:80]}-{digest}.epub"
+
+
 def _invalidate_recent_cache():
     global _recent_books_cache, _recent_books_cache_time
     _recent_books_cache = None
@@ -370,51 +850,12 @@ def _invalidate_recent_cache():
 
 def _load_recent_books() -> list[dict]:
     global _recent_books_cache, _recent_books_cache_time
+    _flush_debounced_saves()
     now = time.monotonic()
     if _recent_books_cache is not None and now - _recent_books_cache_time < _RECENT_CACHE_TTL:
         return _recent_books_cache
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-    recent = []
-    for f in sorted(Path(DATA_DIR).glob("*.json"), key=os.path.getmtime, reverse=True):
-        # Skip settings.json (global UI settings), reflow caches, and any
-        # half-written *.tmp.* shards from atomic writes.
-        if f.name == "settings.json" or f.name.endswith(".reflow.json") or ".tmp." in f.name:
-            continue
-        try:
-            # _read_text_lenient: utf-8 first (new writes), cp1252 fallback for
-            # legacy state files written before the encoding fix. Without this,
-            # smart quotes / em-dashes in EPUB titles crash the recent list,
-            # which is polled every ~2s. The next _save_state rewrites as utf-8.
-            text = _read_text_lenient(f)
-            if not text.strip():
-                # Empty/corrupt state file — prune it
-                try:
-                    f.unlink()
-                except Exception:
-                    logger.exception("Failed to delete empty state file %s", f)
-                continue
-            state = BookState.model_validate_json(text)
-            resolved = _resolve_filepath(state.filepath)
-            if os.path.splitext(resolved)[1].lower() != ".epub":
-                continue
-            cover_url, cover_source = (None, "default-fallback")
-            if os.path.exists(resolved):
-                cover_url, cover_source = _ensure_book_cover(resolved, state.id)
-            recent.append({
-                "id": state.id,
-                "title": state.title,
-                "author": state.author,
-                "filepath": resolved,
-                "page_count": state.page_count,
-                "format": "epub",
-                "cover_url": cover_url,
-                "cover_source": cover_source,
-                "last_position": state.last_position.model_dump(),
-                "exists": os.path.exists(resolved),
-            })
-        except Exception:
-            logger.exception("Failed to load recent book state from %s", f)
+    recent = _sort_recent_books(_load_library_books())
     _recent_books_cache = recent
     _recent_books_cache_time = time.monotonic()
     return recent
@@ -524,15 +965,9 @@ async def lifespan(app: FastAPI):
     tts_service.log_runtime_environment()
     chatterbox_service.log_runtime_environment()
 
-    # Start loading whichever engine the user last selected, in the background
-    # so the API binds quickly. Switching engines later unloads the previous
-    # model (one resident at a time).
-    #
-    # Chatterbox is safe to eagerly preload now that we have the memory-pressure
-    # guard (chatterbox_service._check_memory_available) and the sticky failure
-    # flag (chatterbox_service._load_failed_permanently) — a low-RAM machine
-    # gets a clean error surfaced in the Pill instead of an OOM crash, and a
-    # broken load can't cascade-retry into a memory blow-up.
+    # Remember the last selected engine, but do not auto-load model weights on
+    # startup. Model absence/availability is now explicit UI state, and eager
+    # loading can spike RAM before the user asks for audio.
     saved_engine = _normalize_tts_engine(_load_global_settings().get("tts_engine"))
     global _active_tts_engine
     _active_tts_engine = saved_engine
@@ -543,8 +978,11 @@ async def lifespan(app: FastAPI):
     if saved_engine != "kokoro" and _kokoro_provider_pinned_for_inactive_engine:
         logger.info("Saved engine is %s; pinning %s=cpu so incidental Kokoro "
                     "sessions won't reserve CUDA VRAM.", saved_engine, tts_service.PROVIDER_ENV)
-    logger.info("Auto-loading TTS engine at startup: %s", saved_engine)
-    _preload_engine_in_background(saved_engine)
+    if _TTS_PRELOAD_ON_SWITCH:
+        logger.info("Auto-loading TTS engine at startup: %s", saved_engine)
+        _preload_engine_in_background(saved_engine)
+    else:
+        logger.info("Skipping startup TTS preload; models will load on first generation.")
 
     yield
     logger.info("FastAPI lifespan shutting down; open books=%s", list(BOOKS.keys()))
@@ -565,14 +1003,72 @@ app = FastAPI(**_app_kwargs)
 # bundled frontend. Allowing "*" lets any visited webpage in the user's browser
 # hit our local API and read arbitrary files via /api/book/open?filepath=…
 _DEV_ORIGINS = [
+    "tauri://localhost",
+    "http://tauri.localhost",
     "http://127.0.0.1:5173",
     "http://localhost:5173",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
 ]
+
+
+def _split_env_csv(value: str | None, fallback: list[str]) -> list[str]:
+    raw = value if value is not None else ",".join(fallback)
+    return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+
+
+_ALLOWED_ORIGINS = set(_split_env_csv(os.environ.get("KOKORO_CORS_ORIGINS"), _DEV_ORIGINS))
+_ALLOWED_HOSTS = {
+    host.lower()
+    for host in _split_env_csv(os.environ.get("FOLIO_ALLOWED_HOSTS"), ["127.0.0.1", "localhost", "::1"])
+}
+_API_TOKEN = (os.environ.get("FOLIO_API_TOKEN") or secrets.token_urlsafe(32)).strip()
+_API_TOKEN_HEADER = "x-folio-api-token"
+_API_TOKEN_QUERY = "folio_token"
+
+
+def _host_name(host_header: str | None) -> str:
+    host = (host_header or "").strip().lower()
+    if not host:
+        return ""
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 1 else host
+    return host.split(":", 1)[0]
+
+
+def _is_allowed_host(host_header: str | None) -> bool:
+    host = _host_name(host_header)
+    return bool(host and host in _ALLOWED_HOSTS)
+
+
+def _is_allowed_origin(origin: str | None) -> bool:
+    if not origin:
+        return True
+    return origin.strip().rstrip("/") in _ALLOWED_ORIGINS
+
+
+def _request_api_token(request: Request) -> str:
+    return (
+        request.headers.get(_API_TOKEN_HEADER)
+        or request.query_params.get(_API_TOKEN_QUERY)
+        or ""
+    )
+
+
+def _is_valid_api_token(request: Request) -> bool:
+    return secrets.compare_digest(_request_api_token(request), _API_TOKEN)
+
+
+def _redact_api_token_query(query: str) -> str:
+    if not query:
+        return query
+    return re.sub(rf"(?i)({_API_TOKEN_QUERY}=)[^&]*", r"\1<redacted>", query)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("KOKORO_CORS_ORIGINS", ",".join(_DEV_ORIGINS)).split(","),
+    allow_origins=list(_ALLOWED_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -583,12 +1079,33 @@ _QUIET_PATHS = frozenset({"/api/status", "/api/recent", "/api/settings"})
 
 
 @app.middleware("http")
+async def protect_local_api(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+
+    if not _is_allowed_host(request.headers.get("host")):
+        return JSONResponse({"detail": "Invalid Host header"}, status_code=403)
+
+    if not _is_allowed_origin(request.headers.get("origin")):
+        return JSONResponse({"detail": "Invalid Origin header"}, status_code=403)
+
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+
+    if not _is_valid_api_token(request):
+        return JSONResponse({"detail": "Invalid API token"}, status_code=401)
+
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def log_requests(request: Request, call_next):
     path = request.url.path
     quiet = path in _QUIET_PATHS or path.startswith("/api/audio/")
     started = time.perf_counter()
     if not quiet:
-        logger.info("HTTP request start method=%s path=%s query=%s", request.method, path, request.url.query)
+        logger.info("HTTP request start method=%s path=%s query=%s", request.method, path, _redact_api_token_query(request.url.query))
     try:
         response = await call_next(request)
     except Exception:
@@ -632,8 +1149,40 @@ def get_status():
             "kokoro": tts_service.get_runtime_info(),
             chatterbox_service.ENGINE_ID: chatterbox_service.get_runtime_info(),
         },
+        "models": {
+            "kokoro": tts_service.get_install_info(),
+            chatterbox_service.ENGINE_ID: chatterbox_service.get_install_info(),
+        },
         "system": _system_metrics(),
     }
+
+
+@app.get("/api/models")
+def get_models():
+    return {
+        "engines": {
+            "kokoro": tts_service.get_install_info(),
+            chatterbox_service.ENGINE_ID: chatterbox_service.get_install_info(),
+        }
+    }
+
+
+@app.post("/api/models/{engine}/download")
+def download_model(engine: str):
+    service = _engine_service(engine)
+    return {"ok": True, "engine": _normalize_tts_engine(engine), "install": service.start_install()}
+
+
+@app.post("/api/models/{engine}/cancel")
+def cancel_model_download(engine: str):
+    service = _engine_service(engine)
+    return {"ok": True, "engine": _normalize_tts_engine(engine), "install": service.cancel_install()}
+
+
+@app.post("/api/models/{engine}/retry")
+def retry_model_download(engine: str):
+    service = _engine_service(engine)
+    return {"ok": True, "engine": _normalize_tts_engine(engine), "install": service.retry_install()}
 
 
 @app.post("/api/shutdown")
@@ -647,6 +1196,20 @@ def shutdown():
             logger.exception("Failed to save state for book %s during shutdown", book_id)
         _close_book_entry(book_id)
     os.kill(os.getpid(), signal.SIGTERM)
+    return {"ok": True}
+
+
+@app.post("/api/preview/heartbeat")
+def preview_heartbeat():
+    if _PREVIEW_HEARTBEAT_FILE:
+        _preview_touch(_PREVIEW_HEARTBEAT_FILE)
+    return {"ok": True}
+
+
+@app.post("/api/preview/disconnect")
+def preview_disconnect():
+    if _PREVIEW_DISCONNECT_FILE:
+        _preview_touch(_PREVIEW_DISCONNECT_FILE)
     return {"ok": True}
 
 
@@ -667,6 +1230,73 @@ def get_recent_books():
     return _load_recent_books()
 
 
+@app.get("/api/dashboard")
+def get_dashboard():
+    return _dashboard_payload()
+
+
+@app.post("/api/dashboard/goal")
+async def save_dashboard_goal(request: Request):
+    data = await request.json()
+    try:
+        minutes = int(data.get("daily_goal_minutes"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise HTTPException(400, "daily_goal_minutes must be a number") from exc
+    minutes = max(1, min(1440, minutes))
+    with _dashboard_lock:
+        store = _load_dashboard_store()
+        store["daily_goal_minutes"] = minutes
+        _save_dashboard_store(store)
+    return {"ok": True, "daily_goal_minutes": minutes}
+
+
+@app.post("/api/dashboard/notes")
+async def create_dashboard_note(request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid note payload")
+    book_id = str(data.get("book_id") or "").strip()
+    text = re.sub(r"\s+", " ", str(data.get("text") or data.get("note") or "")).strip()
+    if not book_id:
+        raise HTTPException(400, "book_id is required")
+    if not text:
+        raise HTTPException(400, "note text is required")
+    book_ids = {book["id"] for book in _load_library_books()}
+    if book_id not in book_ids:
+        raise HTTPException(404, "Book not found")
+    try:
+        page = max(0, int(data.get("page") or 0))
+    except (TypeError, ValueError):
+        page = 0
+    try:
+        sentence_idx = max(0, int(data.get("sentence_idx") or 0))
+    except (TypeError, ValueError):
+        sentence_idx = 0
+    now_ms = _now_ms()
+    record = {
+        "id": hashlib.sha1(f"{book_id}:{page}:{sentence_idx}:{text}:{now_ms}".encode("utf-8")).hexdigest()[:12],
+        "book_id": book_id,
+        "page": page,
+        "sentence_idx": sentence_idx,
+        "text": text[:1000],
+        "note": text[:1000],
+        "created_at": now_ms,
+    }
+    with _dashboard_lock:
+        store = _load_dashboard_store()
+        notes = store.get("notes", [])
+        notes.append(record)
+        store["notes"] = notes[-1000:]
+        _save_dashboard_store(store)
+    return {"ok": True, "note": record}
+
+
+@app.get("/api/library/search")
+def search_library(q: str = Query("")):
+    books = _search_library_books(q)
+    return {"query": q, "total": len(books), "books": books}
+
+
 @app.post("/api/book/open")
 def open_book(filepath: str = Query(...)):
     logger.info("Opening book from filepath=%s", filepath)
@@ -680,21 +1310,33 @@ def open_book(filepath: str = Query(...)):
         raise HTTPException(400, "Folio now supports EPUB files only.")
 
     logger.info("Opening EPUB path=%s", resolved)
-    meta = reflow_service.get_metadata(resolved)
+    meta = reflow_service.get_metadata(resolved, DATA_DIR)
     # Build reflow now so page_count reflects real (post-frontmatter-filter) chapters.
     reflow = reflow_service.get_or_build_reflow(resolved, DATA_DIR)
     meta["page_count"] = max(1, len(reflow.get("chapters", [])))
     book_id = meta["id"]
+    _flush_debounced_saves()
     saved = _load_state(book_id)
     state = saved if saved else BookState(**meta)
+    now_ms = _now_ms()
+    if state.imported_at is None:
+        try:
+            state.imported_at = os.path.getmtime(resolved) * 1000
+        except OSError:
+            state.imported_at = now_ms
     state.page_count = meta["page_count"]
+    state.last_position = _clamp_position(state.last_position, state.page_count)
     if state.filepath != resolved:
         state.filepath = resolved
     state.format = "epub"
+    state.last_opened_at = now_ms
+    state.updated_at = now_ms
+    state.collections = _sanitize_tag_list(state.collections)
+    state.genres = _sanitize_tag_list(state.genres)
     state.cover_url, state.cover_source = _ensure_book_cover(resolved, book_id)
     _close_book_entry(book_id)
     _invalidate_search_index(book_id)
-    BOOKS[book_id] = {"state": state, "filepath": resolved}
+    BOOKS[book_id] = {"state": state, "filepath": resolved, "last_activity_ms": now_ms}
     _save_state(book_id)
     logger.info("Opened EPUB book_id=%s title=%s chapters=%s", book_id, state.title, state.page_count)
     return state.model_dump()
@@ -731,9 +1373,7 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
         if inside_uploads and os.path.isfile(abs_fp):
             # Only delete if no other book state still references this file
             still_used = False
-            for f in Path(DATA_DIR).glob("*.json"):
-                if f.name == "settings.json" or f.name.endswith(".reflow.json") or ".tmp." in f.name:
-                    continue
+            for f in _iter_book_state_files():
                 try:
                     other = BookState.model_validate_json(_read_text_lenient(f))
                     if os.path.realpath(_resolve_filepath(other.filepath)) == abs_fp:
@@ -755,12 +1395,10 @@ def delete_book(book_id: str, delete_file: bool = Query(False)):
 async def open_book_upload(file: UploadFile = File(...)):
     upload_dir = UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
-    safe_name = os.path.basename(file.filename) if file.filename else "upload.epub"
-    if os.path.splitext(safe_name)[1].lower() != ".epub":
-        raise HTTPException(400, "Choose an EPUB file.")
-    filepath = os.path.join(upload_dir, safe_name)
-    logger.info("Receiving upload filename=%s content_type=%s target=%s", file.filename, file.content_type, filepath)
+    logger.info("Receiving upload filename=%s content_type=%s", file.filename, file.content_type)
     content = await file.read()
+    safe_name = _safe_upload_filename(file.filename, content)
+    filepath = os.path.join(upload_dir, safe_name)
     logger.info("Upload read complete filename=%s bytes=%s", file.filename, len(content))
     with open(filepath, "wb") as f:
         f.write(content)
@@ -921,6 +1559,51 @@ def _job_key(
     return f"kokoro|{book_id}|{page}|{sentence}|{voice}|{speed}"
 
 
+def _job_key_matches_scope(
+    key: str,
+    book_id: str,
+    engine: str,
+    voice: str,
+    speed: float,
+    chatterbox_device: str | None = None,
+) -> bool:
+    parts = key.split("|")
+    if len(parts) < 6:
+        return False
+    try:
+        key_speed = float(parts[5])
+    except ValueError:
+      return False
+    normalized_engine = _normalize_tts_engine(engine)
+    normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
+    if parts[0] != normalized_engine or parts[1] != book_id or parts[4] != normalized_voice:
+        return False
+    if abs(key_speed - tts_service.validate_speed(speed)) > 0.0001:
+        return False
+    if normalized_engine == chatterbox_service.ENGINE_ID:
+        return len(parts) >= 7 and parts[6] == chatterbox_service.normalize_device(chatterbox_device)
+    return True
+
+
+def _cancel_pending_tts_buffer(
+    book_id: str,
+    engine: str,
+    voice: str,
+    speed: float,
+    chatterbox_device: str | None = None,
+    keep_keys: set[str] | None = None,
+    reason: str = "Buffered TTS window moved",
+) -> int:
+    keep_keys = keep_keys or set()
+    return TTS_MANAGER.cancel_pending(
+        lambda key: (
+            key not in keep_keys
+            and _job_key_matches_scope(key, book_id, engine, voice, speed, chatterbox_device)
+        ),
+        reason=reason,
+    )
+
+
 def _audio_cache_path(
     book_id: str,
     text: str,
@@ -1029,6 +1712,8 @@ def generate_tts(
     chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
 ):
     normalized_engine = _normalize_tts_engine(engine)
+    if not _engine_install_info(normalized_engine).get("ready"):
+        return _model_required_response(normalized_engine)
     _activate_tts_engine(normalized_engine)
     job, _sent = _submit_tts_job(
         book_id,
@@ -1042,6 +1727,8 @@ def generate_tts(
     )
     try:
         filename, duration_ms = TTS_MANAGER.wait(job)
+    except (tts_service.ModelInstallRequired, chatterbox_service.ModelInstallRequired):
+        return _model_required_response(normalized_engine)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"filename": filename, "duration_ms": duration_ms}
@@ -1064,20 +1751,44 @@ def buffer_tts(
     buffer endpoint, and the current sentence keeps priority 0 via /generate.
     """
     refs = _iter_sentence_window(book_id, page, sentence, count, include_current=False)
+    requested_count = len(refs)
     queued: list[dict] = []
     skipped: list[dict] = []
     normalized_engine = _normalize_tts_engine(engine)
+    if not _engine_install_info(normalized_engine).get("ready"):
+        return _model_required_response(normalized_engine)
 
-    if normalized_engine == chatterbox_service.ENGINE_ID:
-        _activate_tts_engine(normalized_engine)
+    if normalized_engine == chatterbox_service.ENGINE_ID and not chatterbox_service.is_model_loaded():
+        return {
+            "requested": len(refs),
+            "queued": queued,
+            "skipped": [
+                {"page": page_num, "sentence": sentence_idx, "reason": "background_disabled_until_model_loaded"}
+                for page_num, sentence_idx in refs
+            ],
+        }
 
-    # Pre-queue future chunks regardless of engine. Chatterbox serializes GPU
-    # work via its own BoundedSemaphore(1), so pending jobs sit in the priority
-    # queue and start the instant the foreground chunk finishes — keeping
-    # playback continuous instead of stalling once per sentence.
-    model_loaded = (
-        normalized_engine != chatterbox_service.ENGINE_ID
-        or chatterbox_service.is_model_loaded()
+    max_background = max(0, _MAX_BACKGROUND_TTS_JOBS)
+    deferred_refs = refs[max_background:]
+    refs = refs[:max_background]
+    keep_keys = {
+        _job_key(book_id, page, sentence, normalized_engine, voice, speed, chatterbox_device)
+    }
+    keep_keys.update(
+        _job_key(book_id, page_num, sentence_idx, normalized_engine, voice, speed, chatterbox_device)
+        for page_num, sentence_idx in refs
+    )
+    cancelled = _cancel_pending_tts_buffer(
+        book_id,
+        normalized_engine,
+        voice,
+        speed,
+        chatterbox_device,
+        keep_keys=keep_keys,
+    )
+    skipped.extend(
+        {"page": page_num, "sentence": sentence_idx, "reason": "background_queue_limited"}
+        for page_num, sentence_idx in deferred_refs
     )
     for offset, (page_num, sentence_idx) in enumerate(refs, start=1):
         job_key = _job_key(book_id, page_num, sentence_idx, normalized_engine, voice, speed, chatterbox_device)
@@ -1087,7 +1798,7 @@ def buffer_tts(
             continue
 
         _page_text, sent = _get_sentence(book_id, page_num, sentence_idx)
-        if model_loaded and os.path.exists(_audio_cache_path(book_id, sent.text, normalized_engine, voice, speed, chatterbox_device)):
+        if os.path.exists(_audio_cache_path(book_id, sent.text, normalized_engine, voice, speed, chatterbox_device)):
             skipped.append({"page": page_num, "sentence": sentence_idx, "reason": "cached"})
             continue
 
@@ -1105,7 +1816,33 @@ def buffer_tts(
         )
         queued.append({"page": page_num, "sentence": sentence_idx})
 
-    return {"requested": len(refs), "queued": queued, "skipped": skipped}
+    return {"requested": requested_count, "queued": queued, "skipped": skipped, "cancelled": cancelled}
+
+
+@app.post("/api/tts/buffer/cancel")
+def cancel_tts_buffer(
+    book_id: str = Query(...),
+    page: int = Query(...),
+    sentence: int = Query(...),
+    engine: str = Query(DEFAULT_TTS_ENGINE),
+    voice: str = Query("af_heart"),
+    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
+):
+    normalized_engine = _normalize_tts_engine(engine)
+    keep_keys = {
+        _job_key(book_id, page, sentence, normalized_engine, voice, speed, chatterbox_device)
+    }
+    cancelled = _cancel_pending_tts_buffer(
+        book_id,
+        normalized_engine,
+        voice,
+        speed,
+        chatterbox_device,
+        keep_keys=keep_keys,
+        reason="Buffered TTS cancelled by navigation",
+    )
+    return {"ok": True, "cancelled": cancelled}
 
 
 def _chapter_sentence_refs(
@@ -1154,8 +1891,8 @@ def preload_chapter(
 ):
     """Queue every sentence in the chapter/page for TTS generation at top priority."""
     engine = _normalize_tts_engine(engine)
-    if engine == chatterbox_service.ENGINE_ID:
-        _activate_tts_engine(engine)
+    if not _engine_install_info(engine).get("ready"):
+        return _model_required_response(engine)
     refs = _chapter_sentence_refs(
         book_id,
         page,
@@ -1165,6 +1902,14 @@ def preload_chapter(
         chatterbox_device,
         include_cache_path=True,
     )
+    if engine == chatterbox_service.ENGINE_ID:
+        return {
+            "total": len(refs),
+            "queued": 0,
+            "skipped": len(refs),
+            "reason": "chapter_preload_disabled_for_memory_safety",
+        }
+    refs = refs[:max(0, _MAX_BACKGROUND_TTS_JOBS)]
     queued = 0
     for offset, (sentence_idx, _text, _path) in enumerate(refs):
         if _path and os.path.exists(_path):
@@ -1196,13 +1941,17 @@ def preload_chapter_status(
     # Kokoro cache keys use a no-load runtime fingerprint, so this endpoint can
     # report cached chapters on cold start without pinning a model in memory.
     engine = _normalize_tts_engine(engine)
+    if not _engine_install_info(engine).get("ready"):
+        return _model_required_response(engine)
     refs = _chapter_sentence_refs(book_id, page, engine, voice, speed, chatterbox_device)
     ready = 0
+    ready_indices: list[int] = []
     failed: list[int] = []
     active = 0
     for sentence_idx, _text, filepath in refs:
         if os.path.exists(filepath):
             ready += 1
+            ready_indices.append(sentence_idx)
             continue
         job_key = _job_key(book_id, page, sentence_idx, engine, voice, speed, chatterbox_device)
         status = TTS_MANAGER.status(job_key)
@@ -1217,7 +1966,7 @@ def preload_chapter_status(
         state = "error"
     else:
         state = "preloading"
-    return {"state": state, "ready": ready, "total": total, "failed": failed}
+    return {"state": state, "ready": ready, "ready_indices": ready_indices, "total": total, "failed": failed}
 
 
 _AUDIO_FILENAME_RE = re.compile(r"^[A-Za-z0-9_\-]+\.wav$")
@@ -1244,6 +1993,8 @@ def get_audio(filename: str):
 def get_voices(engine: str = Query(DEFAULT_TTS_ENGINE)):
     try:
         engine = _normalize_tts_engine(engine)
+        if not _engine_install_info(engine).get("ready"):
+            return _model_required_response(engine)
         if engine == chatterbox_service.ENGINE_ID:
             return chatterbox_service.get_available_voices()
         return tts_service.get_available_voices()
@@ -1280,7 +2031,53 @@ def voice_preview():
 def save_position(book_id: str, position: Position):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
-    BOOKS[book_id]["state"].last_position = position
+    entry = BOOKS[book_id]
+    state = entry["state"]
+    if position.page < 0 or position.page >= state.page_count:
+        raise HTTPException(400, "Invalid page index")
+    if position.sentence_idx < 0:
+        raise HTTPException(400, "Invalid sentence index")
+    previous = state.last_position
+    provided_fields = getattr(position, "model_fields_set", set())
+    if previous and previous.page == position.page:
+        if "content_page" not in provided_fields:
+            position.content_page = previous.content_page
+        if "pages_per_view" not in provided_fields:
+            position.pages_per_view = previous.pages_per_view
+        if "layout_key" not in provided_fields:
+            position.layout_key = previous.layout_key
+        if previous.sentence_idx == position.sentence_idx and "chunk_progress" not in provided_fields:
+            position.chunk_progress = previous.chunk_progress
+    if "chunk_progress" not in provided_fields and (
+        not previous or previous.page != position.page or previous.sentence_idx != position.sentence_idx
+    ):
+        position.chunk_progress = 0
+    if position.saved_at is None:
+        position.saved_at = time.time() * 1000
+    now_ms = _now_ms()
+    previous_activity_ms = entry.get("last_activity_ms")
+    elapsed_ms = 0
+    if previous_activity_ms is not None:
+        try:
+            elapsed_ms = int(now_ms - float(previous_activity_ms))
+        except (TypeError, ValueError):
+            elapsed_ms = 0
+    position_changed = (
+        previous is None
+        or previous.page != position.page
+        or previous.sentence_idx != position.sentence_idx
+        or previous.content_page != position.content_page
+        or previous.pages_per_view != position.pages_per_view
+        or previous.layout_key != position.layout_key
+    )
+    touched_pages = [previous.page if previous else position.page, position.page]
+    state.last_position = position
+    state.updated_at = now_ms
+    state.last_opened_at = state.updated_at
+    if position_changed and 10 * 1000 <= elapsed_ms <= 30 * 60 * 1000:
+        state.reading_ms_total = int(state.reading_ms_total or 0) + elapsed_ms
+        _append_reading_event(book_id, elapsed_ms, touched_pages, timestamp_ms=state.updated_at)
+    entry["last_activity_ms"] = now_ms
     _save_state_debounced(book_id)
     return {"ok": True}
 
@@ -1324,6 +2121,36 @@ def update_settings(
         state.speed = speed
     _save_state(book_id)
     return {"ok": True}
+
+
+@app.post("/api/book/{book_id}/metadata")
+async def update_book_metadata(book_id: str, request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid metadata payload")
+    state = BOOKS.get(book_id, {}).get("state")
+    if state is None:
+        state = _load_state(book_id)
+    if state is None:
+        raise HTTPException(404, "Book not found")
+    if "collections" in data:
+        state.collections = _sanitize_tag_list(data.get("collections"))
+    if "genres" in data:
+        state.genres = _sanitize_tag_list(data.get("genres"))
+    if "visual_page_count" in data:
+        try:
+            visual_page_count = int(data.get("visual_page_count") or 0)
+        except (TypeError, ValueError):
+            visual_page_count = 0
+        if visual_page_count > 0:
+            state.visual_page_count = max(1, min(100000, visual_page_count))
+    state.updated_at = _now_ms()
+    if book_id in BOOKS:
+        BOOKS[book_id]["state"] = state
+        _save_state(book_id)
+    else:
+        _write_state(book_id, state)
+    return {"ok": True, "book": _book_summary_from_state(state, Path(_state_path(book_id)))}
 
 
 @app.get("/api/cache/info")

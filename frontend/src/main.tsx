@@ -4,7 +4,17 @@ import './index.css'
 import App from './App'
 import ErrorBoundary from './ErrorBoundary'
 
+function isTauriRuntime(): boolean {
+  return Boolean(
+    window.__TAURI_INTERNALS__ ||
+    window.__TAURI__ ||
+    window.location.protocol === 'tauri:' ||
+    window.location.hostname === 'tauri.localhost',
+  )
+}
+
 async function setTauriWindowIcon() {
+  if (!isTauriRuntime()) return
   try {
     const [{ getCurrentWindow }, { Image }] = await Promise.all([
       import('@tauri-apps/api/window'),
@@ -19,7 +29,7 @@ async function setTauriWindowIcon() {
   }
 }
 
-setTauriWindowIcon()
+void setTauriWindowIcon()
 
 const root = document.getElementById('root')
 

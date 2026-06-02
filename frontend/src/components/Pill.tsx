@@ -1,7 +1,21 @@
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react'
 import type React from 'react'
+import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
-import { apiUrl } from '../api'
+import { apiResourceUrl } from '../api'
+import {
+  buttonHover,
+  buttonTap,
+  controlsReveal,
+  fadeIn,
+  pillContentContinuity,
+  pillControlHover,
+  pillControlTap,
+  pillMorph,
+  pillShellSlowTransition,
+  pillShellTransition,
+  spring,
+} from '../motion'
 
 const BARS = 64
 const SPEEDS = [0.75, 0.85, 0.95, 1, 1.1, 1.2, 1.35]
@@ -15,6 +29,7 @@ function fmtTime(sec) {
 
 export default memo(function Pill({
   isPlaying, isGenerating, textLoading, modelLoaded, modelLoading,
+  installState = null,
   downloadActive = false, downloadBytes = 0, downloadTotalBytes = 0,
   engineFallbackReason = null, engineLoadError = null,
   generationError,
@@ -51,7 +66,7 @@ export default memo(function Pill({
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pillMotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const PILL_MORPH_MS = 560
+  const PILL_MORPH_MS = pillMorph.ms
   const setExpandedWithMotion = useCallback((next) => {
     if (pillMotionTimerRef.current) clearTimeout(pillMotionTimerRef.current)
     setPillMotion(next ? 'expanding' : 'collapsing')
@@ -59,12 +74,12 @@ export default memo(function Pill({
     const slow = typeof window !== 'undefined' && (
       window.__SLOWPILL__ || (typeof location !== 'undefined' && /[?&]slowpill=1/.test(location.search))
     )
-    pillMotionTimerRef.current = setTimeout(() => setPillMotion(''), PILL_MORPH_MS * (slow ? 4 : 1))
+    pillMotionTimerRef.current = setTimeout(() => setPillMotion(''), PILL_MORPH_MS * (slow ? pillMorph.slowScale : 1))
   }, [])
 
   // Optional slow-mo via ?slowpill=1 in the URL (or window.__SLOWPILL__).
-  // CSS reads .pill-slowmo to scale every morph timing 4×, so the user (or
-  // me) can study the transition by eye without rebuilding.
+  // CSS and Motion both read this so the morph can be studied by eye without
+  // rebuilding.
   const slowMo = typeof window !== 'undefined' && (
     window.__SLOWPILL__ || (typeof location !== 'undefined' && /[?&]slowpill=1/.test(location.search))
   )
@@ -139,7 +154,7 @@ export default memo(function Pill({
   useEffect(() => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     const resetTimer = setTimeout(() => setControlsHidden(false), 0)
-    if (!followAlongMode || !isPlaying) return
+    if (!followAlongMode || !isPlaying) return () => clearTimeout(resetTimer)
 
     const onActivity = () => revealControls()
     window.addEventListener('pointermove', onActivity, { passive: true })
@@ -225,6 +240,16 @@ export default memo(function Pill({
 
   const statusLabel = () => {
     if (generationError) return generationError
+    if (installState && !installState.ready) {
+      if (installState.state === 'failed') return installState.error || `${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'} install failed`
+      if (installState.state === 'download_queued' || installState.state === 'downloading') {
+        const total = installState.total_bytes > 0 ? installState.total_bytes : 1
+        const pct = Math.min(99, Math.max(1, Math.round(((installState.downloaded_bytes || 0) / total) * 100)))
+        return `Downloading ${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'}… ${pct}%`
+      }
+      if (installState.state === 'verifying') return `Verifying ${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'}…`
+      return `${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'} not installed`
+    }
     // Engine-level load failure (memory pressure, missing dep, etc.) wins
     // over the generic generationError so the user gets the real reason.
     if (engineLoadError && ttsEngine === 'chatterbox-turbo' && !modelLoaded) {
@@ -255,11 +280,10 @@ export default memo(function Pill({
   }
   const status = statusLabel()
 
-  // Chapter preload state — fused into the pill's play button + subtitle line.
-  // The play button gets a progress ring while preloading, pulses when ready,
-  // and is gated until the whole chapter is cached.
+  // Chapter preload state feeds the reader pill controls and subtitle line.
   const pl = preloadState || { state: 'idle', ready: 0, total: 0 }
   const plPct = pl.total > 0 ? Math.round((pl.ready / pl.total) * 100) : 0
+  const preloadProgress = pl.total > 0 ? Math.max(0, Math.min(1, pl.ready / pl.total)) : 0
   const plFailed = pl.failed?.length || 0
   const plBusy = pl.state === 'verifying' || pl.state === 'preloading'
   const plActive = plBusy
@@ -290,10 +314,16 @@ export default memo(function Pill({
   }
 
   const primaryClick = () => {
+    if (installState && !installState.ready && !modelLoaded) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('folio:model-required', { detail: { engine: ttsEngine, install: installState } }))
+      }
+      return
+    }
     togglePlay()
   }
 
-  const coverUrl = book?.cover_url ? apiUrl(book.cover_url) : null
+  const coverUrl = book?.cover_url ? apiResourceUrl(book.cover_url) : null
   const coverStyle = coverUrl
     ? { backgroundImage: `url("${coverUrl}")` } as React.CSSProperties
     : undefined
@@ -322,79 +352,101 @@ export default memo(function Pill({
       onPointerEnter={revealControls}
       onPointerMove={revealControls}
     />
-    <div
+    <m.div
       className={`pill-wrap ${followAlongMode ? 'follow-mode' : ''} ${controlsHidden ? 'auto-hidden' : ''}`}
       onPointerEnter={revealControls}
       onFocusCapture={revealControls}
     >
-      <div
+      <m.div
         ref={pillRef}
-        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${pillMotion} ${slowMo ? 'pill-slowmo' : ''}`}
+        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${(isPlaying || isGenerating || textLoading || modelLoading || downloadActive) ? 'is-active' : ''} ${pillMotion} ${slowMo ? 'pill-slowmo' : ''}`}
         onClick={() => { if (!expanded) setExpandedWithMotion(true) }}
+        layout
+        transition={slowMo ? pillShellSlowTransition : pillShellTransition}
       >
+        <AnimatePresence initial={false}>
         {showCollapsed && (
-          <div className={`pill-collapsed-content ${collapsedClass}`} aria-hidden={collapsedClass === 'is-leaving'}>
-            <div className={coverClass} style={coverStyle}>
-              {!coverUrl && <span className="pill-cover-title">{book?.title || 'Folio'}</span>}
-            </div>
-            <div className="pill-meta">
-              <div className="t">{book?.title || 'Kokoro Reader'}</div>
-              <div className={`a ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>{metaLine}</div>
-            </div>
+          <m.div
+            key="pill-collapsed"
+            className={`pill-content-layer pill-collapsed-content ${collapsedClass}`}
+            aria-hidden={collapsedClass === 'is-leaving'}
+            custom={{ state: collapsedClass, slow: slowMo }}
+            variants={pillContentContinuity}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
+            <div className="pill-now-group">
+              <div className={coverClass} style={coverStyle}>
+                {!coverUrl && <span className="pill-cover-title">{book?.title || 'Folio'}</span>}
+              </div>
+              <div className="pill-meta">
+                <div className="t">{book?.title || 'Kokoro Reader'}</div>
+                <div className={`a ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>{metaLine}</div>
+              </div>
 
-            <div className="pill-waveform">
-              {heights.slice(0, 28).map((h, i) => {
-                const live = isPlaying ? (0.7 + 0.3 * Math.sin((pulse + i) * 0.7)) : 1
-                const passed = (i / 28) < progress
-                return (
-                  <div
-                    key={i}
-                    className="wave-bar"
-                    style={{ height: `${h * live * 100}%`, opacity: passed ? 1 : 0.28 }}
-                  />
-                )
-              })}
+              <div className="pill-waveform">
+                {heights.slice(0, 28).map((h, i) => {
+                  const live = isPlaying ? (0.7 + 0.3 * Math.sin((pulse + i) * 0.7)) : 1
+                  const passed = (i / 28) < progress
+                  return (
+                    <div
+                      key={i}
+                      className="wave-bar"
+                      style={{ height: `${h * live * 100}%`, opacity: passed ? 1 : 0.28 }}
+                    />
+                  )
+                })}
+              </div>
             </div>
 
             <div className="pill-controls" onClick={(e) => e.stopPropagation()}>
               {/* Transport cluster — fixed-width and never reflows so the
                   play button stays put when prep buttons morph. */}
               <div className="pill-controls-transport">
-                <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)">
+                <m.button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)" whileHover={buttonHover} whileTap={buttonTap}>
                   <Icons.Rewind size={16} />
-                </button>
-                <button
+                </m.button>
+                <m.button
                   className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
                   onClick={primaryClick}
                   title="Play/Pause (Space)"
+                  whileTap={buttonTap}
                 >
                   {isPlaying ? <Icons.Pause size={18} /> : <Icons.Play size={18} />}
-                </button>
-                <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)">
+                </m.button>
+                <m.button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)" whileHover={buttonHover} whileTap={buttonTap}>
                   <Icons.Forward size={16} />
-                </button>
+                </m.button>
               </div>
               {/* Prep cluster — reserves width for the wider variant so morphing
                   preload ↔ follow-along never shifts the transport buttons. */}
               <div className={`pill-controls-prep ${isPlaying ? 'state-playing' : 'state-paused'}`}>
                 <span className="pill-divider" aria-hidden="true" />
-                <button
+                <m.button
                   className={`pill-preload-control preload-${pl.state} ${isPlaying ? 'is-compact' : 'is-prominent'}`}
                   onClick={handlePreload}
                   disabled={plBusy || plReady}
                   title={preloadButtonLabel}
-                  aria-label="Preload chapter"
+                  aria-label={preloadButtonLabel}
+                  style={{ '--preload-progress': preloadProgress } as React.CSSProperties}
+                  layout="position"
+                  transition={spring.pillControl}
+                  whileHover={pillControlHover}
+                  whileTap={pillControlTap}
                 >
-                  <Icons.Download size={14} />
+                  <span className="preload-icon" aria-hidden="true">
+                    <Icons.Download size={14} />
+                  </span>
                   <span className="preload-short-label">{preloadShortLabel}</span>
-                </button>
+                </m.button>
                 {/* Always render follow-along so the prep cluster's width is
                     stable. Before the user has ever pressed play (no reading
                     position yet), it's hidden via .is-stub but still occupies
                     space — keeps the play button anchored from the very first
                     render. */}
-                <button
-                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''} ${isPlaying ? 'is-prominent' : 'is-compact'} ${!showFollowAlong ? 'is-stub' : ''}`}
+                <m.button
+                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''} ${followAlongMode && isPlaying ? 'is-live' : ''} ${isPlaying ? 'is-prominent' : 'is-compact'} ${!showFollowAlong ? 'is-stub' : ''}`}
                   onClick={(e) => { e.stopPropagation(); if (!showFollowAlong) return; toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
                   disabled={!showFollowAlong}
                   title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
@@ -402,19 +454,34 @@ export default memo(function Pill({
                   aria-pressed={followAlongMode}
                   aria-hidden={!showFollowAlong}
                   tabIndex={!showFollowAlong ? -1 : 0}
+                  layout="position"
+                  transition={spring.pillControl}
+                  whileHover={pillControlHover}
+                  whileTap={pillControlTap}
                 >
-                  <span className="live-dot" aria-hidden="true" />
+                  <span className="follow-status-mark" aria-hidden="true">
+                    <span className="live-dot" />
+                  </span>
                   <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
-                </button>
-                <button className="pill-btn pill-expand-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand">
+                </m.button>
+                <m.button className="pill-btn pill-expand-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand" whileTap={buttonTap}>
                   <Icons.ChevronDown size={16} style={{ transform: 'rotate(180deg)' }} />
-                </button>
+                </m.button>
               </div>
             </div>
-          </div>
+          </m.div>
         )}
         {showExpanded && (
-          <div className={`pill-expanded-content ${expandedClass}`} aria-hidden={expandedClass === 'is-leaving'}>
+          <m.div
+            key="pill-expanded"
+            className={`pill-content-layer pill-expanded-content ${expandedClass}`}
+            aria-hidden={expandedClass === 'is-leaving'}
+            custom={{ state: expandedClass, slow: slowMo }}
+            variants={pillContentContinuity}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+          >
             <div className="pill-expanded-head">
               <div className={coverClass} style={coverStyle}>
                 {!coverUrl && <span className="pill-cover-title">{book?.title || 'Folio'}</span>}
@@ -426,16 +493,18 @@ export default memo(function Pill({
                 <h3>{book?.title || 'Kokoro Reader'}</h3>
                 <div className="a">{book?.author ? `by ${book.author}` : ''}{voice ? ` · read by ${voice}` : ''}</div>
               </div>
-              <button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(false) }}>
+              <m.button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(false) }} whileTap={buttonTap}>
                 <Icons.ChevronDown size={18} />
-              </button>
+              </m.button>
             </div>
 
             <div className="tele-stack">
               <div className="tele-line tele-prev">{prevText || ''}</div>
-              <div className={`tele-line tele-now ${!currentText ? 'tele-empty' : ''}`} key={currentSentence}>
-                {currentText || (isPlaying ? '' : (status || ''))}
-              </div>
+              <AnimatePresence mode="wait">
+                <m.div className={`tele-line tele-now ${!currentText ? 'tele-empty' : ''}`} key={currentSentence} variants={fadeIn} initial="initial" animate="animate" exit="exit">
+                  {currentText || (isPlaying ? '' : (status || ''))}
+                </m.div>
+              </AnimatePresence>
               <div className="tele-line tele-next">{nextText || ''}</div>
             </div>
 
@@ -460,7 +529,7 @@ export default memo(function Pill({
               </div>
             </div>
 
-            <div className="pill-expanded-controls">
+            <m.div className="pill-expanded-controls" layout>
               <button className="pill-btn" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 0} title="Previous page">
                 <Icons.SkipBack size={18} />
               </button>
@@ -480,22 +549,34 @@ export default memo(function Pill({
               <button className="pill-btn" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= pageCount - 1} title="Next page">
                 <Icons.SkipForward size={18} />
               </button>
+              <AnimatePresence>
               {showFollowAlong && (
-                <button
-                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''}`}
+                <m.button
+                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''} ${followAlongMode && isPlaying ? 'is-live' : ''}`}
                   onClick={(e) => { e.stopPropagation(); toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
                   title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
                   aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
                   aria-pressed={followAlongMode}
+                  variants={controlsReveal}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  layout
+                  transition={spring.pillControl}
+                  whileHover={pillControlHover}
+                  whileTap={pillControlTap}
                 >
-                  <span className="live-dot" aria-hidden="true" />
+                  <span className="follow-status-mark" aria-hidden="true">
+                    <span className="live-dot" />
+                  </span>
                   <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
-                </button>
+                </m.button>
               )}
+              </AnimatePresence>
               <button className="pill-btn" onClick={stop} title="Stop">
                 <Icons.Stop size={16} />
               </button>
-            </div>
+            </m.div>
 
             <div className="pill-secondary-row" onClick={(e) => e.stopPropagation()}>
               {/* Page tile — current page + visual progress */}
@@ -617,6 +698,8 @@ export default memo(function Pill({
                 onClick={handlePreload}
                 disabled={plBusy || plReady}
                 title={preloadButtonLabel}
+                aria-label={preloadButtonLabel}
+                style={{ '--preload-progress': preloadProgress } as React.CSSProperties}
               >
                 <div className="tile-head">
                   <span className="tile-label"><Icons.Download size={11} style={{ marginRight: 6, verticalAlign: -1 }} />Chapter</span>
@@ -633,10 +716,11 @@ export default memo(function Pill({
                 </div>
               </button>
             </div>
-          </div>
+          </m.div>
         )}
-      </div>
-    </div>
+        </AnimatePresence>
+      </m.div>
+    </m.div>
     </>
   )
 })

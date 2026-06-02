@@ -65,6 +65,26 @@ class TTSQueue:
             job = self._jobs.get(key)
             return job.status if job else None
 
+    def cancel_pending(self, predicate: Callable[[str], bool], reason: str = "Cancelled") -> int:
+        """Cancel queued jobs that have not started yet.
+
+        Running model calls are intentionally left alone: killing an in-flight
+        PyTorch/ONNX generation is not safe, but dropping stale pending work
+        prevents the queue from loading another engine after the current job.
+        """
+        cancelled = 0
+        with self._lock:
+            for job in list(self._jobs.values()):
+                if job.status != "pending" or not predicate(job.key):
+                    continue
+                job.ticket += 1
+                job.result = None
+                job.error = RuntimeError(reason)
+                job.status = "error"
+                job.event.set()
+                cancelled += 1
+        return cancelled
+
     def has_active_priority_at_or_below(self, priority: int) -> bool:
         with self._lock:
             return any(

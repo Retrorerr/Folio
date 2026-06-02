@@ -13,10 +13,16 @@
   align-items: stretch;
 }
 
+.app-shell:has(.reader-shell) {
+  padding-top: 0;
+}
+
 /* ========== Icon Rail (collapsed sidebar) ========== */
 .sidebar-wrap {
   flex: 0 0 auto;
   display: flex;
+  height: 100%;
+  max-height: 100dvh;
   max-width: 60px;
   min-width: 0;
   overflow: hidden;
@@ -26,7 +32,6 @@
     max-width var(--dur-slow) var(--ease-out),
     opacity var(--dur) var(--ease-out),
     transform var(--dur-slow) var(--ease-out);
-  will-change: max-width, opacity, transform;
 }
 .sidebar-wrap.is-open,
 .sidebar-wrap.is-closing {
@@ -42,6 +47,9 @@
 .icon-rail {
   width: 60px;
   flex: 0 0 60px;
+  min-height: 0;
+  height: 100%;
+  max-height: 100dvh;
   background: var(--paper-2);
   border-right: 1px solid var(--rule);
   display: flex;
@@ -82,7 +90,6 @@
   width: 25px;
   height: 25px;
   object-fit: contain;
-  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--ember) 34%, transparent));
 }
 .rail-btn {
   width: 40px; height: 40px;
@@ -97,9 +104,23 @@
     transform var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out);
   position: relative;
+  isolation: isolate;
+  overflow: hidden;
 }
 .rail-btn:hover { background: var(--paper-3); color: var(--ink); transform: translateY(-1px); }
-.rail-btn.active { background: var(--ink); color: var(--paper); }
+.rail-btn.active { background: transparent; color: var(--paper); }
+.rail-btn > svg {
+  position: relative;
+  z-index: 1;
+}
+.rail-active-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 10px;
+  background: var(--ink);
+  pointer-events: none;
+}
 .rail-btn.active::after {
   content: "";
   position: absolute;
@@ -109,6 +130,7 @@
   width: 3px; height: 18px;
   border-radius: 0 3px 3px 0;
   background: var(--ember);
+  z-index: 2;
 }
 .rail-spacer { flex: 1; }
 
@@ -116,6 +138,8 @@
 .sidebar-panel {
   width: 300px;
   flex: 0 0 300px;
+  height: 100%;
+  max-height: 100dvh;
   background: var(--paper-2);
   border-right: 1px solid var(--rule);
   display: flex;
@@ -413,16 +437,16 @@
 }
 .settings-overlay {
   position: fixed;
-  inset: 42px 0 0;
+  inset: 0;
   z-index: 80;
   display: grid;
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--ember) 7%, transparent), transparent 28%),
-    color-mix(in srgb, var(--paper) 72%, transparent);
-  backdrop-filter: blur(12px) saturate(1.02);
-  animation: settings-fade-in 220ms var(--ease-out);
+    linear-gradient(135deg, color-mix(in srgb, var(--ember) 4%, transparent), transparent 32%),
+    color-mix(in srgb, var(--paper) 16%, transparent);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .settings-shell {
   width: min(1240px, calc(100vw - 56px));
@@ -440,7 +464,6 @@
     inset 0 1px 0 color-mix(in srgb, var(--paper) 22%, transparent);
   color: var(--ink);
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  animation: settings-rise-in 360ms var(--ease-out);
 }
 .settings-nav {
   width: 214px;
@@ -711,13 +734,34 @@
 .settings-shell .theme-option,
 .settings-shell .tts-engine-option {
   border-radius: 6px;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
 }
 .settings-shell .voice-card {
   border-radius: 7px;
   background: color-mix(in srgb, var(--paper) 92%, transparent);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
 }
 .settings-shell .voice-card.active {
   background: var(--ember-wash);
+}
+.settings-active-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ember) 22%, transparent), color-mix(in srgb, var(--ember) 12%, transparent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ember) 28%, transparent);
+  pointer-events: none;
+}
+.settings-shell .theme-option > :not(.settings-active-bg),
+.settings-shell .tts-engine-option > :not(.settings-active-bg),
+.settings-shell .voice-card > :not(.settings-active-bg) {
+  position: relative;
+  z-index: 1;
 }
 .settings-shell {
   width: min(900px, calc(100vw - 48px));
@@ -837,14 +881,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@keyframes settings-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes settings-rise-in {
-  from { opacity: 0; transform: translateY(18px) scale(0.985); }
-  to { opacity: 1; transform: none; }
-}
 .settings-group { display: flex; flex-direction: column; gap: 8px; }
 .settings-group .label {
   font-family: var(--font-mono);
@@ -920,6 +956,16 @@
   text-transform: uppercase;
   color: var(--ink-3);
   transition: all var(--dur-fast) var(--ease-out);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.tts-engine-option small {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  opacity: 0.8;
 }
 
 .tts-engine-option:hover {
@@ -958,6 +1004,179 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.voice-picker.is-disabled {
+  opacity: 0.52;
+  pointer-events: none;
+}
+
+.model-install-card {
+  position: relative;
+  overflow: hidden;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--ember) 22%, var(--rule));
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--ember) 16%, transparent), transparent 35%),
+    linear-gradient(145deg, color-mix(in srgb, var(--paper) 95%, transparent), color-mix(in srgb, var(--paper-2) 96%, transparent));
+  box-shadow: 0 18px 42px -28px color-mix(in srgb, var(--ember) 50%, transparent);
+}
+
+.model-install-card h4 {
+  margin: 4px 0 8px;
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.04;
+}
+
+.model-install-card p {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.model-install-meta,
+.model-install-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.model-install-meta span,
+.model-install-stats span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.model-install-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.model-install-btn {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: var(--paper);
+}
+
+.model-install-progress {
+  margin-top: 14px;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--paper-3) 76%, transparent);
+}
+
+.model-install-progress > div {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ember) 80%, transparent), color-mix(in srgb, var(--gold, #d4a860) 78%, var(--ember) 22%));
+  box-shadow: 0 0 18px -8px color-mix(in srgb, var(--ember) 65%, transparent);
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+.model-install-overlay {
+  position: fixed;
+  inset: 42px 0 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--paper) 64%, transparent);
+  backdrop-filter: blur(14px) saturate(1.04);
+}
+
+.model-install-modal {
+  --install-ink: #fff8ea;
+  --install-muted: rgba(255, 248, 234, 0.78);
+  --install-faint: rgba(255, 248, 234, 0.18);
+  position: relative;
+  overflow: hidden;
+  width: min(560px, calc(100vw - 32px));
+  padding: 28px 26px 24px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--paper) 22%, var(--ember));
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--gold, #d4a860) 28%, transparent), transparent 32%),
+    linear-gradient(160deg, color-mix(in srgb, #2f1c14 86%, var(--ember) 14%), color-mix(in srgb, #5a2b18 78%, #1b1510 22%));
+  color: var(--install-ink);
+  box-shadow:
+    0 34px 86px -44px color-mix(in srgb, var(--ember) 66%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--paper) 22%, transparent);
+}
+
+.model-install-orbit {
+  position: absolute;
+  top: -72px;
+  right: -54px;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--ember) 14%, transparent), transparent 62%);
+  animation: folio-install-orbit 8s linear infinite;
+}
+
+.model-install-head h3 {
+  margin-top: 6px;
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 1;
+  color: var(--install-ink);
+}
+
+.model-install-head p {
+  margin-top: 10px;
+  max-width: 42ch;
+  color: var(--install-muted);
+  line-height: 1.55;
+}
+
+.model-install-modal .label,
+.model-install-modal .settings-note {
+  color: var(--install-muted);
+}
+
+.model-install-modal .model-install-stats span {
+  border-color: rgba(255, 248, 234, 0.28);
+  background: rgba(255, 248, 234, 0.1);
+  color: var(--install-ink);
+}
+
+.model-install-modal .settings-action {
+  border-color: rgba(255, 248, 234, 0.26);
+  color: var(--install-ink);
+  background: rgba(255, 248, 234, 0.1);
+}
+
+.model-install-modal .model-install-btn {
+  background: var(--install-ink);
+  border-color: var(--install-ink);
+  color: #21150f;
+}
+
+.model-install-progress.hero {
+  margin-top: 18px;
+  height: 12px;
+  background: var(--install-faint);
+}
+
+@keyframes folio-install-orbit {
+  from { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.06); }
+  to { transform: rotate(360deg) scale(1); }
 }
 
 .voice-card {
@@ -1275,9 +1494,10 @@
 .spread::before {
   content: "";
   position: absolute;
-  top: 4%; bottom: 4%;
+  top: 0;
+  bottom: 0;
   left: 50%;
-  width: 40px;
+  width: 48px;
   transform: translateX(-50%);
   background:
     linear-gradient(90deg,
@@ -1289,7 +1509,8 @@
   pointer-events: none;
   z-index: 1;
 }
-.theme-dark .spread::before {
+.theme-dark .spread::before,
+.theme-folio .spread::before {
   background:
     linear-gradient(90deg,
       transparent 0%,
@@ -1639,132 +1860,63 @@
   font-style: italic;
 }
 
-/* TTS — dim the rest, glide cursor */
-.page-body.tts-active p:not(.active-p) { opacity: 0.35; filter: saturate(0.5); }
-.page-body.tts-active .sentence { transition: opacity var(--dur) var(--ease-out); }
-.page-body.tts-active .sentence:not(.active-s) { opacity: 0.32; }
-.page-body.tts-active .active-s { opacity: 1; }
-/* justification can stretch spaces unevenly — keep active paragraph left-aligned
-   so the gliding cursor has consistent word spacing across paragraphs */
-.page-body.tts-active .active-p { text-align: left; }
-
-.word {
-  /* inline-block breaks hyphens:auto and inline whitespace collapsing —
-     use plain inline so text flows normally; the highlight still paints fine. */
-  display: inline;
-  position: relative;
-  padding: 0;
-  border-radius: 2px;
-  transition: color var(--dur-fast), background var(--dur-fast);
-}
-.word.active-w {
-  background: linear-gradient(180deg, transparent 62%, var(--ember-wash) 62%, var(--ember-wash) 94%, transparent 94%);
-  color: var(--ink);
-}
-.word.spoken {
-  color: var(--ink-2);
-}
-.page-body.tts-active .active-s .word:not(.active-w):not(.spoken) {
-  color: var(--ink-2);
-}
-
-.word-hitbox {
-  appearance: none;
-  padding: 0;
-  border: 0;
-  border-radius: 2px;
-  background: transparent;
-  cursor: pointer;
-  z-index: 2;
-}
-.word-hitbox:hover {
-  background: color-mix(in srgb, var(--ember-wash) 30%, transparent);
-}
-
 .reflow-viewport .sentence {
-  border-radius: 4px;
-  padding: 0 0.06em;
-  margin: 0 -0.06em;
-  transition:
-    background-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur) var(--ease-out);
-  /* Suppress any inherited text decoration so the active highlight reads as a
-     clean wash rather than text + underline. */
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
   text-decoration: none;
-}
-.reflow-viewport .sentence.selectable-s {
-  cursor: pointer;
-}
-.reflow-viewport .sentence:hover {
-  background: color-mix(in srgb, var(--ember-wash) 48%, transparent);
-}
-.reflow-viewport .sentence.active-s {
-  /* Calm warm wash on the whole chunk so the listener can see at a glance
-     which sentence is being read. No animation here — the only moving piece
-     is the .reading-cursor overlay positioned over the current word. */
-  background: color-mix(in srgb, var(--ember-wash) 26%, transparent);
-  border-radius: 3px;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  background: transparent;
+  box-shadow: none;
 }
 
-/* Overlay highlights that follow the estimated reading position inside the
-   active chunk. ReflowViewer positions them with the Range API, so no per-word
-   DOM nodes are needed. Theme-aware via --ember-soft, which tokens.css
-   redefines for light / sepia / dark. */
-.reading-focus-glow {
+.reflow-viewport {
+  cursor: text;
+}
+
+.reader-line-cursor {
   position: absolute;
   left: 0;
   top: 0;
-  width: 0;
-  height: 0;
+  width: 2px;
+  height: 18px;
   pointer-events: none;
   opacity: 0;
   transform: translate3d(0, 0, 0);
   transform-origin: left top;
-  will-change: transform, width, height, opacity;
   z-index: 7;
   border-radius: 999px;
-  background:
-    radial-gradient(
-      ellipse at center,
-      color-mix(in srgb, var(--ember-soft) 34%, transparent) 0%,
-      color-mix(in srgb, var(--ember-soft) 20%, transparent) 48%,
-      transparent 78%
-    );
+  background: color-mix(in srgb, var(--ember) 84%, var(--ink) 16%);
   box-shadow:
-    0 0 18px color-mix(in srgb, var(--ember-soft) 18%, transparent),
-    0 0 34px color-mix(in srgb, var(--ember-soft) 10%, transparent);
-  filter: blur(7px) saturate(1.08);
-  transition: opacity 320ms ease-out;
-  /* mix-blend-mode: multiply works well on light/sepia paper; in dark mode
-     the highlight already reads as additive thanks to the lighter
-     --ember-soft token, but we still want it to sit "behind" the text
-     glyphs visually. */
-  mix-blend-mode: multiply;
-}
-.theme-dark .reading-focus-glow {
-  /* On dark backgrounds, multiply darkens further (invisible). Use plus-lighter
-     so the warm/teal accent shows through against dark paper. */
-  mix-blend-mode: plus-lighter;
-  filter: blur(8px) saturate(1.18);
-}
-@media (prefers-reduced-motion: reduce) {
-  .reading-focus-glow {
-    transition: opacity 180ms ease-out;
-  }
+    0 0 0 1px color-mix(in srgb, var(--paper) 35%, transparent),
+    0 0 18px color-mix(in srgb, var(--ember-soft) 28%, transparent);
+  transition:
+    transform 180ms cubic-bezier(0.22, 0.64, 0.24, 1),
+    height 180ms cubic-bezier(0.22, 0.64, 0.24, 1),
+    opacity 140ms ease-out;
+  will-change: transform, height, opacity;
 }
 
-/* gliding cursor under active word */
-.cursor-follower {
-  position: absolute;
-  bottom: 3px;
-  height: 2px;
-  background: var(--ember);
-  border-radius: 2px;
-  pointer-events: none;
-  transition: left var(--dur) var(--ease-out), width var(--dur) var(--ease-out);
-  box-shadow: 0 0 12px var(--ember-soft);
+.reader-line-cursor.is-visible {
+  opacity: 1;
+}
+
+.theme-dark .reader-line-cursor {
+  background: color-mix(in srgb, var(--ember-soft) 78%, #ffffff 22%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ink) 30%, transparent),
+    0 0 18px color-mix(in srgb, var(--ember-soft) 34%, transparent);
+}
+
+.theme-folio .reader-line-cursor {
+  background: color-mix(in srgb, #d7f7ec 66%, #f0b35f 34%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, #ffffff 28%, transparent),
+    0 0 18px color-mix(in srgb, #9ff2d8 24%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .reader-line-cursor {
+    transition: opacity 120ms ease-out;
+  }
 }
 
 .page-footer {
@@ -1799,22 +1951,64 @@
   bottom: 34px;
   width: 44px; height: 44px;
   border-radius: 50%;
-  background: var(--paper-2);
-  border: 1px solid var(--rule);
+  background: var(--ink);
+  border: 1px solid color-mix(in srgb, var(--paper) 12%, transparent);
   display: flex; align-items: center; justify-content: center;
-  color: var(--ink-2);
+  color: var(--paper);
   transform: none;
-  transition: all var(--dur) var(--ease-out);
+  transition:
+    opacity var(--dur) var(--ease-out),
+    transform var(--dur) var(--ease-out),
+    background-color var(--dur) var(--ease-out),
+    color var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out);
   z-index: 4;
-  box-shadow: var(--shadow-1);
+  box-shadow:
+    0 14px 34px -18px rgba(20, 12, 6, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 .page-nav.prev { left: calc(50% - min(430px, calc(50vw - 72px))); }
 .page-nav.next { right: calc(50% - min(430px, calc(50vw - 72px))); }
 .page-nav:hover {
-  background: var(--ink);
+  background: color-mix(in srgb, var(--ink) 88%, var(--ember) 12%);
   color: var(--paper);
   transform: translateY(-1px) scale(1.05);
-  box-shadow: var(--shadow-2);
+  box-shadow:
+    0 18px 38px -18px rgba(20, 12, 6, 0.82),
+    0 0 0 4px color-mix(in srgb, var(--ember) 12%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.page-nav.follow-mode.auto-hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(100% + 34px)) scale(0.96);
+}
+
+.page-nav-reveal-zone {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 112px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.page-nav-reveal-zone.active {
+  pointer-events: auto;
+}
+
+.theme-folio .page-nav {
+  background:
+    linear-gradient(180deg, rgba(25, 22, 17, 0.98), rgba(9, 10, 12, 0.98));
+  border-color: rgba(242, 189, 83, 0.16);
+  color: #f6f0e3;
+  box-shadow:
+    0 18px 42px -20px rgba(0, 0, 0, 0.82),
+    0 0 0 1px rgba(255, 218, 118, 0.06),
+    inset 0 1px 0 rgba(255, 232, 178, 0.08);
 }
 
 .page-nav:focus-visible,

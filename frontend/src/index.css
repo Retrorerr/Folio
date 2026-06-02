@@ -7,3 +7,405 @@
 @import './styles/flourish.css';
 @import './styles/flourish-2.css';
 @import './styles/flourish-pill.css';
+
+/* ============================================
+   UI cohesion pass
+   Final cascade: shared geometry, theme coverage, page-centered controls.
+   ============================================ */
+
+.app-shell {
+  --control-radius: 10px;
+  --panel-radius: 12px;
+  --dialog-radius: 14px;
+  --install-dialog-radius: 20px;
+  --reader-chrome-offset: 60px;
+  --reader-control-center: calc((100vw + var(--reader-chrome-offset)) / 2);
+  --reader-pill-width: min(720px, calc(100vw - var(--reader-chrome-offset) - 32px));
+  --reader-pill-gap: 24px;
+  --surface: var(--paper);
+  --surface-raised: color-mix(in srgb, var(--paper-2) 88%, var(--paper) 12%);
+  --surface-hover: color-mix(in srgb, var(--paper-3) 84%, var(--paper) 16%);
+  --surface-line: color-mix(in srgb, var(--rule) 84%, transparent);
+}
+
+.settings-overlay {
+  --control-radius: 10px;
+  --panel-radius: 12px;
+  --dialog-radius: 14px;
+  --install-dialog-radius: 20px;
+  --surface: var(--paper);
+  --surface-raised: color-mix(in srgb, var(--paper-2) 88%, var(--paper) 12%);
+  --surface-hover: color-mix(in srgb, var(--paper-3) 84%, var(--paper) 16%);
+  --surface-line: color-mix(in srgb, var(--rule) 84%, transparent);
+}
+
+.app-shell:has(.sidebar-wrap.is-open) {
+  --reader-chrome-offset: 360px;
+}
+
+.app-shell:has(.sidebar-wrap.is-hidden),
+.app-shell.follow-along-active {
+  --reader-chrome-offset: 0px;
+}
+
+.theme-dark,
+.theme-folio {
+  --surface: color-mix(in srgb, var(--paper) 96%, #ffffff 4%);
+  --surface-raised: color-mix(in srgb, var(--paper-2) 94%, #ffffff 6%);
+  --surface-hover: color-mix(in srgb, var(--paper-3) 80%, #ffffff 4%);
+  --surface-line: color-mix(in srgb, var(--rule) 78%, transparent);
+}
+
+.app-titlebar.is-reader {
+  --reader-chrome-offset: 60px;
+  left: var(--reader-chrome-offset);
+  padding-left: 12px;
+  padding-right: var(--titlebar-controls-width);
+}
+
+.app-shell:has(.sidebar-wrap.is-open) .app-titlebar.is-reader {
+  --reader-chrome-offset: 360px;
+}
+
+.app-shell:has(.sidebar-wrap.is-hidden) .app-titlebar.is-reader,
+.app-shell.follow-along-active .app-titlebar.is-reader {
+  --reader-chrome-offset: 0px;
+}
+
+.app-titlebar.is-reader .titlebar-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(170px, 18vw, 240px) minmax(120px, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.app-titlebar.is-reader .titlebar-book {
+  justify-self: start;
+  width: 100%;
+}
+
+.app-titlebar.is-reader .titlebar-progress {
+  justify-self: center;
+  width: 100%;
+  flex-basis: auto;
+}
+
+.app-titlebar.is-reader .titlebar-app-actions {
+  justify-self: start;
+}
+
+.titlebar-action,
+.gpu-badge,
+.rail-btn,
+.icon-rail .rail-brand,
+.chapter-item,
+.search-box,
+.search-result,
+.bookmark-item,
+.add-bookmark,
+.settings-action,
+.settings-close,
+.settings-shell select,
+.voice-card,
+.tts-engine-option,
+.theme-option {
+  border-radius: var(--control-radius);
+}
+
+.settings-shell,
+.settings-group,
+.settings-nav-card,
+.model-install-card,
+.model-install-modal,
+.theme-switch,
+.tts-engine-switch,
+.pill-secondary-row,
+.tele-stack {
+  border-radius: var(--panel-radius);
+}
+
+.theme-switch,
+.tts-engine-switch,
+.settings-summary span,
+.settings-shell select,
+.settings-action,
+.settings-close,
+.settings-full-body .settings-group,
+.voice-card,
+.model-install-card,
+.model-install-modal,
+.search-box,
+.search-result,
+.bookmark-item,
+.add-bookmark {
+  background: var(--surface);
+  border-color: var(--surface-line);
+  color: var(--ink);
+}
+
+.settings-overlay {
+  color: var(--ink);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ember) 4%, transparent), transparent 32%),
+    color-mix(in srgb, var(--paper) 16%, transparent);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.settings-shell {
+  isolation: isolate;
+  border-radius: var(--dialog-radius);
+  background: linear-gradient(180deg, var(--surface), var(--surface-raised));
+  border-color: var(--surface-line);
+  box-shadow:
+    0 28px 80px -34px color-mix(in srgb, var(--paper-edge) 88%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.model-install-modal {
+  border-radius: var(--install-dialog-radius);
+}
+
+.settings-full-head,
+.settings-shell .control-row + .control-row {
+  border-color: var(--surface-line);
+}
+
+.theme-option,
+.tts-engine-option {
+  min-height: 38px;
+  padding: 8px 9px;
+  color: var(--ink-2);
+}
+
+.theme-option:hover,
+.tts-engine-option:hover,
+.settings-action:hover:not(:disabled),
+.settings-close:hover,
+.voice-card:hover,
+.search-result:hover,
+.bookmark-item:hover,
+.add-bookmark:hover {
+  background: var(--surface-hover);
+}
+
+.theme-option.active,
+.settings-shell .theme-option.active,
+.tts-engine-option.active,
+.settings-shell .tts-engine-option.active {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ember) 20%, var(--surface) 80%);
+  border-color: color-mix(in srgb, var(--ember) 44%, var(--surface-line));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ember) 22%, transparent);
+}
+
+.theme-option .swatch {
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.pill-wrap {
+  left: var(--reader-control-center);
+}
+
+.pill {
+  width: var(--reader-pill-width);
+  min-width: min(480px, var(--reader-pill-width));
+}
+
+.pill.expanded {
+  width: min(760px, calc(100vw - var(--reader-chrome-offset) - 32px));
+  min-width: min(640px, calc(100vw - var(--reader-chrome-offset) - 32px));
+  border-radius: var(--radius-lg);
+}
+
+.page-nav {
+  --page-nav-size: 44px;
+  width: var(--page-nav-size);
+  height: var(--page-nav-size);
+  background: var(--ink);
+  color: var(--paper);
+  border-color: color-mix(in srgb, var(--paper) 14%, transparent);
+}
+
+.theme-dark .page-nav {
+  background: #0b1014;
+  color: var(--ink);
+  border-color: rgba(162, 226, 211, 0.10);
+  box-shadow:
+    0 18px 42px -20px rgba(0, 0, 0, 0.82),
+    0 0 0 1px rgba(162, 226, 211, 0.06),
+    inset 0 1px 0 rgba(230, 237, 243, 0.06);
+}
+
+.theme-folio .page-nav {
+  color: #f6f0e3;
+}
+
+.page-nav.prev {
+  left: calc(var(--reader-control-center) - (var(--reader-pill-width) / 2) - var(--reader-pill-gap) - var(--page-nav-size));
+}
+
+.page-nav.next {
+  left: calc(var(--reader-control-center) + (var(--reader-pill-width) / 2) + var(--reader-pill-gap));
+  right: auto;
+}
+
+.theme-dark .page-nav:hover {
+  background: color-mix(in srgb, #0b1014 86%, var(--ember) 14%);
+  color: var(--ink);
+}
+
+.theme-light.settings-overlay,
+.theme-sepia.settings-overlay {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--ember) 4%, transparent), transparent 32%),
+    color-mix(in srgb, var(--paper) 14%, transparent);
+}
+
+.theme-light .settings-shell,
+.theme-sepia .settings-shell,
+.theme-light .settings-full-body .settings-group,
+.theme-sepia .settings-full-body .settings-group,
+.theme-light .model-install-card,
+.theme-sepia .model-install-card {
+  background: var(--surface);
+}
+
+.theme-light .model-install-overlay,
+.theme-sepia .model-install-overlay {
+  background: color-mix(in srgb, var(--paper) 94%, rgba(255, 255, 255, 0.94));
+}
+
+.theme-light .model-install-modal,
+.theme-sepia .model-install-modal {
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--gold, #d4a860) 28%, transparent), transparent 32%),
+    linear-gradient(160deg, color-mix(in srgb, #2f1c14 86%, var(--ember) 14%), color-mix(in srgb, #5a2b18 78%, #1b1510 22%));
+}
+
+/* Targeted performance: isolate heavy UI regions without suppressing polish. */
+.spread,
+.pill,
+.sidebar-panel,
+.loading-stage {
+  contain: layout paint;
+}
+
+.reflow-viewport,
+.pt-cover-hold,
+.pt-flipper,
+.pt-cast,
+.pt-cast-receiving,
+.reader-line-cursor {
+  contain: strict;
+}
+
+.pt-spread,
+.pt-spread .pt-flipper {
+  /* Paint containment flattens preserve-3d children, which can make the
+     turning page face render like an inverted snapshot during the flip. */
+  contain: layout style;
+}
+
+.settings-group,
+.search-result,
+.bookmark-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}
+
+.dash-book-card,
+.dash-continue,
+.voice-card,
+.theme-option,
+.tts-engine-option,
+.rail-btn,
+.page-nav,
+.pill-btn {
+  backface-visibility: hidden;
+}
+
+.pt-flipper,
+.pill.morphing,
+.pill-content.leaving,
+.pill-content.entering,
+.reader-line-cursor.is-visible {
+  will-change: transform, opacity;
+}
+
+.pill-secondary-row,
+.tele-stack,
+.pill-expanded-controls,
+.pill-tile {
+  border-color: color-mix(in srgb, var(--pill-fg) 8%, transparent);
+}
+
+.pill-tile .tile-label,
+.pill-timeline,
+.pill-voice,
+.tele-line.tele-prev,
+.tele-line.tele-next {
+  color: var(--pill-fg-muted);
+}
+
+.pill-tile .tile-value,
+.pill-tile.tile-page .page-display,
+.tele-line.tele-now {
+  color: var(--pill-fg);
+}
+
+@media (max-width: 820px) {
+  .app-shell {
+    --reader-chrome-offset: 54px;
+    --reader-pill-width: min(100%, calc(100vw - 32px));
+  }
+
+  .app-titlebar.is-reader {
+    left: 54px;
+    padding-left: 12px;
+    padding-right: var(--titlebar-controls-width);
+  }
+
+  .app-titlebar.is-reader .titlebar-main {
+    grid-template-columns: minmax(0, 1fr) minmax(118px, 170px) auto;
+    gap: 10px;
+  }
+
+  .page-nav {
+    --page-nav-size: 40px;
+  }
+
+  .page-nav.prev {
+    left: calc(var(--reader-control-center) - (var(--reader-pill-width) / 2) - var(--reader-pill-gap) - var(--page-nav-size));
+  }
+
+  .page-nav.next {
+    left: calc(var(--reader-control-center) + (var(--reader-pill-width) / 2) + var(--reader-pill-gap));
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell,
+  .app-shell:has(.sidebar-wrap.is-open),
+  .app-shell:has(.sidebar-wrap.is-hidden) {
+    --reader-chrome-offset: 0px;
+  }
+
+  .app-titlebar.is-reader {
+    left: 0;
+    padding-left: 12px;
+    padding-right: var(--titlebar-controls-width);
+  }
+}
+
+@media (max-width: 560px) {
+  .pill-wrap {
+    left: 16px;
+  }
+
+  .pill {
+    width: 100%;
+    min-width: 0;
+  }
+}

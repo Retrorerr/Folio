@@ -1,17 +1,14 @@
 # Base backend dependencies. Installable in one step.
 #
-# Torch stays here for the existing Windows CUDA DLL/runtime setup used by the
-# local ONNX paths, but Chatterbox Turbo itself now runs through ONNXRuntime,
-# not the chatterbox-tts PyTorch package.
+# Default installs must work on ordinary Windows PCs without CUDA drivers or
+# giant GPU wheels. Folio uses ONNXRuntime CPU by default; machines with a
+# known-good GPU runtime can install a GPU provider separately.
 
---extra-index-url https://download.pytorch.org/whl/cu128
 numpy==2.2.6
-torch==2.11.0+cu128; platform_system == "Windows" and python_version < "3.13"
-torchaudio==2.11.0+cu128; platform_system == "Windows" and python_version < "3.13"
 kokoro-onnx==0.4.7
 transformers==4.56.2
 tokenizers>=0.22.0,<=0.23.0
-onnxruntime-gpu
+onnxruntime==1.20.1
 huggingface_hub
 fastapi
 uvicorn

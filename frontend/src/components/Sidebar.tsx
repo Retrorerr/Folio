@@ -1,30 +1,10 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import type React from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
+import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
 import { apiFetch } from '../api'
-
-// Spawns a one-shot radial wash from the click point so the upcoming theme
-// change reads as a curtain sweeping across, not a hard cut. The ripple
-// element auto-removes after its CSS animation completes.
-function spawnThemeRipple(event: React.MouseEvent, theme: string) {
-  if (typeof document === 'undefined') return
-  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
-  const x = event.clientX
-  const y = event.clientY
-  const node = document.createElement('div')
-  node.className = 'theme-ripple'
-  node.style.setProperty('--rx', `${x}px`)
-  node.style.setProperty('--ry', `${y}px`)
-  // Use the destination theme's paper as the wash color.
-  const paper = theme === 'folio' ? 'rgba(8, 9, 11, 0.68)'
-    : theme === 'dark' ? 'rgba(20, 24, 28, 0.6)'
-    : theme === 'sepia' ? 'rgba(243, 231, 207, 0.6)'
-    : 'rgba(247, 244, 237, 0.6)'
-  node.style.setProperty('--ripple-color', paper)
-  document.body.appendChild(node)
-  setTimeout(() => node.remove(), 820)
-}
+import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, panelReveal, scaleIn, slideUp, spring } from '../motion'
 import {
   ttsEngines,
   voicesForEngine,
@@ -33,15 +13,78 @@ import {
   CHATTERBOX_ENGINE,
 } from '../kokoroVoices'
 
+function themeTransitionColors(theme: string) {
+  if (theme === 'dark') {
+    return { paper: 'rgb(17, 20, 23)', wash: 'rgba(17, 20, 23, 0.88)', accent: 'rgba(126, 210, 194, 0.28)' }
+  }
+  if (theme === 'folio') {
+    return { paper: 'rgb(8, 9, 11)', wash: 'rgba(8, 9, 11, 0.9)', accent: 'rgba(214, 101, 43, 0.28)' }
+  }
+  if (theme === 'sepia') {
+    return { paper: 'rgb(243, 231, 207)', wash: 'rgba(243, 231, 207, 0.9)', accent: 'rgba(201, 91, 43, 0.22)' }
+  }
+  return { paper: 'rgb(247, 244, 237)', wash: 'rgba(247, 244, 237, 0.9)', accent: 'rgba(196, 91, 43, 0.18)' }
+}
+
+function themeTransitionPoint(event: React.MouseEvent) {
+  return { x: event.clientX, y: event.clientY }
+}
+
+function setThemeTransitionVars(event: React.MouseEvent, theme: string) {
+  const { x, y } = themeTransitionPoint(event)
+  const colors = themeTransitionColors(theme)
+  document.documentElement.style.setProperty('--theme-transition-x', `${x}px`)
+  document.documentElement.style.setProperty('--theme-transition-y', `${y}px`)
+  document.documentElement.style.setProperty('--theme-transition-paper', colors.paper)
+  document.documentElement.style.setProperty('--theme-transition-wash', colors.wash)
+  document.documentElement.style.setProperty('--theme-transition-accent', colors.accent)
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+}
+
+function spawnThemeRipple(event: React.MouseEvent, theme: string) {
+  if (typeof document === 'undefined') return
+  if (prefersReducedMotion()) return
+  const { x, y } = themeTransitionPoint(event)
+  const colors = themeTransitionColors(theme)
+  const node = document.createElement('div')
+  node.className = 'theme-ripple'
+  node.style.setProperty('--rx', `${x}px`)
+  node.style.setProperty('--ry', `${y}px`)
+  node.style.setProperty('--ripple-color', colors.wash)
+  node.style.setProperty('--ripple-accent', colors.accent)
+  document.body.appendChild(node)
+  setTimeout(() => node.remove(), 900)
+}
+
+function runThemeTransition(event: React.MouseEvent, nextTheme: string, currentTheme: string, setTheme: (theme: string) => void) {
+  if (nextTheme === currentTheme) return
+  if (typeof document === 'undefined' || prefersReducedMotion()) {
+    setTheme(nextTheme)
+    return
+  }
+
+  setThemeTransitionVars(event, nextTheme)
+  document.documentElement.classList.remove('theme-transitioning')
+  spawnThemeRipple(event, nextTheme)
+  requestAnimationFrame(() => {
+    flushSync(() => setTheme(nextTheme))
+  })
+}
+
 export default memo(function Sidebar({
   book, reflow, currentPage, currentSentence, goToPage,
   addBookmark, removeBookmark,
   voice, setVoice,
   ttsEngine, setTtsEngine,
+  modelStatus,
+  installPromptEngine,
+  clearInstallPrompt,
   theme, setTheme,
   motion, setMotion,
   wheelPaging, setWheelPaging,
-  highlightStyle, setHighlightStyle,
   tab, setTab,
   onNavigateSearchResult,
   onHome,
@@ -51,6 +94,8 @@ export default memo(function Sidebar({
   const panelTab = renderedTab === 'settings' ? null : renderedTab
   const panelOpen = Boolean(tab && tab !== 'settings')
   const settingsOpen = tab === 'settings'
+  const useGoldLogo = theme === 'light' || theme === 'sepia'
+  const logoSrc = useGoldLogo ? '/folio-icon.png' : '/folio-monochrome-icon.png'
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>
@@ -63,14 +108,20 @@ export default memo(function Sidebar({
   }, [tab])
 
   const railBtn = (key: string, Ico: any, label: string) => (
-    <button
+    <m.button
       key={key}
       className={`rail-btn ${tab === key ? 'active' : ''}`}
       onClick={() => setTab(tab === key ? null : key)}
       title={label}
+      aria-label={label}
+      layout
+      whileHover={buttonHover}
+      whileTap={buttonTap}
+      transition={spring.quick}
     >
+      {tab === key && <m.span className="rail-active-bg" layoutId="reader-rail-active" transition={spring.layout} aria-hidden="true" />}
       <Ico size={18} />
-    </button>
+    </m.button>
   )
 
   // Close the expanded panel when the user clicks/taps anywhere outside the
@@ -92,52 +143,72 @@ export default memo(function Sidebar({
 
   return (
     <>
-      <div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${panelOpen ? 'is-open' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''}`}>
-      <div className="icon-rail" ref={railRef}>
-        <button className="rail-brand" onClick={onHome} title="Library" aria-label="Library">
-          <img className="rail-brand-logo" src="/folio-monochrome-icon.png" alt="" draggable={false} />
-        </button>
+      <m.div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${panelOpen ? 'is-open' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''}`} layout transition={spring.layout}>
+      <m.div className="icon-rail" ref={railRef} layout>
+        <m.button className="rail-brand" onClick={onHome} title="Library" aria-label="Library" whileHover={buttonHover} whileTap={buttonTap}>
+          <img className="rail-brand-logo" src={logoSrc} alt="" draggable={false} />
+        </m.button>
         {railBtn('chapters', Icons.Chapters, 'Chapters')}
         {railBtn('bookmarks', Icons.Bookmark, 'Bookmarks')}
         {railBtn('search', Icons.Search, 'Search')}
         <div className="rail-spacer" />
         {railBtn('settings', Icons.Settings, 'Settings')}
-      </div>
+      </m.div>
 
-      {panelTab && (
-        <div className={`sidebar-panel ${panelOpen ? 'is-open' : 'is-closing'}`} ref={panelRef} aria-hidden={!panelOpen}>
-          {panelTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
-          {panelTab === 'bookmarks' && (
-            <BookmarkPanel
-              book={book}
-              currentPage={currentPage}
-              currentSentence={currentSentence}
-              goToPage={goToPage}
-              addBookmark={addBookmark}
-              removeBookmark={removeBookmark}
+      <AnimatePresence initial={false} mode="wait">
+        {panelTab && (
+          <m.div
+            key={panelTab}
+            className={`sidebar-panel ${panelOpen ? 'is-open' : 'is-closing'}`}
+            ref={panelRef}
+            aria-hidden={!panelOpen}
+            variants={panelReveal}
+            initial="initial"
+            animate={panelOpen ? 'animate' : 'exit'}
+            exit="exit"
+            layout
+            transition={spring.layout}
+          >
+            {panelTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
+            {panelTab === 'bookmarks' && (
+              <BookmarkPanel
+                book={book}
+                currentPage={currentPage}
+                currentSentence={currentSentence}
+                goToPage={goToPage}
+                addBookmark={addBookmark}
+                removeBookmark={removeBookmark}
+              />
+            )}
+            {panelTab === 'search' && (
+              <SearchPanel
+                book={book}
+                currentPage={currentPage}
+                onNavigateSearchResult={onNavigateSearchResult}
+              />
+            )}
+          </m.div>
+        )}
+      </AnimatePresence>
+      </m.div>
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {settingsOpen && (
+            <SettingsPanel
+              key="reader-settings"
+              theme={theme}
+              setTheme={setTheme}
+              motion={motion} setMotion={setMotion}
+              wheelPaging={wheelPaging} setWheelPaging={setWheelPaging}
+              voice={voice} setVoice={setVoice}
+              ttsEngine={ttsEngine} setTtsEngine={setTtsEngine}
+              modelStatus={modelStatus}
+              installPromptEngine={installPromptEngine}
+              clearInstallPrompt={clearInstallPrompt}
+              onClose={() => setTab(null)}
             />
           )}
-          {panelTab === 'search' && (
-            <SearchPanel
-              book={book}
-              currentPage={currentPage}
-              onNavigateSearchResult={onNavigateSearchResult}
-            />
-          )}
-        </div>
-      )}
-      </div>
-      {settingsOpen && createPortal(
-        <SettingsPanel
-          theme={theme}
-          setTheme={setTheme}
-          motion={motion} setMotion={setMotion}
-          wheelPaging={wheelPaging} setWheelPaging={setWheelPaging}
-          highlightStyle={highlightStyle} setHighlightStyle={setHighlightStyle}
-          voice={voice} setVoice={setVoice}
-          ttsEngine={ttsEngine} setTtsEngine={setTtsEngine}
-          onClose={() => setTab(null)}
-        />,
+        </AnimatePresence>,
         document.body,
       )}
     </>
@@ -167,26 +238,28 @@ function ChapterPanel({ book, reflow, currentPage, goToPage }: any) {
             No table of contents found in this EPUB.
           </div>
         ) : (
-          <div className="chapter-list">
+          <m.div className="chapter-list" variants={listStagger} initial="initial" animate="animate" exit="exit">
             {toc.map((c, i) => {
               const next = toc[i + 1]
               const isActive = useReflow
                 ? currentPage === c.page
                 : (currentPage >= c.page && (!next || currentPage < next.page))
               return (
-                <div
+                <m.div
                   key={i}
                   className={`chapter-item ${isActive ? 'active' : ''}`}
                   onClick={() => goToPage(c.page)}
+                  layout
+                  variants={listItem}
                 >
-                  {isActive && <div className="playing-indicator" />}
+                  {isActive && <m.div className="playing-indicator" layoutId="chapter-active-indicator" />}
                   <div className="ch-num">{String(i + 1).padStart(2, '0')}</div>
                   <div className="ch-title">{c.title}</div>
                   <div className="ch-dur">p.{c.page + 1}</div>
-                </div>
+                </m.div>
               )
             })}
-          </div>
+          </m.div>
         )}
       </div>
     </>
@@ -215,9 +288,9 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
             No bookmarks yet.
           </div>
         ) : (
-          <div className="bookmark-list">
+          <m.div className="bookmark-list" variants={listStagger} initial="initial" animate="animate" exit="exit">
             {bookmarks.map((bm, i) => (
-              <div key={i} className="bookmark-item" onClick={() => goToPage(bm.page)}>
+              <m.div key={i} className="bookmark-item" onClick={() => goToPage(bm.page)} layout variants={listItem}>
                 <div className="bm-head">
                   <span className="bm-page">PAGE {bm.page + 1}</span>
                   <span className="bm-rule" />
@@ -228,9 +301,9 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
                   ><Icons.X size={13} /></button>
                 </div>
                 <div className="bm-snip">{bm.label || `Page ${bm.page + 1}, sentence ${(bm.sentence_idx ?? 0) + 1}`}</div>
-              </div>
+              </m.div>
             ))}
-          </div>
+          </m.div>
         )}
       </div>
     </>
@@ -321,76 +394,77 @@ function SearchPanel({ book, currentPage, onNavigateSearchResult }: any) {
             placeholder="Search passages..."
             aria-label="Search book text"
           />
-          {query && (
-            <button
-              type="button"
-              className="search-clear"
-              onClick={() => setQuery('')}
-              title="Clear search"
-            >
-              <Icons.X size={13} />
-            </button>
-          )}
+          <AnimatePresence>
+            {query && (
+              <m.button
+                type="button"
+                className="search-clear"
+                onClick={() => setQuery('')}
+                title="Clear search"
+                variants={scaleIn}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                whileTap={buttonTap}
+              >
+                <Icons.X size={13} />
+              </m.button>
+            )}
+          </AnimatePresence>
         </label>
 
-        {error && <div className="search-empty">{error}</div>}
+        <AnimatePresence mode="wait">
+          {error && <m.div className="search-empty" key="search-error" variants={scaleIn} initial="initial" animate="animate" exit="exit">{error}</m.div>}
 
-        {!error && !query.trim() && (
-          <div className="search-empty">
+          {!error && !query.trim() && (
+          <m.div className="search-empty" key="search-prompt" variants={scaleIn} initial="initial" animate="animate" exit="exit">
             Enter a word or phrase to search the book.
-          </div>
-        )}
+          </m.div>
+          )}
 
-        {!error && query.trim() && !loading && results.length === 0 && (
-          <div className="search-empty">
+          {!error && query.trim() && !loading && results.length === 0 && (
+          <m.div className="search-empty" key="search-empty" variants={scaleIn} initial="initial" animate="animate" exit="exit">
             No matches found for "{query.trim()}".
-          </div>
-        )}
+          </m.div>
+          )}
+        </AnimatePresence>
 
-        <div className="search-results">
-          {results.map((result, idx) => {
-            const key = `${result.page}:${result.sentence_idx}:${result.global_sentence_idx ?? ''}`
-            const isActive = activeKey === key || result.page === currentPage
-            return (
-              <button
-                key={`${key}:${idx}`}
-                type="button"
-                className={`search-result ${isActive ? 'active' : ''}`}
-                onClick={() => handleResultClick(result)}
-              >
-                <div className="search-result-meta">
-                  <span>{result.location_label || `Page ${result.page + 1}`}</span>
-                  <span>Match {idx + 1}</span>
-                </div>
-                <div className="search-result-text">{highlightQuery(result.snippet || result.text, query)}</div>
-              </button>
-            )
-          })}
-        </div>
+        <m.div className="search-results" variants={listStagger} initial="initial" animate="animate">
+          <AnimatePresence mode="popLayout" initial={false}>
+            {results.map((result, idx) => {
+              const key = `${result.page}:${result.sentence_idx}:${result.global_sentence_idx ?? ''}`
+              const isActive = activeKey === key || result.page === currentPage
+              return (
+                <m.button
+                  key={`${key}:${idx}`}
+                  type="button"
+                  className={`search-result ${isActive ? 'active' : ''}`}
+                  onClick={() => handleResultClick(result)}
+                  layout
+                  variants={listItem}
+                >
+                  <div className="search-result-meta">
+                    <span>{result.location_label || `Page ${result.page + 1}`}</span>
+                    <span>Match {idx + 1}</span>
+                  </div>
+                  <div className="search-result-text">{result.snippet || result.text}</div>
+                </m.button>
+              )
+            })}
+          </AnimatePresence>
+        </m.div>
       </div>
     </>
   )
 }
 
-function highlightQuery(text, query) {
-  const source = text || ''
-  const trimmed = query.trim()
-  if (!trimmed) return source
-
-  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const parts = source.split(new RegExp(`(${escaped})`, 'ig'))
-  return parts.map((part, idx) => (
-    idx % 2 === 1
-      ? <mark key={idx}>{part}</mark>
-      : <span key={idx}>{part}</span>
-  ))
-}
-
-function SettingsPanel({
+export function SettingsPanel({
   theme, setTheme, motion, setMotion, wheelPaging, setWheelPaging,
-  highlightStyle, setHighlightStyle,
   voice, setVoice,
   ttsEngine, setTtsEngine,
+  modelStatus = {},
+  installPromptEngine,
+  clearInstallPrompt,
   onClose,
 }: any) {
   const [cacheInfo, setCacheInfo] = useState(null)
@@ -398,9 +472,74 @@ function SettingsPanel({
   const [cacheMessage, setCacheMessage] = useState('')
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateMessage, setUpdateMessage] = useState('')
+  const [installingEngine, setInstallingEngine] = useState<string | null>(null)
   const activeEngine = normalizeTtsEngine(ttsEngine)
   const voiceItems = voicesForEngine(activeEngine)
   const activeVoice = normalizeVoiceForEngine(activeEngine, voice)
+  const promptEngine = normalizeTtsEngine(installingEngine || installPromptEngine || activeEngine)
+  const promptInstall = modelStatus?.[promptEngine] || null
+  const activeInstall = modelStatus?.[activeEngine] || null
+  const engineReady = !!activeInstall?.ready
+
+  const formatInstallSize = (bytes: number | undefined) => {
+    const safe = Number(bytes || 0)
+    if (!safe) return 'Local download'
+    const gb = safe / (1024 ** 3)
+    if (gb >= 1) return `${gb.toFixed(1)} GB`
+    return `${(safe / (1024 ** 2)).toFixed(0)} MB`
+  }
+
+  const installLabel = (engineId: string) => {
+    const install = modelStatus?.[engineId]
+    if (!install) return 'Download'
+    if (install.state === 'ready') return 'Installed'
+    if (install.state === 'verifying') return 'Verifying'
+    if (install.state === 'failed') return 'Retry'
+    if (install.state === 'download_queued' || install.state === 'downloading') {
+      const pct = install.total_bytes > 0
+        ? Math.round(((install.downloaded_bytes || 0) / install.total_bytes) * 100)
+        : Math.round((install.progress || 0) * 100)
+      return `Downloading ${Math.max(1, Math.min(99, pct))}%`
+    }
+    return 'Download'
+  }
+
+  const installBusy = (install: any) => (
+    install?.state === 'download_queued' || install?.state === 'downloading' || install?.state === 'verifying'
+  )
+
+  const installActionLabel = (install: any) => {
+    if (install?.state === 'failed') return 'Retry download'
+    if (install?.state === 'verifying') return 'Verifying...'
+    if (install?.state === 'download_queued' || install?.state === 'downloading') return 'Downloading...'
+    return 'Start download'
+  }
+
+  const requestEngine = (engineId: string) => {
+    const install = modelStatus?.[engineId]
+    setTtsEngine(engineId)
+    if (install?.ready) {
+      clearInstallPrompt?.()
+      setInstallingEngine(null)
+      return
+    }
+    clearInstallPrompt?.()
+    setInstallingEngine(engineId)
+  }
+
+  const runInstallAction = async (engineId: string, mode: 'download' | 'retry' | 'cancel' = 'download') => {
+    const path = mode === 'retry'
+      ? `/api/models/${engineId}/retry`
+      : mode === 'cancel'
+        ? `/api/models/${engineId}/cancel`
+        : `/api/models/${engineId}/download`
+    try {
+      await apiFetch(path, { method: 'POST' })
+      if (mode !== 'cancel') setInstallingEngine(engineId)
+    } catch {
+      setUpdateMessage('Could not update the model install. Please try again.')
+    }
+  }
 
   useEffect(() => {
     apiFetch('/api/cache/info')
@@ -416,6 +555,18 @@ function SettingsPanel({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
+
+  useEffect(() => {
+    if (installPromptEngine) setInstallingEngine(normalizeTtsEngine(installPromptEngine))
+  }, [installPromptEngine])
+
+  useEffect(() => {
+    if (installingEngine && modelStatus?.[installingEngine]?.ready) {
+      setTtsEngine(installingEngine)
+      clearInstallPrompt?.()
+      setInstallingEngine(null)
+    }
+  }, [clearInstallPrompt, installingEngine, modelStatus, setTtsEngine])
 
   const clearCache = async () => {
     setClearingCache(true)
@@ -460,7 +611,7 @@ function SettingsPanel({
   }
 
   return (
-    <div
+    <m.div
       className={`settings-overlay theme-${theme}`}
       role="dialog"
       aria-modal="true"
@@ -468,8 +619,18 @@ function SettingsPanel({
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose?.()
       }}
+      variants={overlayFade}
+      initial="initial"
+      animate="animate"
+      exit="exit"
     >
-      <div className="settings-shell" onMouseDown={(event) => event.stopPropagation()}>
+      <m.div
+        className="settings-shell"
+        onMouseDown={(event) => event.stopPropagation()}
+        variants={modalPanel}
+        layout
+        transition={spring.panel}
+      >
         <section className="settings-main">
           <header className="settings-full-head">
             <div>
@@ -496,30 +657,24 @@ function SettingsPanel({
                 </div>
                 <span>{theme}</span>
               </div>
-              <div className="theme-switch">
+              <m.div className="theme-switch" layout>
                 {['light', 'sepia', 'dark', 'folio'].map((t) => (
-                  <button
+                  <m.button
                     key={t}
                     data-t={t}
                     className={`theme-option ${theme === t ? 'active' : ''}`}
                     onClick={(e) => {
-                      spawnThemeRipple(e, t)
-                      setTheme(t)
+                      runThemeTransition(e, t, theme, setTheme)
                     }}
+                    layout
+                    whileTap={buttonTap}
                   >
+                    {theme === t && <m.span className="settings-active-bg" layoutId="settings-theme-active" transition={spring.layout} aria-hidden="true" />}
                     <span className="swatch" />
                     {t}
-                  </button>
+                  </m.button>
                 ))}
-              </div>
-              <div className="control-row">
-                <span className="k">Highlight style</span>
-                <select value={highlightStyle} onChange={(e) => setHighlightStyle(e.target.value)}>
-                  <option value="dim">Dim the rest</option>
-                  <option value="underline">Underline cursor</option>
-                  <option value="tint">Sentence tint</option>
-                </select>
-              </div>
+              </m.div>
               <div className="control-row">
                 <span className="k">Page-turn animation</span>
                 <div className={`toggle ${motion ? 'on' : ''}`} onClick={() => setMotion(!motion)} />
@@ -538,28 +693,62 @@ function SettingsPanel({
                 </div>
                 <span>{activeVoice}</span>
               </div>
-              <div className="tts-engine-switch">
+              <m.div className="tts-engine-switch" layout>
                 {ttsEngines.map((engine) => (
-                  <button
+                  <m.button
                     key={engine.id}
                     type="button"
                     className={`tts-engine-option ${activeEngine === engine.id ? 'active' : ''}`}
-                    onClick={() => setTtsEngine(engine.id)}
+                    onClick={() => requestEngine(engine.id)}
+                    layout
+                    whileTap={buttonTap}
                   >
-                    {engine.name}
-                  </button>
+                    {activeEngine === engine.id && <m.span className="settings-active-bg" layoutId="settings-engine-active" transition={spring.layout} aria-hidden="true" />}
+                    <span>{engine.name}</span>
+                    <small>{installLabel(engine.id)}</small>
+                  </m.button>
                 ))}
-              </div>
-              <div className="voice-picker" role="radiogroup" aria-label={`${activeEngine} voice`}>
+              </m.div>
+              <AnimatePresence>
+                {!engineReady && (
+                <m.div className="model-install-card" role="status" variants={slideUp} initial="initial" animate="animate" exit="exit" layout>
+                  <div className="model-install-copy">
+                    <div className="label">Model install</div>
+                    <h4>{activeEngine === CHATTERBOX_ENGINE ? 'Chatterbox Turbo' : 'Kokoro'} is not installed yet</h4>
+                    <p>
+                      Download the voice engine once, store it locally on this machine, and Folio will use it offline after that.
+                    </p>
+                    <div className="model-install-meta">
+                      <span>{formatInstallSize(activeInstall?.approx_download_bytes || activeInstall?.total_bytes)}</span>
+                      <span>{activeInstall?.state === 'failed' ? (activeInstall?.error || 'Install failed') : installLabel(activeEngine)}</span>
+                    </div>
+                  </div>
+                  <div className="model-install-actions">
+                    <button
+                      type="button"
+                      className="settings-action model-install-btn"
+                      disabled={installBusy(activeInstall)}
+                      onClick={() => runInstallAction(activeEngine, activeInstall?.state === 'failed' ? 'retry' : 'download')}
+                    >
+                      {installActionLabel(activeInstall)}
+                    </button>
+                  </div>
+                  <div className="model-install-progress" aria-hidden="true">
+                    <div style={{ width: `${Math.max(6, Math.round(((activeInstall?.progress || 0) * 100)))}%` }} />
+                  </div>
+                </m.div>
+                )}
+              </AnimatePresence>
+              <m.div className={`voice-picker ${engineReady ? '' : 'is-disabled'}`} role="radiogroup" aria-label={`${activeEngine} voice`} layout>
                 {voiceItems.map((item) => {
                   const active = activeVoice === item.id
                   return (
-                    <div
+                    <m.div
                       key={item.id}
                       className={`voice-card ${active ? 'active' : ''}`}
-                      onClick={() => setVoice(item.id)}
+                      onClick={() => engineReady && setVoice(item.id)}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
+                        if (engineReady && (event.key === 'Enter' || event.key === ' ')) {
                           event.preventDefault()
                           setVoice(item.id)
                         }
@@ -567,7 +756,11 @@ function SettingsPanel({
                       role="radio"
                       aria-checked={active}
                       tabIndex={0}
+                      layout
+                      whileHover={engineReady ? buttonHover : undefined}
+                      whileTap={engineReady ? buttonTap : undefined}
                     >
+                      {active && <m.span className="settings-active-bg" layoutId="settings-voice-active" transition={spring.layout} aria-hidden="true" />}
                       <span className="voice-card-head">
                         <span className="voice-mark">{item.name.slice(0, 1)}</span>
                         <span className="voice-title">
@@ -577,10 +770,10 @@ function SettingsPanel({
                         <span className="voice-tag">{item.tagline}</span>
                       </span>
                       <span className="voice-description">{item.description}</span>
-                    </div>
+                    </m.div>
                   )
                 })}
-              </div>
+              </m.div>
             </div>
 
             <div className="settings-group">
@@ -617,7 +810,59 @@ function SettingsPanel({
             )}
           </div>
         </section>
-        </div>
-    </div>
+      </m.div>
+      <AnimatePresence>
+      {installingEngine && (
+        <m.div className="model-install-overlay" onMouseDown={() => { setInstallingEngine(null); clearInstallPrompt?.() }} variants={overlayFade} initial="initial" animate="animate" exit="exit">
+          <m.div className="model-install-modal" onMouseDown={(event) => event.stopPropagation()} variants={modalPanel}>
+            <div className="model-install-orbit" aria-hidden="true" />
+            <div className="model-install-head">
+              <div className="label">Local voice engine</div>
+              <h3>{installingEngine === CHATTERBOX_ENGINE ? 'Download Chatterbox Turbo' : 'Download Kokoro'}</h3>
+              <p>Folio keeps models on your device and only downloads them when you choose to install one.</p>
+            </div>
+            <div className="model-install-stats">
+              <span>{formatInstallSize(promptInstall?.approx_download_bytes || promptInstall?.total_bytes)}</span>
+              <span>{installLabel(installingEngine)}</span>
+            </div>
+            <div className="model-install-progress hero">
+              <div style={{ width: `${Math.max(8, Math.round(((promptInstall?.progress || 0) * 100)))}%` }} />
+            </div>
+            <p className="settings-note">
+              {promptInstall?.state === 'failed'
+                ? (promptInstall?.error || 'The previous install failed. Retry to continue.')
+                : promptInstall?.state === 'ready'
+                  ? 'Installed and ready. Folio will switch to this engine automatically.'
+                  : 'Narration stays unavailable for this engine until the local model finishes downloading and verifying.'}
+            </p>
+            <div className="model-install-actions">
+              {promptInstall?.state !== 'ready' && (
+                <button
+                  type="button"
+                  className="settings-action model-install-btn"
+                  disabled={installBusy(promptInstall)}
+                  onClick={() => runInstallAction(installingEngine, promptInstall?.state === 'failed' ? 'retry' : 'download')}
+                >
+                  {installActionLabel(promptInstall)}
+                </button>
+              )}
+              {(promptInstall?.state === 'download_queued' || promptInstall?.state === 'downloading' || promptInstall?.state === 'verifying') && (
+                <button
+                  type="button"
+                  className="settings-action"
+                  onClick={() => runInstallAction(installingEngine, 'cancel')}
+                >
+                  Cancel
+                </button>
+              )}
+              <button type="button" className="settings-action" onClick={() => { setInstallingEngine(null); clearInstallPrompt?.() }}>
+                {promptInstall?.state === 'ready' ? 'Done' : 'Close'}
+              </button>
+            </div>
+          </m.div>
+        </m.div>
+      )}
+      </AnimatePresence>
+    </m.div>
   )
 }

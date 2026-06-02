@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Folio",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "identifier": "com.folio.reader",
   "build": {
     "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\dev-tauri.ps1",
@@ -15,9 +15,11 @@
         "title": "Folio",
         "width": 1280,
         "height": 900,
-        "minWidth": 960,
+        "minWidth": 860,
         "minHeight": 680,
-        "decorations": false
+        "decorations": false,
+        "transparent": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -28,6 +30,10 @@
     "active": true,
     "targets": ["nsis", "msi"],
     "createUpdaterArtifacts": true,
+    "publisher": "Folio contributors",
+    "category": "Reference",
+    "shortDescription": "A desktop EPUB reader with local read-aloud narration.",
+    "longDescription": "Folio opens EPUB books, remembers your reading state, and generates local sentence-aware narration on your PC.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,10 +41,22 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["epub"],
+        "name": "EPUB Book",
+        "description": "EPUB eBook",
+        "role": "Viewer",
+        "mimeType": "application/epub+zip"
+      }
+    ],
     "resources": ["resources/**/*"],
     "windows": {
       "nsis": {
         "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "upgradeCode": "44dd72fc-4aae-429b-8756-94f81138c90d"
       }
     }
   },

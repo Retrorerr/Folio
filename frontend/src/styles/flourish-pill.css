@@ -16,29 +16,21 @@
 }
 
 /* ---------------------------------------------------------------------------
-   The shell — geometry transitions on the same easing curve so the corner
-   radius, padding, height, and shadow morph in lockstep.
+   The shell — Motion owns layout geometry. CSS only animates visual properties
+   that do not change the measured box, preventing layout FLIP from chasing a
+   width/padding transition and jittering between dimensions.
 --------------------------------------------------------------------------- */
 .pill {
-  /* Override the existing pill.css transition with a single cohesive set.
-     Border-radius lands faster than width/padding so the pill loses its
-     fully-rounded "stadium" shape early in the morph instead of staying
-     circular for half the animation. */
   transition:
-    width var(--pill-morph) var(--pill-spring),
-    min-width var(--pill-morph) var(--pill-spring),
-    max-width var(--pill-morph) var(--pill-spring),
-    padding var(--pill-morph) var(--pill-spring),
-    border-radius 280ms var(--pill-smooth),
+    border-radius 320ms var(--pill-smooth),
     box-shadow var(--pill-morph) var(--pill-spring),
-    background-color var(--pill-morph) var(--pill-spring),
-    transform 200ms var(--pill-spring);
+    background-color var(--pill-morph) var(--pill-spring);
   /* Soft ambient halo behind the pill, grows during expansion */
   isolation: isolate;
   position: relative;
 }
 .pill::before {
-  content: "";
+  content: none;
   position: absolute;
   inset: -8px;
   border-radius: inherit;
@@ -55,6 +47,12 @@
     filter var(--pill-morph) var(--pill-spring);
   pointer-events: none;
 }
+.pill.is-active::before,
+.pill.expanded::before,
+.pill.expanding::before,
+.pill.collapsing::before {
+  content: "";
+}
 .theme-dark .pill::before {
   background: radial-gradient(ellipse at center,
     rgba(0, 0, 0, 0.55) 0%,
@@ -67,12 +65,14 @@
   filter: blur(22px);
 }
 
-/* Subtle "puff" on press / morph — squeeze then settle */
+/* The shell continuity comes from the shared Motion layout transition above;
+   keep this layer free of scale keyframes so expansion and contraction do not
+   fight the layout animation. */
 .pill.expanding {
-  animation: pill-puff var(--pill-morph) var(--pill-spring);
+  animation: none;
 }
 .pill.collapsing {
-  animation: pill-press 320ms var(--pill-spring);
+  animation: none;
 }
 @keyframes pill-puff {
   0%   { transform: scale(1); }
@@ -93,9 +93,10 @@
    never visually empty mid-morph.
 --------------------------------------------------------------------------- */
 .pill-collapsed-content,
-.pill-expanded-content {
+.pill-expanded-content,
+.pill-content-layer {
   transform-origin: center center;
-  will-change: opacity, transform, filter;
+  will-change: auto;
 }
 
 /* Leaving tree — overlay, no pointer events, fades out */
@@ -105,7 +106,7 @@
   inset: 0;
   pointer-events: none;
   z-index: 2;
-  animation: pill-content-leave 320ms var(--pill-smooth) forwards;
+  will-change: opacity, transform, filter;
 }
 /* The leaving tree carries its previous state's padding so the inner layout
    doesn't snap when it becomes absolute. */
@@ -113,75 +114,37 @@
 .pill-expanded-content.is-leaving { padding: 22px 24px 20px; }
 
 @keyframes pill-content-leave {
-  0%   { opacity: 1; transform: scale(1) translateY(0); filter: blur(0); }
+  0%   { opacity: 1; transform: scale(1) translateY(0); }
   60%  { opacity: 0.4; }
-  100% { opacity: 0; transform: scale(0.94) translateY(-2px); filter: blur(8px); }
+  100% { opacity: 0; transform: scale(0.94) translateY(-2px); }
 }
 
 /* Arriving tree — drives layout, fades in slightly delayed so the shell has
    time to start morphing toward the new shape before content appears. */
 .pill-collapsed-content.is-arriving,
 .pill-expanded-content.is-arriving {
-  animation: pill-content-arrive 420ms var(--pill-spring) 80ms both;
-}
-@keyframes pill-content-arrive {
-  0%   { opacity: 0; transform: scale(0.985) translateY(4px); filter: blur(10px); }
-  60%  { filter: blur(0); }
-  100% { opacity: 1; transform: none; filter: none; }
+  pointer-events: none;
+  will-change: opacity, transform, filter;
 }
 
-/* Expanded child stagger — each block lifts in like a card */
-.pill-expanded-content.is-arriving > * {
-  animation: pill-block-in 480ms var(--pill-spring) both;
-}
-.pill-expanded-content.is-arriving > *:nth-child(1) { animation-delay: 140ms; }
-.pill-expanded-content.is-arriving > *:nth-child(2) { animation-delay: 180ms; }
-.pill-expanded-content.is-arriving > *:nth-child(3) { animation-delay: 220ms; }
-.pill-expanded-content.is-arriving > *:nth-child(4) { animation-delay: 260ms; }
-.pill-expanded-content.is-arriving > *:nth-child(5) { animation-delay: 300ms; }
-.pill-expanded-content.is-arriving > *:nth-child(6) { animation-delay: 340ms; }
-@keyframes pill-block-in {
-  from { opacity: 0; transform: translateY(10px); filter: blur(3px); }
-  60%  { filter: blur(0); }
-  to   { opacity: 1; transform: none; filter: none; }
+.pill.expanding .pill-content-layer,
+.pill.collapsing .pill-content-layer,
+.pill.expanding .pill-content-layer > *,
+.pill.collapsing .pill-content-layer > * {
+  animation: none;
 }
 
 /* ---------------------------------------------------------------------------
    Slow-mo debug — append ?slowpill=1 to the URL or run window.__SLOWPILL__=1
-   in the console to scale all morph timings 4×. Used to inspect the
-   transition by eye.
+   in the console to scale the shell timing 4×. Content timing is scaled from
+   the shared Motion variant.
 --------------------------------------------------------------------------- */
 .pill.pill-slowmo {
   transition:
-    width 2240ms var(--pill-spring),
-    min-width 2240ms var(--pill-spring),
-    max-width 2240ms var(--pill-spring),
-    padding 2240ms var(--pill-spring),
     border-radius 1120ms var(--pill-smooth),
     box-shadow 2240ms var(--pill-spring),
-    background-color 2240ms var(--pill-spring),
-    transform 800ms var(--pill-spring) !important;
+    background-color 2240ms var(--pill-spring) !important;
 }
-.pill.pill-slowmo .pill-collapsed-content.is-leaving,
-.pill.pill-slowmo .pill-expanded-content.is-leaving {
-  animation-duration: 1280ms !important;
-}
-.pill.pill-slowmo .pill-collapsed-content.is-arriving,
-.pill.pill-slowmo .pill-expanded-content.is-arriving {
-  animation-duration: 1680ms !important;
-  animation-delay: 320ms !important;
-}
-.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(1) { animation-delay: 560ms !important; }
-.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(2) { animation-delay: 720ms !important; }
-.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(3) { animation-delay: 880ms !important; }
-.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(4) { animation-delay: 1040ms !important; }
-.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(5) { animation-delay: 1200ms !important; }
-.pill.pill-slowmo .pill-expanded-content.is-arriving > *:nth-child(6) { animation-delay: 1360ms !important; }
-.pill.pill-slowmo.expanding,
-.pill.pill-slowmo.collapsing {
-  animation-duration: 2240ms !important;
-}
-
 /* ---------------------------------------------------------------------------
    Expanded shell — generous proportions, refined surface
 --------------------------------------------------------------------------- */
@@ -369,8 +332,8 @@
   animation: tele-now-in 360ms var(--pill-spring);
 }
 @keyframes tele-now-in {
-  from { opacity: 0.4; transform: translateY(4px); filter: blur(2px); }
-  to   { opacity: 1; transform: none; filter: none; }
+  from { opacity: 0.4; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
 }
 .theme-dark .tele-line.tele-now { color: var(--ink); }
 
@@ -494,6 +457,54 @@
 }
 .pill-tile.tile-button:hover {
   transform: translateY(-1px);
+}
+.pill-tile.preload-chip {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pill-fg) 6%, transparent), color-mix(in srgb, var(--pill-fg) 2%, transparent)),
+    rgba(255, 255, 255, 0.03);
+}
+.pill-tile.preload-chip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--ember-soft) 20%, transparent),
+      color-mix(in srgb, var(--gold) 10%, transparent));
+  opacity: 0;
+  transform: scaleX(var(--preload-progress, 0));
+  transform-origin: left center;
+  transition:
+    transform 640ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.pill-tile.preload-chip > * {
+  position: relative;
+  z-index: 1;
+}
+.pill-tile.preload-chip.preload-preloading::before,
+.pill-tile.preload-chip.preload-verifying::before,
+.pill-tile.preload-chip.preload-current-ready::before {
+  opacity: 0.72;
+}
+.pill-tile.preload-chip.preload-verifying::before {
+  transform: scaleX(0.36);
+  animation: preload-tile-scan 1.9s ease-in-out infinite;
+}
+.pill-tile.preload-chip.preload-ready {
+  border-color: color-mix(in srgb, var(--gold) 38%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--gold) 12%, transparent), color-mix(in srgb, var(--gold) 5%, transparent)),
+    rgba(255, 255, 255, 0.03);
+}
+@keyframes preload-tile-scan {
+  0% { transform: translateX(-42%) scaleX(0.36); opacity: 0.36; }
+  50% { opacity: 0.72; }
+  100% { transform: translateX(184%) scaleX(0.36); opacity: 0.36; }
 }
 .pill-tile .tile-head {
   display: flex;
@@ -765,6 +776,13 @@
 
 /* Mobile reflow */
 @media (max-width: 720px) {
+  .pill.expanded {
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+
   .pill-secondary-row {
     grid-template-columns: 1fr 1fr;
   }
@@ -775,7 +793,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .pill.expanding,
-  .pill.collapsing {
+  .pill.collapsing,
+  .pill-tile.preload-chip.preload-verifying::before {
     animation: none !important;
   }
 }
