@@ -9,6 +9,8 @@ Thumbs.db
 # Local tooling
 .browser-profile/
 .browser-check-profile*/
+.playwright/
+.playwright-cli/
 .claude/
 .codex/
 .tauri/
@@ -20,7 +22,11 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
-backend/tests/
+backend/tests/*
+!backend/tests/
+!backend/tests/test_supertonic_service.py
+!backend/tests/test_tts_architecture.py
+!backend/tests/test_tts_service.py
 .mypy_cache/
 .venv/
 venv/

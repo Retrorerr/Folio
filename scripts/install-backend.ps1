@@ -13,8 +13,8 @@ $backend = Join-Path $root "backend"
 
 if (-not $Python) {
   $pythonCandidates = @(
-    (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"),
     (Join-Path $backend ".venv\Scripts\python.exe"),
+    (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"),
     (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
     "python"
   )
@@ -31,9 +31,9 @@ Write-Host "Using Python: $Python"
 & $Python -m pip install -r (Join-Path $backend "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "Backend requirements install failed" }
 
-# Cheap post-install sanity check. This verifies ONNXRuntime/provider imports
-# without downloading or loading Chatterbox weights.
-& $Python -c "import onnxruntime as ort; import transformers, huggingface_hub, librosa, soundfile; print('chatterbox onnx deps OK; providers=', ort.get_available_providers())"
+# Cheap post-install sanity check. This verifies Supertonic/Kokoro runtime
+# imports without downloading or loading model weights.
+& $Python -c "import onnxruntime as ort; import supertonic, huggingface_hub, soundfile; print('tts deps OK; providers=', ort.get_available_providers())"
 if ($LASTEXITCODE -ne 0) { throw "Post-install import check failed" }
 
 Write-Host "Backend dependencies installed successfully."

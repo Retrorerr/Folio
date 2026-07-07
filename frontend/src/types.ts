@@ -1,5 +1,5 @@
 export type BookFormat = 'epub'
-export type TtsEngine = 'kokoro' | 'chatterbox-turbo'
+export type TtsEngine = 'supertonic' | 'kokoro'
 export type PreloadStatus = 'idle' | 'verifying' | 'current-ready' | 'preloading' | 'ready' | 'error'
 
 export interface Position {
@@ -33,6 +33,7 @@ export interface BookState {
   cover_source?: string | null
   tts_engine: TtsEngine | string
   voice: string
+  tts_voices?: Record<string, string>
   speed: number
   last_position: Position
   bookmarks: Bookmark[]
@@ -112,6 +113,31 @@ export interface ModelInstallInfo {
   [key: string]: unknown
 }
 
+export interface TtsActivityJob {
+  key: string
+  status: 'pending' | 'running' | 'done' | 'error' | string
+  priority: number
+  metadata?: {
+    book_id?: string
+    engine?: string
+    voice?: string
+    speed?: number
+    page?: number
+    page_number?: number
+    sentence?: number
+    sentence_number?: number
+    sentence_count?: number
+    text?: string
+    [key: string]: unknown
+  }
+}
+
+export interface TtsActivity {
+  active?: TtsActivityJob | null
+  running?: TtsActivityJob[]
+  pending?: TtsActivityJob[]
+}
+
 export interface TtsStatus {
   gpu: boolean
   voices: number
@@ -120,6 +146,7 @@ export interface TtsStatus {
   active_tts_engine: string
   tts_runtime?: TtsRuntimeInfo
   tts_engines?: Record<string, TtsRuntimeInfo>
+  tts_activity?: TtsActivity
   models?: Record<string, ModelInstallInfo>
   system?: {
     ram?: {
@@ -263,4 +290,24 @@ export interface LibrarySearchResponse {
   query: string
   total: number
   books: BookState[]
+}
+
+export interface LibraryScanResult {
+  folder: string
+  recursive: boolean
+  scanned: number
+  imported: number
+  existing: number
+  failed: number
+  scanned_at: number
+  truncated?: boolean
+  failures?: Array<{ filepath: string; error: string }>
+  imported_books?: BookState[]
+}
+
+export interface LibraryFolderStatus {
+  folder: string
+  recursive: boolean
+  exists: boolean
+  last_result?: LibraryScanResult | null
 }

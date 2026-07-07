@@ -128,6 +128,18 @@ export async function openBackendLog(): Promise<boolean> {
   }
 }
 
+export async function selectLibraryFolder(initialDir?: string | null): Promise<string | null> {
+  if (!isTauriRuntime()) return null
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const selected = await invoke<string | null>('select_library_folder', { initialDir: initialDir || null })
+    return typeof selected === 'string' && selected.trim() ? selected : null
+  } catch (error) {
+    console.warn('Folio library folder picker failed', error)
+    return null
+  }
+}
+
 export function isPreviewWatchdogEnabled(): boolean {
   return previewWatchdogEnabled
 }
@@ -135,6 +147,11 @@ export function isPreviewWatchdogEnabled(): boolean {
 export function sendPreviewHeartbeat(): Promise<Response> | null {
   if (!previewWatchdogEnabled) return null
   return apiFetch('/api/preview/heartbeat', { method: 'POST', keepalive: true })
+}
+
+export function sendAppHeartbeat(): Promise<Response> | null {
+  if (typeof window === 'undefined') return null
+  return apiFetch('/api/app/heartbeat', { method: 'POST', keepalive: true })
 }
 
 export function notifyPreviewDisconnect(): boolean {
@@ -163,7 +180,17 @@ export async function apiJson<T = unknown>(path: string, options?: RequestInit):
   const text = await res.text()
 
   if (!res.ok) {
-    throw new Error(text || `Request failed (${res.status})`)
+    let message = text || `Request failed (${res.status})`
+    if (contentType.toLowerCase().includes('application/json') && text) {
+      try {
+        const data = JSON.parse(text)
+        if (typeof data?.detail === 'string') message = data.detail
+        else if (typeof data?.message === 'string') message = data.message
+      } catch {
+        // Keep the raw response text if the server labels non-JSON as JSON.
+      }
+    }
+    throw new Error(message)
   }
 
   if (!contentType.toLowerCase().includes('application/json')) {

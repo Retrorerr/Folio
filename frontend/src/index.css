@@ -39,6 +39,11 @@
   --surface-line: color-mix(in srgb, var(--rule) 84%, transparent);
 }
 
+.settings-overlay .toggle:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 3px;
+}
+
 .app-shell:has(.sidebar-wrap.is-open) {
   --reader-chrome-offset: 360px;
 }
@@ -249,6 +254,13 @@
 .page-nav.next {
   left: calc(var(--reader-control-center) + (var(--reader-pill-width) / 2) + var(--reader-pill-gap));
   right: auto;
+}
+
+.page-nav.follow-mode.auto-hidden {
+  animation: none;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(100% + 34px)) scale(0.96);
 }
 
 .theme-dark .page-nav:hover {

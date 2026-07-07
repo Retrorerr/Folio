@@ -114,7 +114,23 @@ function Test-HttpOk([string]$Url) {
             $headers["X-Folio-Api-Token"] = $apiToken
         }
         $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers $headers -TimeoutSec 2
-        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-BackendReady([string]$Url) {
+    try {
+        $headers = @{ "X-Folio-Api-Token" = $apiToken }
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers $headers -TimeoutSec 2
+        if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) {
+            return $false
+        }
+        $payload = $response.Content | ConvertFrom-Json
+        $properties = @($payload.PSObject.Properties.Name)
+        return ($properties -contains "active_tts_engine") -and ($properties -contains "tts_engines")
     }
     catch {
         return $false
@@ -125,6 +141,18 @@ function Wait-HttpOk([string]$Url, [int]$TimeoutSeconds) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         if (Test-HttpOk $Url) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
+}
+
+function Wait-BackendReady([string]$Url, [int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-BackendReady $Url) {
             return $true
         }
         Start-Sleep -Milliseconds 500
@@ -258,7 +286,7 @@ if (!$lanAddress) {
 }
 $browserFrontendUrl = "http://${lanAddress}:5173/"
 
-$initialBackendReady = Test-HttpOk $localBackendUrl
+$initialBackendReady = Test-BackendReady $localBackendUrl
 $initialFrontendReady = Test-HttpOk $localFrontendUrl
 
 if ((!$Restart) -and (!$initialBackendReady -or !$initialFrontendReady)) {
@@ -274,7 +302,7 @@ if ((!$Restart) -and (!$initialBackendReady -or !$initialFrontendReady)) {
 
 $backendPython = Resolve-BackendPython
 
-if (!(Test-HttpOk $localBackendUrl)) {
+if (!(Test-BackendReady $localBackendUrl)) {
     $backendOut = Join-Path $backendDir "codex-preview-backend.out.log"
     $backendErr = Join-Path $backendDir "codex-preview-backend.err.log"
     Reset-LogFile $backendOut
@@ -299,7 +327,7 @@ if (!(Test-HttpOk $localFrontendUrl)) {
 $watchdogCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-CmdArg (Join-Path $PSScriptRoot 'codex-preview-watchdog.ps1')) -PidDir $(Quote-CmdArg $pidDir) -HeartbeatFile $(Quote-CmdArg $heartbeatFile) -DisconnectFile $(Quote-CmdArg $disconnectFile) -FrontendPort 5173 -BackendPort 8000 -HeartbeatTimeoutSeconds 180"
 Start-DetachedCmd "watchdog" $watchdogCommand
 
-$backendReady = Wait-HttpOk $localBackendUrl 30
+$backendReady = Wait-BackendReady $localBackendUrl 30
 $frontendReady = Wait-HttpOk $localFrontendUrl 30
 
 if (!$backendReady -or !$frontendReady) {

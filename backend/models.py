@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from tts_defaults import DEFAULT_TTS_ENGINE, DEFAULT_TTS_SPEED, DEFAULT_TTS_VOICE
+
 class BookMeta(BaseModel):
     id: str
     filepath: str
@@ -10,9 +12,10 @@ class BookMeta(BaseModel):
     format: str = "epub"
     cover_url: str | None = None
     cover_source: str | None = None
-    tts_engine: str = "kokoro"
-    voice: str = "af_heart"
-    speed: float = 0.95
+    tts_engine: str = DEFAULT_TTS_ENGINE
+    voice: str = DEFAULT_TTS_VOICE
+    tts_voices: dict[str, str] = Field(default_factory=dict)
+    speed: float = DEFAULT_TTS_SPEED
 
 class Position(BaseModel):
     page: int
@@ -38,9 +41,10 @@ class BookState(BaseModel):
     format: str = "epub"
     cover_url: str | None = None
     cover_source: str | None = None
-    tts_engine: str = "kokoro"
-    voice: str = "af_heart"
-    speed: float = 0.95
+    tts_engine: str = DEFAULT_TTS_ENGINE
+    voice: str = DEFAULT_TTS_VOICE
+    tts_voices: dict[str, str] = Field(default_factory=dict)
+    speed: float = DEFAULT_TTS_SPEED
     last_position: Position = Field(default_factory=lambda: Position(page=0, sentence_idx=0))
     bookmarks: list[Bookmark] = Field(default_factory=list)
     imported_at: float | None = None
