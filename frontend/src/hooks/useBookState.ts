@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { apiFetch, apiJson } from '../api'
 import type { BookState, PageText, Position } from '../types'
+import { mergeBookSettingsIfChanged, sameBookSettings, type BookSettingsPatch } from './bookSettings'
 
 function mergePosition(previous: Position | null | undefined, next: Position): Position {
   const merged: Position = { ...next }
@@ -178,6 +179,24 @@ export default function useBookState() {
     }
   }, [activeBookId])
 
+  const applyBookSettings = useCallback((settings: BookSettingsPatch) => {
+    if (!activeBookId) return
+    setBook(prev => (
+      prev?.id === activeBookId
+        ? mergeBookSettingsIfChanged(prev, settings)
+        : prev
+    ))
+    setRecentBooks(prev => {
+      let changed = false
+      const next = prev.map(item => {
+        if (item.id !== activeBookId || sameBookSettings(item, settings)) return item
+        changed = true
+        return mergeBookSettingsIfChanged(item, settings)
+      })
+      return changed ? next : prev
+    })
+  }, [activeBookId])
+
   const addBookmark = useCallback(async (page: number, sentenceIdx: number, label = '') => {
     if (!book) return
     await apiFetch(`/api/book/${book.id}/bookmark`, {
@@ -218,6 +237,6 @@ export default function useBookState() {
 
   return {
     book, pageData, currentPage, loading, textLoading, recentBooks, recentLoaded,
-    openBook, uploadBook, goToPage, savePosition, addBookmark, removeBookmark, closeBook, deleteBook,
+    openBook, uploadBook, goToPage, savePosition, applyBookSettings, addBookmark, removeBookmark, closeBook, deleteBook,
   }
 }

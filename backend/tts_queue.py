@@ -2,7 +2,7 @@ import itertools
 import queue
 import threading
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 
 @dataclass(slots=True)
@@ -15,6 +15,7 @@ class QueueJob:
     error: Exception | None = None
     ticket: int = 0
     priority: int = 10
+    metadata: dict[str, Any] | None = None
 
 
 class TTSQueue:
@@ -29,7 +30,13 @@ class TTSQueue:
             worker.start()
             self._workers.append(worker)
 
-    def submit(self, key: str, fn: Callable[[], tuple[str, float]], priority: int = 10) -> QueueJob:
+    def submit(
+        self,
+        key: str,
+        fn: Callable[[], tuple[str, float]],
+        priority: int = 10,
+        metadata: dict[str, Any] | None = None,
+    ) -> QueueJob:
         with self._lock:
             job = self._jobs.get(key)
             if job is None:
@@ -40,13 +47,15 @@ class TTSQueue:
             elif job.status == "running":
                 return job
             elif job.status == "error":
-                job.event = threading.Event()
-                job.status = "pending"
-                job.result = None
-                job.error = None
+                # Keep the failed submission immutable for any callers that
+                # still hold its handle. Reusing it can make a late waiter
+                # observe the retry's fresh event and block on the wrong job.
+                job = QueueJob(key=key, fn=fn, ticket=job.ticket)
+                self._jobs[key] = job
 
             job.fn = fn
             job.priority = priority
+            job.metadata = metadata
             job.ticket += 1
             ticket = job.ticket
             self._queue.put((priority, next(self._counter), key, ticket))
@@ -69,7 +78,7 @@ class TTSQueue:
         """Cancel queued jobs that have not started yet.
 
         Running model calls are intentionally left alone: killing an in-flight
-        PyTorch/ONNX generation is not safe, but dropping stale pending work
+        local model generation is not safe, but dropping stale pending work
         prevents the queue from loading another engine after the current job.
         """
         cancelled = 0
@@ -91,6 +100,37 @@ class TTSQueue:
                 job.priority <= priority and job.status in {"pending", "running"}
                 for job in self._jobs.values()
             )
+
+    def activity(self, pending_limit: int = 12) -> dict:
+        def serialize(job: QueueJob) -> dict:
+            return {
+                "key": job.key,
+                "status": job.status,
+                "priority": job.priority,
+                "metadata": dict(job.metadata or {}),
+            }
+
+        with self._lock:
+            running = [
+                serialize(job)
+                for job in self._jobs.values()
+                if job.status == "running"
+            ]
+            pending = sorted(
+                (
+                    serialize(job)
+                    for job in self._jobs.values()
+                    if job.status == "pending"
+                ),
+                key=lambda item: (item["priority"], item["key"]),
+            )[:pending_limit]
+
+        active = running[0] if running else (pending[0] if pending else None)
+        return {
+            "active": active,
+            "running": running,
+            "pending": pending,
+        }
 
     def _worker_loop(self):
         while True:

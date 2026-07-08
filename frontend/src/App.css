@@ -1,10 +1,37 @@
 /* App-specific styles that complement the design tokens/reader/welcome/pill CSS. */
 
 .app-motion-view {
+  position: absolute;
+  inset: 0;
   height: 100vh;
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+
+.app-transition-stage {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 62% -18%, color-mix(in srgb, var(--ember) 11%, transparent), transparent 38%),
+    linear-gradient(135deg, var(--paper) 0%, var(--paper-2) 48%, var(--paper-3) 100%);
+}
+
+.app-motion-loading {
+  z-index: 3;
+}
+
+.app-motion-library,
+.app-motion-reader {
+  z-index: 2;
 }
 
 .app-motion-view > .app-shell,

@@ -10,9 +10,10 @@ runtime data to the user's app-data folder.
 - Vite builds the React frontend into static files.
 - PyInstaller builds `backend/desktop_entry.py` into `folio-backend.exe`.
 - Tauri launches that backend on `127.0.0.1:8000`.
-- Runtime state, uploads, and generated audio live under the OS app-data
-  directory instead of inside the read-only app bundle.
-- Kokoro model files are copied into Tauri resources and read from there.
+- Runtime state, uploads, generated audio, and voice model assets live under
+  the OS app-data directory instead of inside the read-only app bundle.
+- Supertonic 3 and Kokoro model assets are deliberately provisioned into the
+  app-data `models` directory through Folio's model install flow.
 
 ## Windows Build
 
@@ -52,9 +53,17 @@ inside the Tauri window.
 The installer should include:
 
 - `folio-backend.exe`
-- `kokoro-v1.0.onnx`
-- `voices-v1.0.bin`
-- optionally `kokoro-v1.0.int8.onnx` as a fallback
+
+The first-use model install flow creates:
+
+- `%APPDATA%\com.folio.reader\models\supertonic-3`
+- `%APPDATA%\com.folio.reader\models\kokoro-v1.0.onnx`
+- `%APPDATA%\com.folio.reader\models\voices-v1.0.bin`
+- optionally `%APPDATA%\com.folio.reader\models\kokoro-v1.0.int8.onnx` as a fallback
+
+Supertonic 3 assets come from `Supertone/supertonic-3` at Folio's pinned SDK
+revision and are stored under Folio's model directory, not the user's global
+Supertonic cache. The model is licensed under OpenRAIL-M.
 
 On first launch, Tauri creates:
 
@@ -62,6 +71,7 @@ On first launch, Tauri creates:
 %APPDATA%\com.folio.reader\data
 %APPDATA%\com.folio.reader\uploads
 %APPDATA%\com.folio.reader\audio-cache
+%APPDATA%\com.folio.reader\models
 ```
 
-Users should not need to install Python, Node, Rust, or model files separately.
+Users should not need to install Python, Node, Rust, or copy model files manually.

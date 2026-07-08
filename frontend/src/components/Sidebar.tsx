@@ -1,17 +1,18 @@
-import { useState, useEffect, useRef, memo } from 'react'
+import { useState, useEffect, useRef, memo, useCallback } from 'react'
 import type React from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
-import { apiFetch } from '../api'
+import { apiFetch, apiJson, selectLibraryFolder } from '../api'
 import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, panelReveal, scaleIn, slideUp, spring } from '../motion'
 import {
+  engineDisplayName,
   ttsEngines,
   voicesForEngine,
   normalizeTtsEngine,
   normalizeVoiceForEngine,
-  CHATTERBOX_ENGINE,
-} from '../kokoroVoices'
+} from '../ttsVoices'
+import type { LibraryFolderStatus, LibraryScanResult } from '../types'
 
 function themeTransitionColors(theme: string) {
   if (theme === 'dark') {
@@ -72,6 +73,26 @@ function runThemeTransition(event: React.MouseEvent, nextTheme: string, currentT
   requestAnimationFrame(() => {
     flushSync(() => setTheme(nextTheme))
   })
+}
+
+function folderLabel(path: string): string {
+  if (!path) return 'No folder selected'
+  const normalized = path.replace(/[\\/]+$/, '')
+  const parts = normalized.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || normalized
+}
+
+function scanSummary(result?: LibraryScanResult | null): string {
+  if (!result) return 'No scan yet'
+  const imported = result.imported === 1 ? '1 new book' : `${result.imported} new books`
+  const scanned = result.scanned === 1 ? '1 EPUB scanned' : `${result.scanned} EPUBs scanned`
+  const failed = result.failed ? `, ${result.failed} failed` : ''
+  return `${imported} from ${scanned}${failed}`
+}
+
+function isMethodNotAllowed(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '')
+  return message.toLowerCase().includes('method not allowed') || message.includes('405')
 }
 
 export default memo(function Sidebar({
@@ -465,14 +486,21 @@ export function SettingsPanel({
   modelStatus = {},
   installPromptEngine,
   clearInstallPrompt,
+  onLibraryFolderChanged,
   onClose,
 }: any) {
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const onCloseRef = useRef(onClose)
   const [cacheInfo, setCacheInfo] = useState(null)
   const [clearingCache, setClearingCache] = useState(false)
   const [cacheMessage, setCacheMessage] = useState('')
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateMessage, setUpdateMessage] = useState('')
   const [installingEngine, setInstallingEngine] = useState<string | null>(null)
+  const [libraryFolderStatus, setLibraryFolderStatus] = useState<LibraryFolderStatus | null>(null)
+  const [libraryFolderBusy, setLibraryFolderBusy] = useState(false)
+  const [libraryFolderMessage, setLibraryFolderMessage] = useState('')
   const activeEngine = normalizeTtsEngine(ttsEngine)
   const voiceItems = voicesForEngine(activeEngine)
   const activeVoice = normalizeVoiceForEngine(activeEngine, voice)
@@ -480,6 +508,8 @@ export function SettingsPanel({
   const promptInstall = modelStatus?.[promptEngine] || null
   const activeInstall = modelStatus?.[activeEngine] || null
   const engineReady = !!activeInstall?.ready
+  const activeEngineName = engineDisplayName(activeEngine)
+  const installingEngineName = engineDisplayName(installingEngine)
 
   const formatInstallSize = (bytes: number | undefined) => {
     const safe = Number(bytes || 0)
@@ -541,6 +571,85 @@ export function SettingsPanel({
     }
   }
 
+  const refreshLibraryFolderStatus = useCallback(async () => {
+    const status = await apiJson<LibraryFolderStatus>('/api/library/folder')
+    setLibraryFolderStatus(status)
+    return status
+  }, [])
+
+  const saveLibraryFolder = useCallback(async (folder: string, recursive = true) => {
+    try {
+      return await apiJson<LibraryFolderStatus>('/api/library/folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder, recursive }),
+      })
+    } catch (error) {
+      if (!isMethodNotAllowed(error)) throw error
+
+      await apiJson('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          library_scan_folder: folder,
+          library_scan_recursive: recursive,
+        }),
+      })
+      const scanResult = await apiJson<LibraryScanResult>('/api/library/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder, recursive }),
+      }).catch(() => null)
+      const status = await refreshLibraryFolderStatus().catch(() => null)
+      return status || {
+        folder,
+        recursive,
+        exists: true,
+        last_result: scanResult,
+      }
+    }
+  }, [refreshLibraryFolderStatus])
+
+  const chooseLibraryFolder = useCallback(async () => {
+    if (libraryFolderBusy) return
+    setLibraryFolderBusy(true)
+    setLibraryFolderMessage('')
+    try {
+      const selected = await selectLibraryFolder(libraryFolderStatus?.folder || null)
+      if (!selected) return
+      const status = await saveLibraryFolder(selected, true)
+      setLibraryFolderStatus(status)
+      setLibraryFolderMessage(scanSummary(status.last_result))
+      await onLibraryFolderChanged?.()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not scan that folder.'
+      setLibraryFolderMessage(message.length > 220 ? `${message.slice(0, 220)}...` : message)
+    } finally {
+      setLibraryFolderBusy(false)
+    }
+  }, [libraryFolderBusy, libraryFolderStatus?.folder, onLibraryFolderChanged, saveLibraryFolder])
+
+  const scanLibraryFolder = useCallback(async () => {
+    if (libraryFolderBusy || !libraryFolderStatus?.folder) return
+    setLibraryFolderBusy(true)
+    setLibraryFolderMessage('')
+    try {
+      const result = await apiJson<LibraryScanResult>('/api/library/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const nextStatus = await refreshLibraryFolderStatus()
+      setLibraryFolderMessage(scanSummary(nextStatus?.last_result || result))
+      await onLibraryFolderChanged?.()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not scan the selected folder.'
+      setLibraryFolderMessage(message.length > 220 ? `${message.slice(0, 220)}...` : message)
+    } finally {
+      setLibraryFolderBusy(false)
+    }
+  }, [libraryFolderBusy, libraryFolderStatus?.folder, onLibraryFolderChanged, refreshLibraryFolderStatus])
+
   useEffect(() => {
     apiFetch('/api/cache/info')
       .then(r => r.ok ? r.json() : null)
@@ -549,12 +658,56 @@ export function SettingsPanel({
   }, [])
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose?.()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    refreshLibraryFolderStatus().catch(() => {
+      setLibraryFolderStatus(null)
+    })
+  }, [refreshLibraryFolderStatus])
+
+  useEffect(() => {
+    onCloseRef.current = onClose
   }, [onClose])
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus())
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onCloseRef.current?.()
+        return
+      }
+      if (event.key !== 'Tab') return
+
+      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      ) || []).filter((element) => (
+        element.getAttribute('aria-hidden') !== 'true' &&
+        !element.closest('[aria-hidden="true"]') &&
+        element.getClientRects().length > 0
+      ))
+      if (focusable.length === 0) return
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.removeEventListener('keydown', onKeyDown)
+      if (previouslyFocused?.isConnected) previouslyFocused.focus()
+    }
+  }, [])
 
   useEffect(() => {
     if (installPromptEngine) setInstallingEngine(normalizeTtsEngine(installPromptEngine))
@@ -612,10 +765,11 @@ export function SettingsPanel({
 
   return (
     <m.div
+      ref={dialogRef}
       className={`settings-overlay theme-${theme}`}
       role="dialog"
       aria-modal="true"
-      aria-label="Settings"
+      aria-labelledby="settings-title"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose?.()
       }}
@@ -634,17 +788,17 @@ export function SettingsPanel({
         <section className="settings-main">
           <header className="settings-full-head">
             <div>
-              <h2>Settings</h2>
+              <h2 id="settings-title">Settings</h2>
               <p>Reader, narrator, and local storage controls.</p>
             </div>
-            <button className="settings-close" type="button" onClick={onClose} aria-label="Close settings">
+            <button ref={closeButtonRef} className="settings-close" type="button" onClick={onClose} aria-label="Close settings">
               <Icons.X size={18} />
             </button>
           </header>
 
           <div className="settings-summary" aria-label="Current settings">
             <span><Icons.Feather size={14} /> {theme}</span>
-            <span><Icons.Play size={14} /> {activeEngine === CHATTERBOX_ENGINE ? 'Chatterbox' : 'Kokoro'}</span>
+            <span><Icons.Play size={14} /> {activeEngineName}</span>
             <span><Icons.Settings size={14} /> {voiceItems.find((item) => item.id === activeVoice)?.name || activeVoice}</span>
           </div>
 
@@ -676,12 +830,60 @@ export function SettingsPanel({
                 ))}
               </m.div>
               <div className="control-row">
-                <span className="k">Page-turn animation</span>
-                <div className={`toggle ${motion ? 'on' : ''}`} onClick={() => setMotion(!motion)} />
+                <span className="k" id="motion-toggle-label">Page-turn animation</span>
+                <button
+                  type="button"
+                  className={`toggle ${motion ? 'on' : ''}`}
+                  role="switch"
+                  aria-checked={Boolean(motion)}
+                  aria-labelledby="motion-toggle-label"
+                  onClick={() => setMotion(!motion)}
+                />
               </div>
               <div className="control-row">
-                <span className="k">Scroll wheel flips pages</span>
-                <div className={`toggle ${wheelPaging ? 'on' : ''}`} onClick={() => setWheelPaging(!wheelPaging)} />
+                <span className="k" id="wheel-toggle-label">Scroll wheel flips pages</span>
+                <button
+                  type="button"
+                  className={`toggle ${wheelPaging ? 'on' : ''}`}
+                  role="switch"
+                  aria-checked={Boolean(wheelPaging)}
+                  aria-labelledby="wheel-toggle-label"
+                  onClick={() => setWheelPaging(!wheelPaging)}
+                />
+              </div>
+            </div>
+
+            <div className="settings-group settings-card-wide settings-library-folder">
+              <div className="settings-card-head">
+                <div>
+                  <div className="label">Library</div>
+                  <h3>Auto-scan folder</h3>
+                </div>
+                <span>{libraryFolderStatus?.exists ? 'Watching' : 'Optional'}</span>
+              </div>
+              <div className="settings-folder-path">
+                <Icons.Folder size={16} />
+                <div>
+                  <strong title={libraryFolderStatus?.folder || undefined}>
+                    {folderLabel(libraryFolderStatus?.folder || '')}
+                  </strong>
+                  <p>
+                    {libraryFolderStatus?.folder
+                      ? libraryFolderStatus.folder
+                      : 'Choose a folder and Folio will periodically pick up new EPUB files from it.'}
+                  </p>
+                </div>
+              </div>
+              <div className="settings-folder-summary">
+                <span>{libraryFolderMessage || scanSummary(libraryFolderStatus?.last_result)}</span>
+              </div>
+              <div className="settings-folder-actions">
+                <button type="button" className="settings-action" onClick={chooseLibraryFolder} disabled={libraryFolderBusy}>
+                  {libraryFolderStatus?.folder ? 'Change folder' : 'Select folder'}
+                </button>
+                <button type="button" className="settings-action" onClick={scanLibraryFolder} disabled={libraryFolderBusy || !libraryFolderStatus?.folder}>
+                  {libraryFolderBusy ? 'Scanning...' : 'Scan now'}
+                </button>
               </div>
             </div>
 
@@ -714,7 +916,7 @@ export function SettingsPanel({
                 <m.div className="model-install-card" role="status" variants={slideUp} initial="initial" animate="animate" exit="exit" layout>
                   <div className="model-install-copy">
                     <div className="label">Model install</div>
-                    <h4>{activeEngine === CHATTERBOX_ENGINE ? 'Chatterbox Turbo' : 'Kokoro'} is not installed yet</h4>
+                    <h4>{activeEngineName} is not installed yet</h4>
                     <p>
                       Download the voice engine once, store it locally on this machine, and Folio will use it offline after that.
                     </p>
@@ -739,23 +941,18 @@ export function SettingsPanel({
                 </m.div>
                 )}
               </AnimatePresence>
-              <m.div className={`voice-picker ${engineReady ? '' : 'is-disabled'}`} role="radiogroup" aria-label={`${activeEngine} voice`} layout>
+              <m.div className={`voice-picker ${engineReady ? '' : 'is-disabled'}`} role="radiogroup" aria-label={`${activeEngineName} voice`} layout>
                 {voiceItems.map((item) => {
                   const active = activeVoice === item.id
                   return (
-                    <m.div
+                    <m.button
                       key={item.id}
+                      type="button"
                       className={`voice-card ${active ? 'active' : ''}`}
                       onClick={() => engineReady && setVoice(item.id)}
-                      onKeyDown={(event) => {
-                        if (engineReady && (event.key === 'Enter' || event.key === ' ')) {
-                          event.preventDefault()
-                          setVoice(item.id)
-                        }
-                      }}
+                      disabled={!engineReady}
                       role="radio"
                       aria-checked={active}
-                      tabIndex={0}
                       layout
                       whileHover={engineReady ? buttonHover : undefined}
                       whileTap={engineReady ? buttonTap : undefined}
@@ -770,7 +967,7 @@ export function SettingsPanel({
                         <span className="voice-tag">{item.tagline}</span>
                       </span>
                       <span className="voice-description">{item.description}</span>
-                    </m.div>
+                    </m.button>
                   )
                 })}
               </m.div>
@@ -818,7 +1015,7 @@ export function SettingsPanel({
             <div className="model-install-orbit" aria-hidden="true" />
             <div className="model-install-head">
               <div className="label">Local voice engine</div>
-              <h3>{installingEngine === CHATTERBOX_ENGINE ? 'Download Chatterbox Turbo' : 'Download Kokoro'}</h3>
+              <h3>Download {installingEngineName}</h3>
               <p>Folio keeps models on your device and only downloads them when you choose to install one.</p>
             </div>
             <div className="model-install-stats">

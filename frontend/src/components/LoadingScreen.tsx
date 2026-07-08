@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion as m } from 'motion/react'
 import TitleBar from './TitleBar'
 import { Icons } from './icons'
@@ -8,6 +9,8 @@ type LoadingScreenProps = {
   theme: string
   motion: boolean
   status: TtsStatus | null
+  backendLaunchStarted?: boolean
+  backendLaunchSettled?: boolean
   backendReachable: boolean
   recentLoaded: boolean
   recentBooks: BookState[]
@@ -45,14 +48,16 @@ function providerLabel(runtime: TtsRuntimeInfo | null, status: TtsStatus | null)
 function modelName(runtime: TtsRuntimeInfo | null): string {
   const selected = runtime?.selected_model || runtime?.model_id || runtime?.hf_repo_id
   if (typeof selected === 'string' && selected) return selected.replace(/\.onnx$/i, '')
-  return 'Kokoro v1.0'
+  return 'Supertonic 3'
 }
 
 function precisionLabel(runtime: TtsRuntimeInfo | null): string {
   const dtype = runtime?.onnx_dtype
   if (typeof dtype === 'string' && dtype) return dtype.toUpperCase()
   if (runtime?.int8_fallback_used) return 'INT8'
-  return 'FP16'
+  const qualitySteps = runtime?.quality_steps
+  if (typeof qualitySteps === 'number' || typeof qualitySteps === 'string') return `${qualitySteps} steps`
+  return 'Local'
 }
 
 function stageState(done: boolean, active: boolean): 'done' | 'active' | 'pending' {
@@ -65,6 +70,8 @@ export default function LoadingScreen({
   theme,
   motion,
   status,
+  backendLaunchStarted = false,
+  backendLaunchSettled = false,
   backendReachable,
   recentLoaded,
   recentBooks,
@@ -76,6 +83,16 @@ export default function LoadingScreen({
   backendLogPath,
   onOpenBackendLog,
 }: LoadingScreenProps) {
+  const [elapsedMs, setElapsedMs] = useState(0)
+
+  useEffect(() => {
+    const startedAt = performance.now()
+    const timer = window.setInterval(() => {
+      setElapsedMs(performance.now() - startedAt)
+    }, 220)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const useGoldLogo = theme === 'light' || theme === 'sepia'
   const logoSrc = useGoldLogo ? '/folio-icon.png' : '/folio-monochrome-icon.png'
   const ram = status?.system?.ram
@@ -83,7 +100,6 @@ export default function LoadingScreen({
   const provider = providerLabel(activeRuntime, status)
   const hasRuntime = backendReachable && !!status
   const hasProvider = hasRuntime && provider !== 'Detecting'
-  const hasVoices = (status?.voices ?? 0) > 0
   const downloadActive = !!activeRuntime?.download_active
   const downloadBytes = Number(activeRuntime?.download_bytes || 0)
   const downloadTotalBytes = Number(activeRuntime?.download_total_bytes || 0)
@@ -92,80 +108,91 @@ export default function LoadingScreen({
     : 0
   const downloadLabel = typeof activeRuntime?.download_label === 'string' && activeRuntime.download_label
     ? activeRuntime.download_label
-    : 'Kokoro voice model'
+    : 'Supertonic 3 model assets'
   const modelSettled = activeModelLoaded || !activeModelLoading
   const ready = backendReachable && recentLoaded
+  const backendSpawned = backendReachable || (backendLaunchSettled && !backendStartCommandFailed)
   const startupIssue = (!backendReachable && (timedOut || backendStartCommandFailed)) || !!activeRuntime?.last_load_error
 
   const stages = [
     {
       icon: Icons.Settings,
-      title: 'Checking system',
-      detail: backendReachable ? 'Requirements verified' : (backendStartCommandFailed ? 'Backend did not start cleanly' : 'Waiting for local services'),
-      state: stageState(backendReachable, !backendReachable),
+      title: 'Showing app shell',
+      detail: 'Window and theme ready',
+      state: 'done' as const,
+    },
+    {
+      icon: Icons.Play,
+      title: 'Launching backend',
+      detail: backendSpawned
+        ? 'Backend process started'
+        : backendLaunchStarted
+          ? 'Starting local sidecar'
+          : 'Preparing backend command',
+      state: stageState(backendSpawned, backendLaunchStarted && !backendSpawned),
     },
     {
       icon: Icons.Locate,
-      title: 'Detecting hardware',
-      detail: gpu?.name ? `${gpu.name} detected` : (hasRuntime ? `${provider} execution path` : 'Scanning providers'),
-      state: stageState(hasProvider, backendReachable && !hasProvider),
+      title: 'Connecting local API',
+      detail: backendReachable ? 'Status endpoint responding' : 'Waiting for 127.0.0.1:8000',
+      state: stageState(backendReachable, backendSpawned && !backendReachable),
     },
     {
-      icon: Icons.Download,
-      title: downloadActive ? 'Downloading model' : 'Voice models',
+      icon: Icons.Library,
+      title: 'Loading EPUB library',
+      detail: recentLoaded
+        ? `${recentBooks.length} EPUB${recentBooks.length === 1 ? '' : 's'} indexed`
+        : backendReachable
+          ? 'Reading local shelf metadata'
+          : 'Waiting for API connection',
+      state: stageState(recentLoaded, backendReachable && !recentLoaded),
+    },
+    {
+      icon: Icons.Speed,
+      title: 'Detecting hardware',
+      detail: gpu?.name ? `${gpu.name} detected` : (hasRuntime ? `${provider} execution path` : 'Scanning providers'),
+      state: stageState(hasProvider || !!status?.system, backendReachable && !hasProvider && !status?.system),
+    },
+    {
+      icon: downloadActive ? Icons.Download : Icons.Volume,
+      title: downloadActive ? 'Downloading voice model' : 'Voice engine',
       detail: downloadActive
         ? `${downloadLabel} ${downloadPct ? `${Math.round(downloadPct)}%` : 'starting'}`
         : activeModelLoaded
           ? `${modelName(activeRuntime)} ready`
-          : 'Install a voice engine when you want narration',
-      state: stageState(activeModelLoaded || !downloadActive, backendReachable && downloadActive && !activeModelLoaded),
-    },
-    {
-      icon: Icons.Speed,
-      title: 'Initializing ONNX Runtime',
-      detail: activeRuntime?.selected_provider ? String(activeRuntime.selected_provider) : 'Setting up execution provider',
-      state: stageState(hasRuntime && !!activeRuntime?.selected_provider, backendReachable && !activeRuntime?.selected_provider),
-    },
-    {
-      icon: Icons.Volume,
-      title: 'Preparing voices',
-      detail: hasVoices ? `${status?.voices} voices available` : 'Voices appear after an engine is installed',
-      state: stageState(hasVoices || !activeModelLoaded, activeModelLoaded && !hasVoices),
-    },
-    {
-      icon: Icons.Feather,
-      title: 'Warming up engine',
-      detail: ready ? `${recentBooks.length} EPUB${recentBooks.length === 1 ? '' : 's'} indexed` : 'Optimizing the first reading pass',
-      state: stageState(ready, backendReachable && recentLoaded && modelSettled && !ready),
+          : activeModelLoading
+            ? `Loading ${modelName(activeRuntime)}`
+            : 'Ready for reading; install narration when needed',
+      state: stageState(modelSettled && !downloadActive, backendReachable && (downloadActive || activeModelLoading)),
     },
   ]
   const completed = stages.filter(s => s.state === 'done').length
-  const bootProgress = Math.min(96, Math.max(6, (completed / stages.length) * 100 + (ready ? 4 : 0)))
+  const activeStageNudge = stages.some(s => s.state === 'active')
+    ? Math.min(0.82, Math.max(0.12, elapsedMs / 1800))
+    : 0
+  const bootProgress = ready
+    ? 100
+    : Math.min(97, Math.max(7, ((completed + activeStageNudge) / stages.length) * 100))
   const progressValue = downloadActive && downloadPct ? downloadPct : bootProgress
-  const progressLabel = downloadActive && downloadPct ? `${Math.round(downloadPct)}%` : `${Math.round(bootProgress)}%`
-  const backendPhase = !backendReachable
-    ? 'Waiting for backend process'
-    : !hasProvider
-      ? 'Resolving execution provider'
-      : !recentLoaded
-        ? 'Loading EPUB library'
-        : activeModelLoading
-          ? 'Loading voice model'
-          : 'Ready'
-  const statusText = !backendReachable
-    ? (startupIssue ? 'Folio could not reach the backend.' : 'Starting Folio backend...')
-    : downloadActive
-      ? `Downloading ${downloadLabel}...`
-    : !activeModelLoaded && activeModelLoading
-      ? `Loading ${modelName(activeRuntime)} model to ${provider === 'CUDA' ? 'GPU' : provider}...`
-      : !recentLoaded
-        ? 'Loading your EPUB library...'
-        : ready
-          ? 'Opening your reading room...'
-          : 'Preparing your library...'
+  const progressLabel = downloadActive && downloadPct ? `${Math.round(downloadPct)}%` : `${Math.round(progressValue)}%`
+  const backendPhase = !backendLaunchStarted ? 'Preparing backend command'
+    : !backendLaunchSettled && !backendReachable ? 'Launching backend process'
+      : !backendReachable ? 'Waiting for backend process'
+        : !hasProvider ? 'Resolving execution provider'
+          : !recentLoaded ? 'Loading EPUB library'
+            : activeModelLoading ? 'Loading voice model'
+              : 'Ready'
+  const statusText = startupIssue ? 'Folio could not reach the backend.'
+    : !backendLaunchSettled && !backendReachable ? 'Starting Folio backend...'
+      : !backendReachable ? 'Waiting for the local API...'
+        : downloadActive ? `Downloading ${downloadLabel}...`
+          : !activeModelLoaded && activeModelLoading ? `Loading ${modelName(activeRuntime)} model to ${provider === 'CUDA' ? 'GPU' : provider}...`
+            : !recentLoaded ? 'Loading your EPUB library...'
+              : ready ? 'Opening your reading room...'
+                : 'Preparing your library...'
 
   return (
-    <m.div className={`loading-screen theme-${theme}${motion ? ' motion-enabled' : ' motion-reduced'}`} aria-busy={!ready} layout transition={spring.layout}>
+    <m.div className={`loading-screen theme-${theme}${motion ? ' motion-enabled' : ' motion-reduced'}${ready ? ' is-ready' : ''}`} aria-busy={!ready} layout transition={spring.layout}>
       <TitleBar />
       {motion && <div className="loading-aurora" aria-hidden="true" />}
       <m.main className="loading-stage" variants={listStagger} initial="initial" animate="animate">

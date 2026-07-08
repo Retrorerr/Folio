@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import secrets
@@ -26,11 +27,13 @@ except ImportError:
 
 import reflow_service
 import cover_service
-import chatterbox_service
+import supertonic_service
 import tts_service
 import psutil
+from model_manager import ModelInstallRequired
 from models import BookState, Position, Bookmark, PageText, SentenceInfo
 from paths import AUDIO_CACHE_DIR, DATA_DIR, FRONTEND_DIR, MODELS_DIR, UPLOAD_DIR
+from tts_defaults import DEFAULT_TTS_ENGINE, DEFAULT_TTS_SPEED, DEFAULT_TTS_VOICE, KOKORO_ENGINE_ID
 from tts_queue import TTSQueue
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,11 +49,16 @@ BOOKS: dict[str, dict] = {}
 # memory arenas, so parallel jobs are more dangerous than helpful on desktop.
 TTS_MANAGER = TTSQueue(worker_count=1)
 SEARCH_INDEXES: dict[str, dict] = {}
-DEFAULT_TTS_ENGINE = "kokoro"
 _active_tts_engine: str | None = None
 _tts_engine_runtime_lock = threading.RLock()
+TTS_SERVICES = {
+    supertonic_service.ENGINE_ID: supertonic_service,
+    tts_service.ENGINE_ID: tts_service,
+}
+TTS_SPEED_MIN = min(service.MIN_SPEED for service in TTS_SERVICES.values())
+TTS_SPEED_MAX = max(service.MAX_SPEED for service in TTS_SERVICES.values())
 _TTS_PRELOAD_ON_SWITCH = os.environ.get("FOLIO_PRELOAD_TTS_ON_SWITCH", "").strip().lower() in {"1", "true", "yes", "on"}
-_MAX_BACKGROUND_TTS_JOBS = int(os.environ.get("FOLIO_MAX_BACKGROUND_TTS_JOBS", "6") or "6")
+_MAX_BACKGROUND_TTS_JOBS = int(os.environ.get("FOLIO_MAX_BACKGROUND_TTS_JOBS", "12") or "12")
 _original_kokoro_provider_env = os.environ.get(tts_service.PROVIDER_ENV)
 _kokoro_provider_pinned_for_inactive_engine = False
 
@@ -68,6 +76,14 @@ _hardware_cache_time: float = 0.0
 _HARDWARE_CACHE_TTL = 3.0
 _PREVIEW_HEARTBEAT_FILE = os.environ.get("FOLIO_PREVIEW_HEARTBEAT_FILE", "").strip()
 _PREVIEW_DISCONNECT_FILE = os.environ.get("FOLIO_PREVIEW_DISCONNECT_FILE", "").strip()
+_LIBRARY_SCAN_INTERVAL_SECONDS = max(15, int(os.environ.get("FOLIO_LIBRARY_SCAN_INTERVAL_SECONDS", "90") or "90"))
+_LIBRARY_SCAN_MAX_FILES = max(1, int(os.environ.get("FOLIO_LIBRARY_SCAN_MAX_FILES", "5000") or "5000"))
+_APP_IDLE_TIMEOUT_SECONDS = max(60, int(os.environ.get("FOLIO_APP_IDLE_TIMEOUT_SECONDS", "600") or "600"))
+_APP_IDLE_CHECK_SECONDS = max(15, int(os.environ.get("FOLIO_APP_IDLE_CHECK_SECONDS", "30") or "30"))
+_APP_IDLE_WATCHDOG_ENABLED = os.environ.get("FOLIO_APP_IDLE_WATCHDOG", "1").strip().lower() not in {"0", "false", "no", "off"}
+_last_app_heartbeat_monotonic = time.monotonic()
+_last_app_heartbeat_lock = threading.Lock()
+_idle_shutdown_started = threading.Event()
 
 
 def _preview_touch(path: str) -> None:
@@ -81,6 +97,63 @@ def _preview_touch(path: str) -> None:
         os.makedirs(parent, exist_ok=True)
     with open(path, "a", encoding="ascii"):
         os.utime(path, None)
+
+
+def _mark_app_heartbeat() -> None:
+    global _last_app_heartbeat_monotonic
+    with _last_app_heartbeat_lock:
+        _last_app_heartbeat_monotonic = time.monotonic()
+
+
+def _seconds_since_app_heartbeat() -> float:
+    with _last_app_heartbeat_lock:
+        return time.monotonic() - _last_app_heartbeat_monotonic
+
+
+def _backend_has_active_work() -> bool:
+    try:
+        if TTS_MANAGER.has_active_priority_at_or_below(10_000):
+            return True
+    except Exception:
+        logger.exception("Failed to inspect TTS queue before idle shutdown")
+        return True
+
+    for service_id, service in TTS_SERVICES.items():
+        try:
+            if service.is_model_loading() or service.is_download_active():
+                return True
+        except Exception:
+            logger.exception("Failed to inspect TTS service %s before idle shutdown", service_id)
+            return True
+    return False
+
+
+def _request_backend_exit(reason: str, delay_seconds: float = 0.0) -> None:
+    if _idle_shutdown_started.is_set():
+        return
+    _idle_shutdown_started.set()
+    logger.info("Backend exit requested: %s", reason)
+
+    def _terminate() -> None:
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_terminate, name="folio-backend-exit", daemon=True).start()
+
+
+def _app_idle_watchdog_loop(stop_event: threading.Event) -> None:
+    logger.info("App idle watchdog armed timeout_seconds=%s", _APP_IDLE_TIMEOUT_SECONDS)
+    while not stop_event.wait(_APP_IDLE_CHECK_SECONDS):
+        idle_for = _seconds_since_app_heartbeat()
+        if idle_for < _APP_IDLE_TIMEOUT_SECONDS:
+            continue
+        if _backend_has_active_work():
+            logger.info("Idle timeout reached, but backend has active work; extending idle deadline")
+            _mark_app_heartbeat()
+            continue
+        _request_backend_exit(f"no UI heartbeat for {idle_for:.1f}s")
+        return
 
 
 def _cover_url(book_id: str) -> str:
@@ -149,33 +222,50 @@ def _gpu_metrics() -> dict | None:
 
 
 def _normalize_tts_engine(engine: str | None) -> str:
-    value = (engine or DEFAULT_TTS_ENGINE).strip().lower()
-    if value in {
-        "chatterbox",
-        "chatterbox-turbo",
-        "chatterbox_turbo",
-        "vibevoice",  # legacy alias — migrates persisted state to Chatterbox
-        "vibe-voice",
-        "vibe_voice",
-    }:
-        return chatterbox_service.ENGINE_ID
-    return DEFAULT_TTS_ENGINE
+    value = str(engine or DEFAULT_TTS_ENGINE).strip().lower()
+    return value if value in TTS_SERVICES else DEFAULT_TTS_ENGINE
 
 
 def _normalize_voice_for_engine(engine: str, voice: str | None) -> str:
-    engine = _normalize_tts_engine(engine)
-    if engine == chatterbox_service.ENGINE_ID:
-        return chatterbox_service.normalize_voice(voice)
-    return tts_service.normalize_voice(voice)
+    return _engine_service(engine).normalize_voice(voice)
+
+
+def _validate_speed_for_engine(engine: str, speed: float | str | None) -> float:
+    try:
+        return _engine_service(engine).validate_speed(speed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _engine_service(engine: str):
     engine = _normalize_tts_engine(engine)
-    return chatterbox_service if engine == chatterbox_service.ENGINE_ID else tts_service
+    return TTS_SERVICES[engine]
 
 
 def _engine_install_info(engine: str) -> dict:
     return _engine_service(engine).get_install_info()
+
+
+def _coerce_tts_state(state: BookState) -> BookState:
+    engine = _normalize_tts_engine(getattr(state, "tts_engine", DEFAULT_TTS_ENGINE))
+    raw_voices = getattr(state, "tts_voices", None)
+    engine_voices = dict(raw_voices) if isinstance(raw_voices, dict) else {}
+    active_voice = _normalize_voice_for_engine(engine, engine_voices.get(engine) or getattr(state, "voice", None))
+    cleaned_voices = {
+        engine_id: _normalize_voice_for_engine(engine_id, engine_voices.get(engine_id))
+        for engine_id in TTS_SERVICES
+        if engine_voices.get(engine_id)
+    }
+    cleaned_voices[engine] = active_voice
+    try:
+        speed = _engine_service(engine).validate_speed(getattr(state, "speed", DEFAULT_TTS_SPEED))
+    except ValueError:
+        speed = _engine_service(engine).validate_speed(DEFAULT_TTS_SPEED)
+    state.tts_engine = engine
+    state.voice = active_voice
+    state.tts_voices = cleaned_voices
+    state.speed = speed
+    return state
 
 
 def _model_required_response(engine: str, status_code: int | None = None):
@@ -200,7 +290,7 @@ def _set_kokoro_provider_for_active_engine(engine: str) -> None:
     """Avoid incidental Kokoro CUDA loads, but restore CUDA when Kokoro is active."""
     global _kokoro_provider_pinned_for_inactive_engine
     engine = _normalize_tts_engine(engine)
-    if engine == chatterbox_service.ENGINE_ID:
+    if engine != KOKORO_ENGINE_ID:
         if _original_kokoro_provider_env is None:
             os.environ[tts_service.PROVIDER_ENV] = "cpu"
             _kokoro_provider_pinned_for_inactive_engine = True
@@ -215,20 +305,14 @@ def _set_kokoro_provider_for_active_engine(engine: str) -> None:
 
 
 def _activate_tts_engine(engine: str) -> None:
-    """Keep only the selected local TTS engine resident on the GPU."""
+    """Keep only the selected local TTS engine resident when switching engines."""
     global _active_tts_engine
     engine = _normalize_tts_engine(engine)
     with _tts_engine_runtime_lock:
         _cancel_pending_tts_for_inactive_engine(engine)
-        # Always evict the inactive engine — even when the active flag matches —
-        # so a stray load (e.g. a cache-key computation that called get_kokoro
-        # under the hood) doesn't leave a multi-GB arena resident forever.
-        if engine == chatterbox_service.ENGINE_ID:
-            if tts_service.is_model_loaded():
-                tts_service.unload_model()
-        else:
-            if chatterbox_service.is_model_loaded():
-                chatterbox_service.unload_model()
+        for service_id, service in TTS_SERVICES.items():
+            if service_id != engine and service.is_model_loaded():
+                service.unload_model()
         _set_kokoro_provider_for_active_engine(engine)
         if _active_tts_engine == engine:
             return
@@ -263,20 +347,13 @@ def _preload_engine_in_background(engine: str) -> None:
     def _run():
         try:
             with _tts_engine_runtime_lock:
-                if engine == chatterbox_service.ENGINE_ID:
-                    if not chatterbox_service.get_install_info().get("ready"):
-                        return
-                    if not chatterbox_service.is_model_loaded() and not chatterbox_service.is_model_loading():
-                        chatterbox_service.get_model()
-                    if _active_tts_engine != chatterbox_service.ENGINE_ID and chatterbox_service.is_model_loaded():
-                        chatterbox_service.unload_model()
-                else:
-                    if not tts_service.get_install_info().get("ready"):
-                        return
-                    if not tts_service.is_model_loaded() and not tts_service.is_model_loading():
-                        tts_service.get_kokoro()
-                    if _active_tts_engine != DEFAULT_TTS_ENGINE and tts_service.is_model_loaded():
-                        tts_service.unload_model()
+                service = _engine_service(engine)
+                if not service.get_install_info().get("ready"):
+                    return
+                if not service.is_model_loaded() and not service.is_model_loading():
+                    service.get_model()
+                if _active_tts_engine != engine and service.is_model_loaded():
+                    service.unload_model()
         except Exception:
             logger.exception("Background TTS preload failed for engine=%s", engine)
 
@@ -398,9 +475,16 @@ def _flush_debounced_saves():
 
 def _load_state(book_id: str) -> BookState | None:
     path = _state_path(book_id)
-    if os.path.exists(path):
-        return BookState.model_validate_json(_read_text_lenient(path))
-    return None
+    if not os.path.exists(path):
+        return None
+    try:
+        text = _read_text_lenient(path)
+        if not text.strip():
+            return None
+        return _coerce_tts_state(BookState.model_validate_json(text))
+    except Exception:
+        logger.exception("Failed to load saved state for book_id=%s from %s", book_id, path)
+        return None
 
 
 def _clamp_position(position: Position, page_count: int) -> Position:
@@ -426,6 +510,17 @@ def _load_global_settings() -> dict:
         except Exception:
             logger.exception("Failed to load global settings from %s", path)
     return {}
+
+
+def _library_scan_settings() -> dict:
+    settings = _load_global_settings()
+    folder = str(settings.get("library_scan_folder") or "").strip()
+    recursive = settings.get("library_scan_recursive")
+    return {
+        "folder": folder,
+        "recursive": True if recursive is None else bool(recursive),
+        "last_result": settings.get("library_scan_last_result") if isinstance(settings.get("library_scan_last_result"), dict) else None,
+    }
 
 
 def _save_global_settings(updates: dict):
@@ -660,10 +755,7 @@ def _weekly_stats(reading_events: list[dict]) -> list[dict]:
         key = str(event.get("date") or "")
         if key not in by_date:
             continue
-        try:
-            by_date[key]["reading_ms"] += max(0, int(event.get("elapsed_ms") or 0))
-        except (TypeError, ValueError):
-            pass
+        by_date[key]["reading_ms"] += _nonnegative_int(event.get("elapsed_ms"))
         for page in event.get("pages_touched") or []:
             if isinstance(page, int):
                 by_date[key]["pages"].add(page)
@@ -679,6 +771,21 @@ def _weekly_stats(reading_events: list[dict]) -> list[dict]:
             "pages": len(row["pages"]),
         })
     return stats
+
+
+def _nonnegative_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _sortable_timestamp(value) -> float:
+    try:
+        timestamp = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return timestamp if math.isfinite(timestamp) else 0.0
 
 
 def _recent_notes_and_highlights(books: list[dict], store: dict) -> list[dict]:
@@ -715,7 +822,7 @@ def _recent_notes_and_highlights(books: list[dict], store: dict) -> list[dict]:
                 "note": "",
                 "created_at": book.get("updated_at") or book.get("last_opened_at") or 0,
             })
-    return sorted(records, key=lambda item: float(item.get("created_at") or 0), reverse=True)
+    return sorted(records, key=lambda item: _sortable_timestamp(item.get("created_at")), reverse=True)
 
 
 def _app_version() -> str | None:
@@ -732,10 +839,7 @@ def _dashboard_status_summary() -> dict:
         "reachable": True,
         "active_tts_engine": active_engine,
         "gpu": bool(_gpu_metrics()),
-        "models": {
-            "kokoro": _engine_install_info("kokoro"),
-            chatterbox_service.ENGINE_ID: _engine_install_info(chatterbox_service.ENGINE_ID),
-        },
+        "models": {engine: _engine_install_info(engine) for engine in TTS_SERVICES},
         "version": _app_version(),
     }
 
@@ -751,7 +855,7 @@ def _dashboard_payload() -> dict:
     weekly_stats = _weekly_stats(store.get("reading_events", []))
     today = datetime.now().date().isoformat()
     today_ms = sum(
-        max(0, int(event.get("elapsed_ms") or 0))
+        _nonnegative_int(event.get("elapsed_ms"))
         for event in store.get("reading_events", [])
         if event.get("date") == today
     )
@@ -840,6 +944,133 @@ def _safe_upload_filename(filename: str | None, content: bytes) -> str:
         stem = "upload"
     digest = hashlib.sha256(content).hexdigest()[:12]
     return f"{stem[:80]}-{digest}.epub"
+
+
+def _normalize_scan_folder(path: str | None) -> str:
+    folder = str(path or "").strip().strip("\"'")
+    if not folder:
+        raise HTTPException(400, "Choose a folder to scan.")
+    resolved = os.path.realpath(os.path.abspath(os.path.expanduser(folder)))
+    if not os.path.isdir(resolved):
+        raise HTTPException(400, f"Folder not found: {folder}")
+    return resolved
+
+
+def _iter_epub_files(folder: str, recursive: bool = True) -> list[str]:
+    files: list[str] = []
+    if recursive:
+        for root, dirs, filenames in os.walk(
+            folder,
+            onerror=lambda error: logger.warning("Skipping unreadable library folder: %s", error),
+        ):
+            dirs.sort(key=str.casefold)
+            for filename in sorted(filenames, key=str.casefold):
+                if len(files) >= _LIBRARY_SCAN_MAX_FILES:
+                    return files
+                if filename.lower().endswith(".epub"):
+                    files.append(os.path.realpath(os.path.join(root, filename)))
+    else:
+        try:
+            for entry in sorted(os.scandir(folder), key=lambda item: item.name.casefold()):
+                if len(files) >= _LIBRARY_SCAN_MAX_FILES:
+                    break
+                if entry.is_file() and entry.name.lower().endswith(".epub"):
+                    files.append(os.path.realpath(entry.path))
+        except OSError as exc:
+            logger.warning("Skipping unreadable library folder: %s", exc)
+    files.sort(key=str.casefold)
+    return files
+
+
+def _import_scanned_book(filepath: str) -> dict:
+    resolved = os.path.realpath(os.path.abspath(filepath))
+    if os.path.splitext(resolved)[1].lower() != ".epub":
+        raise ValueError("Not an EPUB file")
+    if not os.path.isfile(resolved):
+        raise FileNotFoundError(resolved)
+
+    meta = reflow_service.get_metadata(resolved, DATA_DIR)
+    book_id = meta["id"]
+    saved = _load_state(book_id)
+    state = _coerce_tts_state(saved if saved else BookState(**meta))
+    now_ms = _now_ms()
+    try:
+        file_mtime = os.path.getmtime(resolved) * 1000
+    except OSError:
+        file_mtime = now_ms
+
+    state.filepath = resolved
+    state.title = meta.get("title") or state.title
+    state.author = meta.get("author") or state.author
+    state.page_count = max(1, int(meta.get("page_count") or state.page_count or 1))
+    state.toc = meta.get("toc") or state.toc
+    state.format = "epub"
+    if state.imported_at is None:
+        state.imported_at = file_mtime
+    state.updated_at = now_ms
+    state.collections = _sanitize_tag_list(state.collections)
+    state.genres = _sanitize_tag_list(state.genres)
+    state.cover_url, state.cover_source = _ensure_book_cover(resolved, book_id)
+    if book_id in BOOKS:
+        BOOKS[book_id]["state"] = state
+        BOOKS[book_id]["filepath"] = resolved
+    _write_state(book_id, state)
+    return _book_summary_from_state(state, Path(_state_path(book_id)))
+
+
+def _scan_library_folder(folder: str, recursive: bool = True) -> dict:
+    resolved_folder = _normalize_scan_folder(folder)
+    files = _iter_epub_files(resolved_folder, recursive)
+    imported: list[dict] = []
+    failed: list[dict] = []
+    existing = 0
+
+    for filepath in files:
+        book_id = reflow_service.get_book_id(filepath)
+        if os.path.exists(_state_path(book_id)):
+            existing += 1
+            continue
+        try:
+            imported.append(_import_scanned_book(filepath))
+        except Exception as exc:
+            failed.append({"filepath": filepath, "error": str(exc)[:240]})
+            logger.exception("Failed to import scanned EPUB path=%s", filepath)
+
+    result = {
+        "folder": resolved_folder,
+        "recursive": bool(recursive),
+        "scanned": len(files),
+        "imported": len(imported),
+        "existing": existing,
+        "failed": len(failed),
+        "failures": failed[:12],
+        "imported_books": imported[:24],
+        "scanned_at": _now_ms(),
+        "truncated": len(files) >= _LIBRARY_SCAN_MAX_FILES,
+    }
+    _save_global_settings({"library_scan_last_result": result})
+    _invalidate_recent_cache()
+    return result
+
+
+def _autoscan_library_once() -> dict | None:
+    settings = _library_scan_settings()
+    folder = settings["folder"]
+    if not folder:
+        return None
+    try:
+        return _scan_library_folder(folder, settings["recursive"])
+    except Exception:
+        logger.exception("Library autoscan failed for folder=%s", folder)
+        return None
+
+
+def _library_autoscan_loop(stop_event: threading.Event):
+    while not stop_event.wait(2):
+        _autoscan_library_once()
+        break
+    while not stop_event.wait(_LIBRARY_SCAN_INTERVAL_SECONDS):
+        _autoscan_library_once()
 
 
 def _invalidate_recent_cache():
@@ -961,9 +1192,10 @@ async def lifespan(app: FastAPI):
     logger.info("Frontend dir: %s", FRONTEND_DIR)
     logger.info("Expected quality model exists: %s", os.path.exists(os.path.join(MODELS_DIR, tts_service.QUALITY_MODEL_FILENAME)))
     logger.info("Expected voices file exists: %s", os.path.exists(os.path.join(MODELS_DIR, tts_service.VOICES_FILENAME)))
+    logger.info("Expected Supertonic model dir: %s", supertonic_service.model_dir())
     logger.info("Expected frontend index exists: %s", os.path.exists(os.path.join(FRONTEND_DIR, "index.html")))
     tts_service.log_runtime_environment()
-    chatterbox_service.log_runtime_environment()
+    supertonic_service.log_runtime_environment()
 
     # Remember the last selected engine, but do not auto-load model weights on
     # startup. Model absence/availability is now explicit UI state, and eager
@@ -984,7 +1216,32 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Skipping startup TTS preload; models will load on first generation.")
 
+    library_scan_stop = threading.Event()
+    library_scan_thread = threading.Thread(
+        target=_library_autoscan_loop,
+        args=(library_scan_stop,),
+        name="library-autoscan",
+        daemon=True,
+    )
+    library_scan_thread.start()
+
+    idle_watchdog_stop = threading.Event()
+    idle_watchdog_thread = None
+    if _APP_IDLE_WATCHDOG_ENABLED:
+        idle_watchdog_thread = threading.Thread(
+            target=_app_idle_watchdog_loop,
+            args=(idle_watchdog_stop,),
+            name="app-idle-watchdog",
+            daemon=True,
+        )
+        idle_watchdog_thread.start()
+
     yield
+    library_scan_stop.set()
+    idle_watchdog_stop.set()
+    library_scan_thread.join(timeout=2)
+    if idle_watchdog_thread:
+        idle_watchdog_thread.join(timeout=2)
     logger.info("FastAPI lifespan shutting down; open books=%s", list(BOOKS.keys()))
     _flush_debounced_saves()
     for book_id in list(BOOKS):
@@ -1075,7 +1332,13 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
-_QUIET_PATHS = frozenset({"/api/status", "/api/recent", "/api/settings"})
+_QUIET_PATHS = frozenset({
+    "/api/app/heartbeat",
+    "/api/status",
+    "/api/recent",
+    "/api/settings",
+    "/api/preview/heartbeat",
+})
 
 
 @app.middleware("http")
@@ -1128,31 +1391,21 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/api/status")
 def get_status():
-    kokoro_loaded = tts_service.is_model_loaded()
-    chatterbox_loaded = chatterbox_service.is_model_loaded()
-    kokoro_loading = tts_service.is_model_loading()
-    chatterbox_loading = chatterbox_service.is_model_loading()
-    active_engine = _active_tts_engine or (chatterbox_service.ENGINE_ID if chatterbox_loaded else DEFAULT_TTS_ENGINE)
-    active_voices = (
-        len(chatterbox_service.get_available_voices())
-        if active_engine == chatterbox_service.ENGINE_ID
-        else (len(tts_service.get_available_voices()) if kokoro_loaded else 0)
-    )
+    loaded = {engine: service.is_model_loaded() for engine, service in TTS_SERVICES.items()}
+    loading = {engine: service.is_model_loading() for engine, service in TTS_SERVICES.items()}
+    active_engine = _active_tts_engine or _normalize_tts_engine(_load_global_settings().get("tts_engine"))
+    active_service = _engine_service(active_engine)
+    active_voices = len(active_service.get_available_voices()) if loaded.get(active_engine) else 0
     return {
-        "gpu": tts_service.is_gpu_enabled() or chatterbox_service.is_gpu_enabled(),
+        "gpu": any(service.is_gpu_enabled() for service in TTS_SERVICES.values()),
         "voices": active_voices,
-        "model_loaded": kokoro_loaded or chatterbox_loaded,
-        "model_loading": kokoro_loading or chatterbox_loading,
+        "model_loaded": any(loaded.values()),
+        "model_loading": any(loading.values()),
         "active_tts_engine": active_engine,
-        "tts_runtime": tts_service.get_runtime_info(),
-        "tts_engines": {
-            "kokoro": tts_service.get_runtime_info(),
-            chatterbox_service.ENGINE_ID: chatterbox_service.get_runtime_info(),
-        },
-        "models": {
-            "kokoro": tts_service.get_install_info(),
-            chatterbox_service.ENGINE_ID: chatterbox_service.get_install_info(),
-        },
+        "tts_runtime": active_service.get_runtime_info(),
+        "tts_engines": {engine: service.get_runtime_info() for engine, service in TTS_SERVICES.items()},
+        "tts_activity": TTS_MANAGER.activity(),
+        "models": {engine: service.get_install_info() for engine, service in TTS_SERVICES.items()},
         "system": _system_metrics(),
     }
 
@@ -1160,10 +1413,7 @@ def get_status():
 @app.get("/api/models")
 def get_models():
     return {
-        "engines": {
-            "kokoro": tts_service.get_install_info(),
-            chatterbox_service.ENGINE_ID: chatterbox_service.get_install_info(),
-        }
+        "engines": {engine: service.get_install_info() for engine, service in TTS_SERVICES.items()}
     }
 
 
@@ -1195,12 +1445,19 @@ def shutdown():
         except Exception:
             logger.exception("Failed to save state for book %s during shutdown", book_id)
         _close_book_entry(book_id)
-    os.kill(os.getpid(), signal.SIGTERM)
+    _request_backend_exit("launcher requested shutdown", delay_seconds=0.15)
     return {"ok": True}
+
+
+@app.post("/api/app/heartbeat")
+def app_heartbeat():
+    _mark_app_heartbeat()
+    return {"ok": True, "idle_timeout_seconds": _APP_IDLE_TIMEOUT_SECONDS}
 
 
 @app.post("/api/preview/heartbeat")
 def preview_heartbeat():
+    _mark_app_heartbeat()
     if _PREVIEW_HEARTBEAT_FILE:
         _preview_touch(_PREVIEW_HEARTBEAT_FILE)
     return {"ok": True}
@@ -1297,6 +1554,55 @@ def search_library(q: str = Query("")):
     return {"query": q, "total": len(books), "books": books}
 
 
+@app.get("/api/library/folder")
+def get_library_folder():
+    settings = _library_scan_settings()
+    folder = settings["folder"]
+    return {
+        "folder": folder,
+        "recursive": settings["recursive"],
+        "exists": bool(folder and os.path.isdir(folder)),
+        "last_result": settings["last_result"],
+    }
+
+
+@app.post("/api/library/folder")
+async def set_library_folder(request: Request):
+    data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid folder payload")
+    folder = _normalize_scan_folder(data.get("folder"))
+    recursive = data.get("recursive")
+    recursive = True if recursive is None else bool(recursive)
+    _save_global_settings({
+        "library_scan_folder": folder,
+        "library_scan_recursive": recursive,
+    })
+    result = _scan_library_folder(folder, recursive)
+    return {
+        "folder": folder,
+        "recursive": recursive,
+        "exists": True,
+        "last_result": result,
+    }
+
+
+@app.post("/api/library/scan")
+async def scan_library_folder(request: Request):
+    data = await request.json()
+    settings = _library_scan_settings()
+    if isinstance(data, dict) and data.get("folder"):
+        folder = _normalize_scan_folder(data.get("folder"))
+        recursive = data.get("recursive")
+        recursive = settings["recursive"] if recursive is None else bool(recursive)
+    else:
+        folder = settings["folder"]
+        recursive = settings["recursive"]
+    if not folder:
+        raise HTTPException(400, "Choose a folder to scan.")
+    return _scan_library_folder(folder, recursive)
+
+
 @app.post("/api/book/open")
 def open_book(filepath: str = Query(...)):
     logger.info("Opening book from filepath=%s", filepath)
@@ -1317,7 +1623,7 @@ def open_book(filepath: str = Query(...)):
     book_id = meta["id"]
     _flush_debounced_saves()
     saved = _load_state(book_id)
-    state = saved if saved else BookState(**meta)
+    state = _coerce_tts_state(saved if saved else BookState(**meta))
     now_ms = _now_ms()
     if state.imported_at is None:
         try:
@@ -1525,20 +1831,18 @@ def _generate_audio(
     voice,
     speed,
     book_id,
-    chatterbox_device: str | None = None,
+    allow_engine_switch: bool = True,
 ):
     engine = _normalize_tts_engine(engine)
+    service = _engine_service(engine)
+    voice = service.normalize_voice(voice)
+    speed = _validate_speed_for_engine(engine, speed)
     with _tts_engine_runtime_lock:
+        active_engine = _active_tts_engine or _normalize_tts_engine(_load_global_settings().get("tts_engine"))
+        if not allow_engine_switch and active_engine != engine:
+            raise RuntimeError(f"Skipped {engine} TTS job because {active_engine} is now the active TTS engine.")
         _activate_tts_engine(engine)
-        if engine == chatterbox_service.ENGINE_ID:
-            return chatterbox_service.generate_sentence_audio(
-                text,
-                voice=voice,
-                speed=speed,
-                book_id=book_id,
-                device=chatterbox_device,
-            )
-        return tts_service.generate_sentence_audio(text, voice=voice, speed=speed, book_id=book_id)
+        return service.generate_sentence_audio(text, voice=voice, speed=speed, book_id=book_id)
 
 
 def _job_key(
@@ -1548,15 +1852,11 @@ def _job_key(
     engine: str,
     voice: str,
     speed: float,
-    chatterbox_device: str | None = None,
 ) -> str:
-    speed = tts_service.validate_speed(speed)
     engine = _normalize_tts_engine(engine)
+    speed = _validate_speed_for_engine(engine, speed)
     voice = _normalize_voice_for_engine(engine, voice)
-    if engine == chatterbox_service.ENGINE_ID:
-        device = chatterbox_service.normalize_device(chatterbox_device)
-        return f"{engine}|{book_id}|{page}|{sentence}|{voice}|{speed}|{device}"
-    return f"kokoro|{book_id}|{page}|{sentence}|{voice}|{speed}"
+    return f"{engine}|{book_id}|{page}|{sentence}|{voice}|{speed}"
 
 
 def _job_key_matches_scope(
@@ -1565,7 +1865,6 @@ def _job_key_matches_scope(
     engine: str,
     voice: str,
     speed: float,
-    chatterbox_device: str | None = None,
 ) -> bool:
     parts = key.split("|")
     if len(parts) < 6:
@@ -1578,10 +1877,8 @@ def _job_key_matches_scope(
     normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
     if parts[0] != normalized_engine or parts[1] != book_id or parts[4] != normalized_voice:
         return False
-    if abs(key_speed - tts_service.validate_speed(speed)) > 0.0001:
+    if abs(key_speed - _validate_speed_for_engine(normalized_engine, speed)) > 0.0001:
         return False
-    if normalized_engine == chatterbox_service.ENGINE_ID:
-        return len(parts) >= 7 and parts[6] == chatterbox_service.normalize_device(chatterbox_device)
     return True
 
 
@@ -1590,7 +1887,6 @@ def _cancel_pending_tts_buffer(
     engine: str,
     voice: str,
     speed: float,
-    chatterbox_device: str | None = None,
     keep_keys: set[str] | None = None,
     reason: str = "Buffered TTS window moved",
 ) -> int:
@@ -1598,7 +1894,7 @@ def _cancel_pending_tts_buffer(
     return TTS_MANAGER.cancel_pending(
         lambda key: (
             key not in keep_keys
-            and _job_key_matches_scope(key, book_id, engine, voice, speed, chatterbox_device)
+            and _job_key_matches_scope(key, book_id, engine, voice, speed)
         ),
         reason=reason,
     )
@@ -1610,19 +1906,10 @@ def _audio_cache_path(
     engine: str,
     voice: str,
     speed: float,
-    chatterbox_device: str | None = None,
 ) -> str:
     engine = _normalize_tts_engine(engine)
-    if engine == chatterbox_service.ENGINE_ID:
-        return chatterbox_service.audio_cache_path(
-            book_id,
-            text,
-            voice,
-            speed,
-            device=chatterbox_device,
-        )
-    key = tts_service._cache_key(text, voice, speed)
-    return os.path.join(tts_service.CACHE_DIR, f"{book_id}_{key}.wav")
+    service = _engine_service(engine)
+    return service.audio_cache_path(book_id, text, service.normalize_voice(voice), _validate_speed_for_engine(engine, speed))
 
 
 def _get_sentence(book_id: str, page: int, sentence: int):
@@ -1645,6 +1932,35 @@ def _get_sentence(book_id: str, page: int, sentence: int):
     return page_text, sent
 
 
+def _tts_job_metadata(
+    book_id: str,
+    page: int,
+    sentence: int,
+    engine: str,
+    voice: str,
+    speed: float,
+    page_text: PageText,
+    sent: SentenceInfo,
+) -> dict:
+    normalized_engine = _normalize_tts_engine(engine)
+    normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
+    normalized_speed = _validate_speed_for_engine(normalized_engine, speed)
+    sentence_text = re.sub(r"\s+", " ", (getattr(sent, "text", "") or "")).strip()
+    sentence_count = len(getattr(page_text, "sentences", []) or [])
+    return {
+        "book_id": book_id,
+        "engine": normalized_engine,
+        "voice": normalized_voice,
+        "speed": normalized_speed,
+        "page": int(page),
+        "page_number": int(page) + 1,
+        "sentence": int(sentence),
+        "sentence_number": int(sentence) + 1,
+        "sentence_count": sentence_count,
+        "text": sentence_text[:500],
+    }
+
+
 def _submit_tts_job(
     book_id: str,
     page: int,
@@ -1653,14 +1969,14 @@ def _submit_tts_job(
     voice: str,
     speed: float,
     priority: int,
-    chatterbox_device: str | None = None,
 ):
-    _page_text, sent = _get_sentence(book_id, page, sentence)
-    job_key = _job_key(book_id, page, sentence, engine, voice, speed, chatterbox_device)
+    page_text, sent = _get_sentence(book_id, page, sentence)
+    job_key = _job_key(book_id, page, sentence, engine, voice, speed)
     job = TTS_MANAGER.submit(
         key=job_key,
         priority=priority,
-        fn=lambda: _generate_audio(sent.text, engine, voice, speed, book_id, chatterbox_device),
+        fn=lambda: _generate_audio(sent.text, engine, voice, speed, book_id),
+        metadata=_tts_job_metadata(book_id, page, sentence, engine, voice, speed, page_text, sent),
     )
     return job, sent
 
@@ -1707,11 +2023,12 @@ def generate_tts(
     page: int = Query(...),
     sentence: int = Query(...),
     engine: str = Query(DEFAULT_TTS_ENGINE),
-    voice: str = Query("af_heart"),
-    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
-    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
+    voice: str = Query(DEFAULT_TTS_VOICE),
+    speed: float = Query(DEFAULT_TTS_SPEED, ge=TTS_SPEED_MIN, le=TTS_SPEED_MAX),
 ):
     normalized_engine = _normalize_tts_engine(engine)
+    normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
+    normalized_speed = _validate_speed_for_engine(normalized_engine, speed)
     if not _engine_install_info(normalized_engine).get("ready"):
         return _model_required_response(normalized_engine)
     _activate_tts_engine(normalized_engine)
@@ -1719,15 +2036,14 @@ def generate_tts(
         book_id,
         page,
         sentence,
-        engine,
-        voice,
-        speed,
+        normalized_engine,
+        normalized_voice,
+        normalized_speed,
         priority=0,
-        chatterbox_device=chatterbox_device,
     )
     try:
         filename, duration_ms = TTS_MANAGER.wait(job)
-    except (tts_service.ModelInstallRequired, chatterbox_service.ModelInstallRequired):
+    except ModelInstallRequired:
         return _model_required_response(normalized_engine)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -1741,9 +2057,8 @@ def buffer_tts(
     sentence: int = Query(...),
     count: int = Query(2, ge=1, le=24),
     engine: str = Query(DEFAULT_TTS_ENGINE),
-    voice: str = Query("af_heart"),
-    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
-    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
+    voice: str = Query(DEFAULT_TTS_VOICE),
+    speed: float = Query(DEFAULT_TTS_SPEED, ge=TTS_SPEED_MIN, le=TTS_SPEED_MAX),
 ):
     """Queue the next N sentences after the current reader position.
 
@@ -1755,35 +2070,26 @@ def buffer_tts(
     queued: list[dict] = []
     skipped: list[dict] = []
     normalized_engine = _normalize_tts_engine(engine)
+    normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
+    normalized_speed = _validate_speed_for_engine(normalized_engine, speed)
     if not _engine_install_info(normalized_engine).get("ready"):
         return _model_required_response(normalized_engine)
-
-    if normalized_engine == chatterbox_service.ENGINE_ID and not chatterbox_service.is_model_loaded():
-        return {
-            "requested": len(refs),
-            "queued": queued,
-            "skipped": [
-                {"page": page_num, "sentence": sentence_idx, "reason": "background_disabled_until_model_loaded"}
-                for page_num, sentence_idx in refs
-            ],
-        }
 
     max_background = max(0, _MAX_BACKGROUND_TTS_JOBS)
     deferred_refs = refs[max_background:]
     refs = refs[:max_background]
     keep_keys = {
-        _job_key(book_id, page, sentence, normalized_engine, voice, speed, chatterbox_device)
+        _job_key(book_id, page, sentence, normalized_engine, normalized_voice, normalized_speed)
     }
     keep_keys.update(
-        _job_key(book_id, page_num, sentence_idx, normalized_engine, voice, speed, chatterbox_device)
+        _job_key(book_id, page_num, sentence_idx, normalized_engine, normalized_voice, normalized_speed)
         for page_num, sentence_idx in refs
     )
     cancelled = _cancel_pending_tts_buffer(
         book_id,
         normalized_engine,
-        voice,
-        speed,
-        chatterbox_device,
+        normalized_voice,
+        normalized_speed,
         keep_keys=keep_keys,
     )
     skipped.extend(
@@ -1791,14 +2097,14 @@ def buffer_tts(
         for page_num, sentence_idx in deferred_refs
     )
     for offset, (page_num, sentence_idx) in enumerate(refs, start=1):
-        job_key = _job_key(book_id, page_num, sentence_idx, normalized_engine, voice, speed, chatterbox_device)
+        job_key = _job_key(book_id, page_num, sentence_idx, normalized_engine, normalized_voice, normalized_speed)
         status = TTS_MANAGER.status(job_key)
         if status in {"pending", "running"}:
             skipped.append({"page": page_num, "sentence": sentence_idx, "reason": status})
             continue
 
-        _page_text, sent = _get_sentence(book_id, page_num, sentence_idx)
-        if os.path.exists(_audio_cache_path(book_id, sent.text, normalized_engine, voice, speed, chatterbox_device)):
+        page_text, sent = _get_sentence(book_id, page_num, sentence_idx)
+        if os.path.exists(_audio_cache_path(book_id, sent.text, normalized_engine, normalized_voice, normalized_speed)):
             skipped.append({"page": page_num, "sentence": sentence_idx, "reason": "cached"})
             continue
 
@@ -1808,10 +2114,20 @@ def buffer_tts(
             fn=lambda text=sent.text: _generate_audio(
                 text,
                 normalized_engine,
-                voice,
-                speed,
+                normalized_voice,
+                normalized_speed,
                 book_id,
-                chatterbox_device,
+                allow_engine_switch=False,
+            ),
+            metadata=_tts_job_metadata(
+                book_id,
+                page_num,
+                sentence_idx,
+                normalized_engine,
+                normalized_voice,
+                normalized_speed,
+                page_text,
+                sent,
             ),
         )
         queued.append({"page": page_num, "sentence": sentence_idx})
@@ -1825,20 +2141,21 @@ def cancel_tts_buffer(
     page: int = Query(...),
     sentence: int = Query(...),
     engine: str = Query(DEFAULT_TTS_ENGINE),
-    voice: str = Query("af_heart"),
-    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
-    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
+    voice: str = Query(DEFAULT_TTS_VOICE),
+    speed: float = Query(DEFAULT_TTS_SPEED, ge=TTS_SPEED_MIN, le=TTS_SPEED_MAX),
+    keep_current: bool = Query(True),
 ):
     normalized_engine = _normalize_tts_engine(engine)
-    keep_keys = {
-        _job_key(book_id, page, sentence, normalized_engine, voice, speed, chatterbox_device)
-    }
+    normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
+    normalized_speed = _validate_speed_for_engine(normalized_engine, speed)
+    keep_keys = set()
+    if keep_current:
+        keep_keys.add(_job_key(book_id, page, sentence, normalized_engine, normalized_voice, normalized_speed))
     cancelled = _cancel_pending_tts_buffer(
         book_id,
         normalized_engine,
-        voice,
-        speed,
-        chatterbox_device,
+        normalized_voice,
+        normalized_speed,
         keep_keys=keep_keys,
         reason="Buffered TTS cancelled by navigation",
     )
@@ -1851,7 +2168,6 @@ def _chapter_sentence_refs(
     engine: str,
     voice: str,
     speed: float,
-    chatterbox_device: str | None = None,
     include_cache_path: bool = True,
 ):
     """Return [(sentence_idx, text, expected_cache_filepath)] for every non-empty
@@ -1872,7 +2188,7 @@ def _chapter_sentence_refs(
         if not text:
             continue
         filepath = (
-            _audio_cache_path(book_id, text, engine, voice, speed, chatterbox_device)
+            _audio_cache_path(book_id, text, engine, voice, speed)
             if include_cache_path
             else None
         )
@@ -1885,12 +2201,13 @@ def preload_chapter(
     book_id: str,
     page: int = Query(...),
     engine: str = Query(DEFAULT_TTS_ENGINE),
-    voice: str = Query("af_heart"),
-    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
-    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
+    voice: str = Query(DEFAULT_TTS_VOICE),
+    speed: float = Query(DEFAULT_TTS_SPEED, ge=TTS_SPEED_MIN, le=TTS_SPEED_MAX),
 ):
     """Queue every sentence in the chapter/page for TTS generation at top priority."""
     engine = _normalize_tts_engine(engine)
+    voice = _normalize_voice_for_engine(engine, voice)
+    speed = _validate_speed_for_engine(engine, speed)
     if not _engine_install_info(engine).get("ready"):
         return _model_required_response(engine)
     refs = _chapter_sentence_refs(
@@ -1899,16 +2216,8 @@ def preload_chapter(
         engine,
         voice,
         speed,
-        chatterbox_device,
         include_cache_path=True,
     )
-    if engine == chatterbox_service.ENGINE_ID:
-        return {
-            "total": len(refs),
-            "queued": 0,
-            "skipped": len(refs),
-            "reason": "chapter_preload_disabled_for_memory_safety",
-        }
     refs = refs[:max(0, _MAX_BACKGROUND_TTS_JOBS)]
     queued = 0
     for offset, (sentence_idx, _text, _path) in enumerate(refs):
@@ -1921,8 +2230,7 @@ def preload_chapter(
             engine,
             voice,
             speed,
-            priority=offset if engine != chatterbox_service.ENGINE_ID else offset + 1,
-            chatterbox_device=chatterbox_device,
+            priority=offset,
         )
         queued += 1
     return {"total": len(refs), "queued": queued}
@@ -1933,17 +2241,18 @@ def preload_chapter_status(
     book_id: str,
     page: int = Query(...),
     engine: str = Query(DEFAULT_TTS_ENGINE),
-    voice: str = Query("af_heart"),
-    speed: float = Query(tts_service.DEFAULT_SPEED, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
-    chatterbox_device: str = Query(chatterbox_service.DEFAULT_DEVICE),
+    voice: str = Query(DEFAULT_TTS_VOICE),
+    speed: float = Query(DEFAULT_TTS_SPEED, ge=TTS_SPEED_MIN, le=TTS_SPEED_MAX),
 ):
     """Probe the audio cache for every sentence in the chapter. Cheap — no generation."""
     # Kokoro cache keys use a no-load runtime fingerprint, so this endpoint can
     # report cached chapters on cold start without pinning a model in memory.
     engine = _normalize_tts_engine(engine)
+    voice = _normalize_voice_for_engine(engine, voice)
+    speed = _validate_speed_for_engine(engine, speed)
     if not _engine_install_info(engine).get("ready"):
         return _model_required_response(engine)
-    refs = _chapter_sentence_refs(book_id, page, engine, voice, speed, chatterbox_device)
+    refs = _chapter_sentence_refs(book_id, page, engine, voice, speed)
     ready = 0
     ready_indices: list[int] = []
     failed: list[int] = []
@@ -1953,7 +2262,7 @@ def preload_chapter_status(
             ready += 1
             ready_indices.append(sentence_idx)
             continue
-        job_key = _job_key(book_id, page, sentence_idx, engine, voice, speed, chatterbox_device)
+        job_key = _job_key(book_id, page, sentence_idx, engine, voice, speed)
         status = TTS_MANAGER.status(job_key)
         if status == "error":
             failed.append(sentence_idx)
@@ -1993,11 +2302,7 @@ def get_audio(filename: str):
 def get_voices(engine: str = Query(DEFAULT_TTS_ENGINE)):
     try:
         engine = _normalize_tts_engine(engine)
-        if not _engine_install_info(engine).get("ready"):
-            return _model_required_response(engine)
-        if engine == chatterbox_service.ENGINE_ID:
-            return chatterbox_service.get_available_voices()
-        return tts_service.get_available_voices()
+        return _engine_service(engine).get_available_voices()
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -2007,16 +2312,17 @@ def get_tts_options():
     return {
         "engines": [
             {
-                "id": "kokoro",
+                "id": supertonic_service.ENGINE_ID,
+                "name": "Supertonic 3",
+                "voices": supertonic_service.get_available_voices(),
+                "default_voice": supertonic_service.DEFAULT_VOICE,
+                "default": True,
+            },
+            {
+                "id": tts_service.ENGINE_ID,
                 "name": "Kokoro",
                 "voices": tts_service.get_available_voices(),
                 "default_voice": tts_service.DEFAULT_VOICE,
-            },
-            {
-                "id": chatterbox_service.ENGINE_ID,
-                "name": "Chatterbox Turbo",
-                "voices": chatterbox_service.get_available_voices(),
-                "default_voice": chatterbox_service.DEFAULT_VOICE,
             },
         ]
     }
@@ -2107,20 +2413,26 @@ def update_settings(
     book_id: str,
     tts_engine: str = Query(None),
     voice: str = Query(None),
-    speed: float = Query(None, ge=tts_service.MIN_SPEED, le=tts_service.MAX_SPEED),
+    speed: float = Query(None, ge=TTS_SPEED_MIN, le=TTS_SPEED_MAX),
 ):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
     state = BOOKS[book_id]["state"]
+    engine = _normalize_tts_engine(getattr(state, "tts_engine", DEFAULT_TTS_ENGINE))
+    engine_voices = dict(getattr(state, "tts_voices", None) or {})
     if tts_engine is not None:
-        state.tts_engine = _normalize_tts_engine(tts_engine)
-        _activate_tts_engine(state.tts_engine)
+        engine = _normalize_tts_engine(tts_engine)
+        state.tts_engine = engine
+        _activate_tts_engine(engine)
+        state.voice = _normalize_voice_for_engine(engine, engine_voices.get(engine) or state.voice)
     if voice is not None:
-        state.voice = _normalize_voice_for_engine(getattr(state, "tts_engine", DEFAULT_TTS_ENGINE), voice)
+        state.voice = _normalize_voice_for_engine(engine, voice)
+    engine_voices[engine] = _normalize_voice_for_engine(engine, state.voice)
+    state.tts_voices = engine_voices
     if speed is not None:
-        state.speed = speed
+        state.speed = _validate_speed_for_engine(engine, speed)
     _save_state(book_id)
-    return {"ok": True}
+    return state.model_dump()
 
 
 @app.post("/api/book/{book_id}/metadata")
