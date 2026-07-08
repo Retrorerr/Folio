@@ -67,6 +67,58 @@ export const pageTransition: Variants = {
   exit: { opacity: 0, y: -6, scale: 0.998, transition: { duration: durations.md, ease: motionEase } },
 }
 
+function appViewCustom(custom: unknown) {
+  if (typeof custom === 'object' && custom !== null) {
+    const { from = '', to = '', view = '' } = custom as { from?: string; to?: string; view?: string }
+    return { from, to, view }
+  }
+
+  return { from: '', to: '', view: '' }
+}
+
+export const appViewTransition: Variants = {
+  initial: (custom = {}) => {
+    const { from, view } = appViewCustom(custom)
+    const enteringFromStartup = from === 'loading' && view !== 'loading'
+    const enteringReader = view === 'reader'
+
+    return {
+      opacity: 0,
+      y: enteringFromStartup ? 18 : enteringReader ? 10 : 8,
+      scale: enteringFromStartup ? 0.988 : 0.994,
+    }
+  },
+  animate: (custom = {}) => {
+    const { from, view } = appViewCustom(custom)
+    const startupHandoff = from === 'loading' && view !== 'loading'
+
+    return {
+      opacity: 1,
+      y: 0,
+      scale: 1,
+      transition: {
+        delay: startupHandoff ? 0.06 : 0,
+        duration: startupHandoff ? 0.42 : durations.lg,
+        ease: motionEase,
+      },
+    }
+  },
+  exit: (custom = {}) => {
+    const { view } = appViewCustom(custom)
+    const leavingStartup = view === 'loading'
+
+    return {
+      opacity: 0,
+      y: leavingStartup ? -14 : -8,
+      scale: leavingStartup ? 1.01 : 0.998,
+      transition: {
+        duration: leavingStartup ? 0.38 : durations.lg,
+        ease: motionEase,
+      },
+    }
+  },
+}
+
 export const overlayFade: Variants = {
   initial: { opacity: 0 },
   animate: { opacity: 1, transition: { duration: durations.md, ease: motionEase } },

@@ -38,6 +38,8 @@ const OPEN_SHORTCUT = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/
   : 'Ctrl O'
 const DASHBOARD_PAGE_TOTAL_PREFIX = 'folio:dashboard-page-total:'
 const PAGINATION_CACHE_PREFIX = 'folio:pagination:'
+const READER_NAME_KEY = 'folio:reader-name'
+const EMPTY_SHELF_SPINES = ['tall', 'short', 'lean', 'gold', 'wide', 'slim', 'dark']
 
 const EMPTY_DASHBOARD: DashboardPayload = {
   books: [],
@@ -92,6 +94,18 @@ function safeLocalStorage(): Storage | null {
   } catch {
     return null
   }
+}
+
+function normalizeReaderName(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 40)
+}
+
+function greetingForHour(date = new Date()): string {
+  const hour = date.getHours()
+  if (hour >= 5 && hour < 12) return 'morning'
+  if (hour >= 12 && hour < 17) return 'afternoon'
+  if (hour >= 17 && hour < 21) return 'evening'
+  return 'night'
 }
 
 function parsePaginationCounts(raw: string | null, expectedChapters: number): number[] | null {
@@ -197,31 +211,6 @@ function coverImageStyle(book: BookState): React.CSSProperties | undefined {
     : undefined
 }
 
-function ProgressRing({ pct }: { pct: number }) {
-  const r = 22
-  const c = 2 * Math.PI * r
-  const safePct = clampProgress(pct)
-  return (
-    <div className="dash-progress-ring" aria-label={`${Math.round(safePct * 100)} percent read`}>
-      <svg width="56" height="56" aria-hidden="true">
-        <circle className="ring-bg" cx="28" cy="28" r={r} strokeWidth="2" fill="none" />
-        <circle
-          className="ring-fg"
-          cx="28"
-          cy="28"
-          r={r}
-          strokeWidth="2"
-          fill="none"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - safePct)}
-          strokeLinecap="round"
-        />
-      </svg>
-      <span>{Math.round(safePct * 100)}%</span>
-    </div>
-  )
-}
-
 function BookCover({ book, index = 0, className = '' }: { book: BookState; index?: number; className?: string }) {
   const hasCover = Boolean(book.cover_url)
   return (
@@ -254,11 +243,8 @@ function ContinuePanel({ book, onOpen }: { book: BookState | null; onOpen: (book
   return (
     <m.section
       className={`dash-panel dash-continue ${book.exists === false ? 'is-missing' : ''}`}
-      onClick={() => onOpen(book)}
       layout
       variants={scaleIn}
-      whileHover={buttonHover}
-      whileTap={buttonTap}
       transition={spring.layout}
     >
       <BookCover book={book} className="dash-continue-cover" />
@@ -273,8 +259,7 @@ function ContinuePanel({ book, onOpen }: { book: BookState | null; onOpen: (book
         <div className="dash-progress-bar"><span style={{ width: `${progress * 100}%` }} /></div>
       </div>
       <div className="dash-continue-actions">
-        <ProgressRing pct={progress} />
-        <button type="button" className="dash-primary-btn" onClick={(event) => { event.stopPropagation(); onOpen(book) }}>
+        <button type="button" className="dash-primary-btn" onClick={() => onOpen(book)}>
           <Icons.Play size={14} />
           Resume
         </button>
@@ -298,37 +283,43 @@ function BookCard({
   return (
     <m.article
       className={`dash-book-card ${book.exists === false ? 'is-missing' : ''}`}
-      onClick={() => onOpen(book)}
       layout
       variants={listItem}
-      whileHover={buttonHover}
-      whileTap={buttonTap}
       transition={spring.layout}
     >
-      <div className="dash-book-cover-wrap">
-        <BookCover book={book} index={index} />
-        {onDelete && (
-          <button
-            type="button"
-            className="dash-remove-book"
-            title="Remove from library"
-            aria-label={`Remove ${book.title}`}
-            onClick={(event) => onDelete(event, book)}
-          >
-            <Icons.X size={14} />
-          </button>
-        )}
-      </div>
-      <div className="dash-book-meta">
-        <h3>{book.title}</h3>
-        <p>{book.author || 'Unknown author'}</p>
-        <div className="dash-book-facts">
-          <span>{progress > 0 ? `${Math.round(progress * 100)}%` : 'New'}</span>
-          <span>{displayPageCount(book)} pp</span>
+      <m.button
+        type="button"
+        className="dash-book-open"
+        aria-label={`Open ${book.title} by ${book.author || 'Unknown author'}`}
+        onClick={() => onOpen(book)}
+        whileHover={buttonHover}
+        whileTap={buttonTap}
+      >
+        <div className="dash-book-cover-wrap">
+          <BookCover book={book} index={index} />
         </div>
-        {progress > 0 && <div className="dash-mini-progress"><span style={{ width: `${progress * 100}%` }} /></div>}
-        {book.exists === false && <div className="dash-missing">File missing</div>}
-      </div>
+        <div className="dash-book-meta">
+          <h3>{book.title}</h3>
+          <p>{book.author || 'Unknown author'}</p>
+          <div className="dash-book-facts">
+            <span>{progress > 0 ? `${Math.round(progress * 100)}%` : 'New'}</span>
+            <span>{displayPageCount(book)} pp</span>
+          </div>
+          {progress > 0 && <div className="dash-mini-progress"><span style={{ width: `${progress * 100}%` }} /></div>}
+          {book.exists === false && <div className="dash-missing">File missing</div>}
+        </div>
+      </m.button>
+      {onDelete && (
+        <button
+          type="button"
+          className="dash-remove-book"
+          title="Remove from library"
+          aria-label={`Remove ${book.title}`}
+          onClick={(event) => onDelete(event, book)}
+        >
+          <Icons.X size={14} />
+        </button>
+      )}
     </m.article>
   )
 }
@@ -515,6 +506,101 @@ function EmptyState({ icon, title, copy }: { icon: keyof typeof Icons; title: st
   )
 }
 
+function EmptyLibraryWelcome({
+  greetingTitle,
+  readerName,
+  readerNameDraft,
+  showNameForm,
+  importing,
+  onReaderNameDraftChange,
+  onSaveReaderName,
+  onEditReaderName,
+  onAddBook,
+}: {
+  greetingTitle: string
+  readerName: string
+  readerNameDraft: string
+  showNameForm: boolean
+  importing: boolean
+  onReaderNameDraftChange: (value: string) => void
+  onSaveReaderName: (event: React.FormEvent<HTMLFormElement>) => void
+  onEditReaderName: () => void
+  onAddBook: () => void
+}) {
+  return (
+    <>
+      <m.section className="dash-empty-welcome" layout variants={slideUp}>
+        <div className="dash-empty-welcome-copy">
+          <h1>{greetingTitle}</h1>
+          <p>Start with one EPUB. Folio will keep the shelf local, remember your place, and stay out of the way.</p>
+
+          {showNameForm ? (
+            <form className="dash-name-form" onSubmit={onSaveReaderName}>
+              <label htmlFor="reader-name">What should Folio call you?</label>
+              <div>
+                <Icons.User size={16} />
+                <input
+                  id="reader-name"
+                  value={readerNameDraft}
+                  maxLength={40}
+                  placeholder="Reader name"
+                  onChange={(event) => onReaderNameDraftChange(event.target.value)}
+                />
+                <button type="submit" disabled={!normalizeReaderName(readerNameDraft)}>
+                  Save
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="dash-reader-chip">
+              <Icons.User size={15} />
+              <span>Reading as {readerName}</span>
+              <button type="button" onClick={onEditReaderName}>Change</button>
+            </div>
+          )}
+
+          <div className="dash-empty-actions">
+            <button type="button" className="dash-primary-btn" onClick={onAddBook}>
+              <Icons.Upload size={15} />
+              {importing ? 'Opening book' : 'Choose first EPUB'}
+            </button>
+            <span>or drop an EPUB anywhere on this window</span>
+          </div>
+        </div>
+
+        <div className="dash-empty-scene" aria-hidden="true">
+          <div className="dash-empty-scene-glow" />
+          <div className="dash-empty-bookmark"><Icons.Bookmark size={30} /></div>
+          <div className="dash-empty-shelf">
+            {EMPTY_SHELF_SPINES.map((spine, index) => (
+              <span key={`${spine}-${index}`} className={spine} />
+            ))}
+          </div>
+          <div className="dash-empty-shelf-line" />
+        </div>
+      </m.section>
+
+      <section className="dash-empty-rhythm" aria-label="First shelf state">
+        <div>
+          <Icons.Library size={18} />
+          <strong>No shelf noise</strong>
+          <span>Your dashboard starts clean until a book exists.</span>
+        </div>
+        <div>
+          <Icons.Book size={18} />
+          <strong>One book is enough</strong>
+          <span>The first import becomes your continue-reading view.</span>
+        </div>
+        <div>
+          <Icons.Headphones size={18} />
+          <strong>Narration waits</strong>
+          <span>Voice models stay optional until you press play.</span>
+        </div>
+      </section>
+    </>
+  )
+}
+
 function MetadataAssignment({
   kind,
   books,
@@ -633,6 +719,9 @@ export default memo(function Welcome({
   const [importError, setImportError] = useState('')
   const [goalDraft, setGoalDraft] = useState('60')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [readerName, setReaderName] = useState(() => normalizeReaderName(safeLocalStorage()?.getItem(READER_NAME_KEY) || ''))
+  const [readerNameDraft, setReaderNameDraft] = useState(readerName)
+  const [readerNameEditing, setReaderNameEditing] = useState(false)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const refreshDashboard = useCallback(async () => {
@@ -776,6 +865,21 @@ export default memo(function Welcome({
     void importFile(event.target.files?.[0])
   }, [importFile])
 
+  const saveReaderName = useCallback((event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const next = normalizeReaderName(readerNameDraft)
+    if (!next) return
+    safeLocalStorage()?.setItem(READER_NAME_KEY, next)
+    setReaderName(next)
+    setReaderNameDraft(next)
+    setReaderNameEditing(false)
+  }, [readerNameDraft])
+
+  const editReaderName = useCallback(() => {
+    setReaderNameDraft(readerName)
+    setReaderNameEditing(true)
+  }, [readerName])
+
   const handleDashboardMouseDown = useCallback(async (event: React.MouseEvent<HTMLElement>) => {
     if (event.button !== 0) return
     const target = event.target as HTMLElement | null
@@ -836,22 +940,34 @@ export default memo(function Welcome({
 
   const libraryTitle = query.trim() ? `Search results for "${query.trim()}"` : hasLibraryFilter ? 'Filtered library' : 'Library'
   const backendVersion = dashboard.backend?.version ? `Folio ${dashboard.backend.version}` : 'Folio'
-  const backendState = dashboard.backend?.reachable ? 'Backend ready' : 'Starting backend'
+  const greetingPeriod = useMemo(() => greetingForHour(), [])
+  const greetingTitle = readerName ? `Good ${greetingPeriod}, ${readerName}.` : `Good ${greetingPeriod}.`
+  const showNameForm = !readerName || readerNameEditing
+  const renderHome = () => {
+    if (!allBooks.length && !query.trim()) {
+      return (
+        <EmptyLibraryWelcome
+          greetingTitle={greetingTitle}
+          readerName={readerName}
+          readerNameDraft={readerNameDraft}
+          showNameForm={showNameForm}
+          importing={importing}
+          onReaderNameDraftChange={setReaderNameDraft}
+          onSaveReaderName={saveReaderName}
+          onEditReaderName={editReaderName}
+          onAddBook={() => fileRef.current?.click()}
+        />
+      )
+    }
 
-  const renderHome = () => (
-    <>
-      <section className="dash-hero">
-        <div>
-          <h1>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 18 ? 'afternoon' : 'evening'}.</h1>
-          <p>{allBooks.length ? 'Pick up a book, review your notes, or add another EPUB to the shelf.' : 'Add an EPUB to start building your local reading dashboard.'}</p>
-        </div>
-        <div className="dash-hero-actions">
-          <button type="button" className="dash-secondary-btn" onClick={() => continueBook && handleOpen(continueBook)} disabled={!continueBook}>
-            <Icons.Play size={15} />
-            Resume
-          </button>
-        </div>
-      </section>
+    return (
+      <>
+        <section className="dash-hero">
+          <div>
+            <h1>{greetingTitle}</h1>
+            <p>Pick up a book, review your notes, or add another EPUB to the shelf.</p>
+          </div>
+        </section>
 
       <div className="dash-home-grid">
         <ContinuePanel book={continueBook} onOpen={handleOpen} />
@@ -902,8 +1018,9 @@ export default memo(function Welcome({
           <HighlightList items={dashboard.highlights.slice(0, 4)} emptyTitle="No highlights yet" emptyCopy="Bookmarks and future note highlights will show up here." />
         </section>
       </div>
-    </>
-  )
+      </>
+    )
+  }
 
   const renderView = () => {
     if (view === 'home') return renderHome()
@@ -1065,7 +1182,6 @@ export default memo(function Welcome({
 
         <footer className="dash-sidebar-footer">
           <span>{backendVersion}</span>
-          <span>{backendState}</span>
           {statusBadges && <div className="dash-status-badges">{statusBadges}</div>}
         </footer>
       </m.aside>
@@ -1123,6 +1239,7 @@ export default memo(function Welcome({
               motion={motion}
               setMotion={setMotion}
               {...settingsPanelProps}
+              onLibraryFolderChanged={refreshDashboard}
               onClose={closeSettings}
             />
           )}

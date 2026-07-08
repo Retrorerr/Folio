@@ -3,4 +3,3 @@
 # on machines with a known-good CUDA/ONNXRuntime setup.
 
 -r requirements-base.txt
--r requirements-chatterbox.txt

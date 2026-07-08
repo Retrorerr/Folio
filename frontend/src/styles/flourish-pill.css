@@ -427,6 +427,8 @@
 .pill-secondary-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
+  align-items: stretch;
+  grid-auto-rows: minmax(88px, auto);
   gap: 10px;
   padding: 14px;
   background: rgba(255, 255, 255, 0.02);
@@ -438,7 +440,10 @@
 .pill-tile {
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
   gap: 8px;
+  min-height: 88px;
+  box-sizing: border-box;
   padding: 12px 14px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -453,7 +458,12 @@
   border-color: rgba(255, 255, 255, 0.10);
 }
 .pill-tile.tile-button {
+  appearance: none;
+  -webkit-appearance: none;
   cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
 }
 .pill-tile.tile-button:hover {
   transform: translateY(-1px);

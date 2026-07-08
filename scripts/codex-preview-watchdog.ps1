@@ -94,6 +94,7 @@ function Cleanup-Preview {
     Remove-Item -LiteralPath (Join-Path $PidDir "watchdog.pid") -Force -ErrorAction SilentlyContinue
 }
 
+$startedAt = Get-Date
 while ($true) {
     Start-Sleep -Seconds 2
 
@@ -110,6 +111,10 @@ while ($true) {
     }
 
     if (!(Test-Path $HeartbeatFile)) {
+        if (((Get-Date) - $startedAt).TotalSeconds -gt $HeartbeatTimeoutSeconds) {
+            Cleanup-Preview
+            break
+        }
         continue
     }
 

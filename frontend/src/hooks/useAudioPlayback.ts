@@ -1,11 +1,14 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { apiFetch, apiResourceUrl } from '../api'
 import {
-  defaultKokoroVoice,
+  clampSpeedForEngine,
+  defaultSpeed,
   defaultTtsEngine,
+  defaultVoiceForEngine,
+  normalizeEngineVoices,
   normalizeTtsEngine,
   normalizeVoiceForEngine,
-} from '../kokoroVoices'
+} from '../ttsVoices'
 import type { AudioInfo, BookState, PageText, Position, PreloadState, TtsGenerateResponse } from '../types'
 
 function dispatchModelRequired(engine, install) {
@@ -13,10 +16,40 @@ function dispatchModelRequired(engine, install) {
   window.dispatchEvent(new CustomEvent('folio:model-required', { detail: { engine, install } }))
 }
 
-const READ_AHEAD_SENTENCES = 6
-const DEFAULT_SPEED = 0.95
+const READ_AHEAD_SENTENCES = 12
+const LEAD_PREFETCH_SENTENCES = 4
+const STARTUP_READY_LEAD_SENTENCES = 2
+const REFILL_READY_LEAD_SENTENCES = 1
+const STARTUP_LEAD_WAIT_MS = 9000
+const REFILL_LEAD_WAIT_MS = 6000
+const BUFFER_POLL_MS = 120
+const UNDERRUN_WAIT_MS = 350
+const DEFAULT_SPEED = defaultSpeed
 const CHUNK_PROGRESS_MIN_DELTA = 0.008
 const CHUNK_PROGRESS_MAX_INTERVAL_MS = 50
+
+type LeadPosition = { page: number; sentence: number }
+type BufferState = {
+  state: 'idle' | 'warming' | 'prebuffering' | 'playing'
+  ready: number
+  target: number
+  scheduled: number
+  current: LeadPosition | null
+  reason: string
+  updatedAt: number
+}
+
+function idleBufferState(): BufferState {
+  return {
+    state: 'idle',
+    ready: 0,
+    target: 0,
+    scheduled: 0,
+    current: null,
+    reason: '',
+    updatedAt: Date.now(),
+  }
+}
 
 function clampNumber(value, min, max, fallback) {
   const parsed = Number.parseFloat(value)
@@ -40,27 +73,56 @@ function debugFlag(globalName, storageKey) {
   return Boolean(window[globalName]) || window.localStorage?.getItem(storageKey) === '1'
 }
 
+function audioSettingsKey(bookId, engine, voice, speed) {
+  return `${bookId}|${normalizeTtsEngine(engine)}|${voice}|${Number(speed).toFixed(4)}`
+}
+
+function resolveBookAudioSettings(book: BookState | null) {
+  if (!book) return null
+  const engine = normalizeTtsEngine(book.tts_engine || defaultTtsEngine)
+  const voices = normalizeEngineVoices(book.tts_voices)
+  voices[engine] = normalizeVoiceForEngine(
+    engine,
+    book.voice || voices[engine] || defaultVoiceForEngine(engine),
+  )
+  const voice = voices[engine]
+  const speed = clampSpeedForEngine(engine, book.speed ?? DEFAULT_SPEED)
+  return {
+    engine,
+    voices,
+    voice,
+    speed,
+    key: audioSettingsKey(book.id, engine, voice, speed),
+  }
+}
+
 interface UseAudioPlaybackArgs {
   book: BookState | null
   pageData: PageText | null
   currentPage: number
   goToPage: (page: number) => Promise<PageText | null> | undefined
   savePosition: (page: number | Position, sentenceIdx?: number, options?: Partial<Position> & { keepalive?: boolean }) => Promise<void> | undefined
+  applyBookSettings?: (settings: Partial<Pick<BookState, 'tts_engine' | 'voice' | 'tts_voices' | 'speed'>>) => void
 }
 
-export default function useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition }: UseAudioPlaybackArgs) {
+export default function useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition, applyBookSettings }: UseAudioPlaybackArgs) {
   const bookId = book?.id
+  const bookAudioSettings = useMemo(() => resolveBookAudioSettings(book), [book])
+  const initialEngine = bookAudioSettings?.engine || defaultTtsEngine
+  const initialEngineVoices = bookAudioSettings?.voices || normalizeEngineVoices(undefined)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentSentence, setCurrentSentence] = useState(0)
-  const [speed, setSpeed] = useState(book?.speed ?? DEFAULT_SPEED)
-  const [ttsEngine, setTtsEngineRaw] = useState(normalizeTtsEngine(book?.tts_engine || defaultTtsEngine))
-  const [voice, setVoiceRaw] = useState(normalizeVoiceForEngine(book?.tts_engine || defaultTtsEngine, book?.voice || defaultKokoroVoice))
+  const [speed, setSpeed] = useState(clampSpeedForEngine(initialEngine, book?.speed ?? DEFAULT_SPEED))
+  const [ttsEngine, setTtsEngineRaw] = useState(initialEngine)
+  const [engineVoices, setEngineVoices] = useState(initialEngineVoices)
+  const [voice, setVoiceRaw] = useState(initialEngineVoices[initialEngine])
   const [volume, setVolume] = useState(() => clampNumber(localStorage.getItem('volume'), 0, 1, 1))
   const [sleepTimer, setSleepTimer] = useState<number | null>(null)
   const [preloadState, setPreloadState] = useState<PreloadState>({ state: 'idle', ready: 0, total: 0, failed: [] })
   const [readingPage, setReadingPage] = useState<number | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationError, setGenerationError] = useState('')
+  const [bufferState, setBufferState] = useState<BufferState>(() => idleBufferState())
   const [settingsReady, setSettingsReady] = useState(false)
   // Fraction (0..1) of the way through the current sentence's audio. Drives the
   // line cursor, intra-chunk start offsets, and Follow Along page advancement.
@@ -77,13 +139,18 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const playbackSessionRef = useRef(0)
   const playbackSettingsKeyRef = useRef<string | null>(null)
   const settingsHydratedRef = useRef(false)
+  const settingsHydratedKeyRef = useRef<string | null>(null)
   const audioCacheRef = useRef<Map<string, AudioInfo | Promise<AudioInfo | null>>>(new Map())
   const readAheadRef = useRef<Set<string>>(new Set())
   const readAheadAbortRef = useRef<AbortController | null>(null)
+  const lastAudioSettingsRef = useRef<{
+    bookId: string
+    engine: string
+    voice: string
+    speed: number
+  } | null>(null)
   const preloadAbortRef = useRef<AbortController | null>(null)
   const pauseRef = useRef(() => {})
-  const preparedAudioKeyRef = useRef<string | null>(null)
-  const prepareCurrentTokenRef = useRef(0)
   const chunkProgressPublishRef = useRef({ value: 0, at: 0 })
   const pendingStartProgressRef = useRef(0)
   const playingListenerCleanupRef = useRef<null | (() => void)>(null)
@@ -106,12 +173,28 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
   const setTtsEngine = useCallback((nextEngine) => {
     const normalized = normalizeTtsEngine(nextEngine)
+    const updatedVoices = {
+      ...normalizeEngineVoices(engineVoices),
+      [ttsEngine]: normalizeVoiceForEngine(ttsEngine, voice),
+    }
+    const nextVoice = normalizeVoiceForEngine(
+      normalized,
+      updatedVoices[normalized] || defaultVoiceForEngine(normalized),
+    )
+    updatedVoices[normalized] = nextVoice
+    setEngineVoices(updatedVoices)
     setTtsEngineRaw(normalized)
-    setVoiceRaw((prev) => normalizeVoiceForEngine(normalized, prev))
-  }, [])
+    setVoiceRaw(nextVoice)
+    setSpeed((prev) => clampSpeedForEngine(normalized, prev))
+  }, [engineVoices, ttsEngine, voice])
 
   const setVoice = useCallback((nextVoice) => {
-    setVoiceRaw(normalizeVoiceForEngine(ttsEngine, nextVoice))
+    const normalized = normalizeVoiceForEngine(ttsEngine, nextVoice)
+    setVoiceRaw(normalized)
+    setEngineVoices((prev) => ({
+      ...normalizeEngineVoices(prev),
+      [ttsEngine]: normalized,
+    }))
   }, [ttsEngine])
 
   useEffect(() => { currentPageRef.current = currentPage }, [currentPage])
@@ -127,59 +210,115 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [volume])
 
   useEffect(() => {
-    if (!bookId) return
+    if (!bookId || !bookAudioSettings) {
+      settingsHydratedKeyRef.current = null
+      settingsHydratedRef.current = false
+      return
+    }
+    if (settingsHydratedKeyRef.current === bookAudioSettings.key) return
+    settingsHydratedKeyRef.current = bookAudioSettings.key
+    settingsHydratedRef.current = false
     setSettingsReady(false)
-    const engine = normalizeTtsEngine(book.tts_engine || defaultTtsEngine)
-    setSpeed(book.speed ?? DEFAULT_SPEED)
-    setTtsEngineRaw(engine)
-    setVoiceRaw(normalizeVoiceForEngine(engine, book.voice || defaultKokoroVoice))
+    setEngineVoices(bookAudioSettings.voices)
+    setSpeed(bookAudioSettings.speed)
+    setTtsEngineRaw(bookAudioSettings.engine)
+    setVoiceRaw(bookAudioSettings.voice)
     setCurrentSentence(book.last_position?.sentence_idx || 0)
     currentSentenceRef.current = book.last_position?.sentence_idx || 0
     const initialProgress = clampProgress(book.last_position?.chunk_progress || 0)
     pendingStartProgressRef.current = initialProgress
     publishChunkProgress(initialProgress, true)
     settingsHydratedRef.current = true
-  }, [book, bookId, publishChunkProgress])
+  }, [book, bookAudioSettings, bookId, publishChunkProgress])
 
   useEffect(() => {
-    if (!bookId) {
+    if (!bookId || !bookAudioSettings) {
       setSettingsReady(false)
       return
     }
     if (settingsReady) return
-    const engine = normalizeTtsEngine(book.tts_engine || defaultTtsEngine)
-    const expectedSpeed = book.speed ?? DEFAULT_SPEED
     const ready = (
-      ttsEngine === engine
-      && voice === normalizeVoiceForEngine(engine, book.voice || defaultKokoroVoice)
-      && Math.abs(speed - expectedSpeed) < 0.001
+      ttsEngine === bookAudioSettings.engine
+      && voice === bookAudioSettings.voice
+      && Math.abs(speed - bookAudioSettings.speed) < 0.001
     )
     if (ready) setSettingsReady(true)
-  }, [book, bookId, settingsReady, ttsEngine, voice, speed])
+  }, [bookAudioSettings, bookId, settingsReady, ttsEngine, voice, speed])
 
   useEffect(() => {
+    const nextSettings = book?.id
+      ? {
+        bookId: book.id,
+        engine: ttsEngine,
+        voice,
+        speed,
+      }
+      : null
+    const previousSettings = lastAudioSettingsRef.current
+    lastAudioSettingsRef.current = nextSettings
+
     audioCacheRef.current.clear()
     readAheadAbortRef.current?.abort()
     readAheadAbortRef.current = null
     readAheadRef.current.clear()
-    preparedAudioKeyRef.current = null
     setGenerationError('')
+
+    if (
+      previousSettings &&
+      nextSettings &&
+      previousSettings.bookId === nextSettings.bookId &&
+      (
+        previousSettings.engine !== nextSettings.engine ||
+        previousSettings.voice !== nextSettings.voice ||
+        Math.abs(previousSettings.speed - nextSettings.speed) > 0.0001
+      )
+    ) {
+      const params = new URLSearchParams({
+        book_id: previousSettings.bookId,
+        page: String(currentPageRef.current),
+        sentence: String(currentSentenceRef.current),
+        engine: previousSettings.engine,
+        voice: previousSettings.voice,
+        speed: String(previousSettings.speed),
+        keep_current: 'false',
+      })
+      apiFetch(`/api/tts/buffer/cancel?${params.toString()}`, {
+        method: 'POST',
+        cache: 'no-store',
+      }).catch(() => {})
+    }
   }, [book?.id, ttsEngine, voice, speed])
 
   useEffect(() => {
-    if (!book || !settingsHydratedRef.current || !settingsReady) return
+    if (!bookId || !settingsHydratedRef.current || !settingsReady) return
+    const currentBookId = bookId
+    const nextSettingsKey = audioSettingsKey(currentBookId, ttsEngine, voice, speed)
+    if (settingsHydratedKeyRef.current === nextSettingsKey) return
     const controller = new AbortController()
     const params = new URLSearchParams({
       tts_engine: ttsEngine,
       voice,
       speed: String(speed),
     })
-    apiFetch(`/api/book/${book.id}/settings?${params.toString()}`, {
+    apiFetch(`/api/book/${currentBookId}/settings?${params.toString()}`, {
       method: 'POST',
       signal: controller.signal,
-    }).catch(() => {})
+    })
+      .then(async (res) => {
+        if (!res.ok) return
+        const data = await res.json().catch(() => null)
+        if (data?.id === currentBookId) {
+          applyBookSettings?.({
+            tts_engine: data.tts_engine,
+            voice: data.voice,
+            tts_voices: data.tts_voices,
+            speed: data.speed,
+          })
+        }
+      })
+      .catch(() => {})
     return () => controller.abort()
-  }, [book, settingsReady, ttsEngine, voice, speed])
+  }, [bookId, settingsReady, ttsEngine, voice, speed, applyBookSettings])
 
   useEffect(() => {
     if (sleepTimerRef.current) clearInterval(sleepTimerRef.current)
@@ -211,7 +350,11 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     return `${book?.id}|${ttsEngine}|${voice}|${speed}|${page}|${sentence}`
   }, [book?.id, ttsEngine, voice, speed])
 
-  const fetchSentenceAudio = useCallback(async (page, sentence) => {
+  const fetchSentenceAudio = useCallback(async (
+    page,
+    sentence,
+    options: { promptForMissingModel?: boolean; background?: boolean } = {},
+  ) => {
     if (!book) return null
     const key = getCacheKey(page, sentence)
     const cached = audioCacheRef.current.get(key)
@@ -227,27 +370,29 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
           try {
             const data = await res.json()
             if (data?.error === 'model_required') {
-              dispatchModelRequired(data.engine || ttsEngine, data.install || null)
+              if (options.promptForMissingModel) {
+                dispatchModelRequired(data.engine || ttsEngine, data.install || null)
+              }
               message = data?.detail || `${ttsEngine} is not installed yet.`
-              setGenerationError(message)
+              if (!options.background) setGenerationError(message)
               return null
             }
             message = data?.detail || message
           } catch {
             // Keep the generic error if the backend returns a non-JSON body.
           }
-          setGenerationError(message)
+          if (!options.background) setGenerationError(message)
           return null
         }
         const data = await res.json() as TtsGenerateResponse
         const info = { url: apiResourceUrl(`/api/audio/${data.filename}`), duration_ms: data.duration_ms }
         audioCacheRef.current.set(key, info)
-        setGenerationError('')
+        if (!options.background) setGenerationError('')
         return info
       })
       .catch(() => {
         audioCacheRef.current.delete(key)
-        setGenerationError('TTS generation failed because the backend did not respond.')
+        if (!options.background) setGenerationError('TTS generation failed because the backend did not respond.')
         return null
       })
 
@@ -305,7 +450,9 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       if (!res.ok) {
         readAheadRef.current.delete(key)
         res.clone().json().then((data) => {
-          if (data?.error === 'model_required') dispatchModelRequired(data.engine || ttsEngine, data.install || null)
+          if (data?.error === 'model_required' && isPlayingRef.current) {
+            dispatchModelRequired(data.engine || ttsEngine, data.install || null)
+          }
         }).catch(() => {})
       }
     }).catch((err) => {
@@ -314,61 +461,6 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       readAheadRef.current.delete(key)
     })
   }, [book, ttsEngine, voice, speed])
-
-  const primePausedAudio = useCallback((audioInfo, key) => {
-    if (!audioInfo?.url || isPlayingRef.current) return
-    if (preparedAudioKeyRef.current === key && audioRef.current?.src === audioInfo.url) return
-
-    const audio = audioRef.current || new Audio()
-    audio.pause()
-    audio.onended = null
-    audio.onerror = null
-    audio.onpause = null
-    audio.src = audioInfo.url
-    audio.preload = 'auto'
-    audio.volume = volume
-    audioRef.current = audio
-    preparedAudioKeyRef.current = key
-
-    try {
-      audio.load()
-    } catch {
-      // The generated URL is still in the app cache; playback will retry load.
-    }
-  }, [volume])
-
-  const prepareCurrentChunk = useCallback(async () => {
-    if (!bookId || !pageData?.sentences?.length) return
-    if (currentSentenceRef.current < 0 || currentSentenceRef.current >= pageData.sentences.length) return
-
-    const page = currentPageRef.current
-    const sentence = currentSentenceRef.current
-    const key = getCacheKey(page, sentence)
-    const token = ++prepareCurrentTokenRef.current
-
-    setIsGenerating(true)
-    try {
-      const audioInfo = await fetchSentenceAudio(page, sentence)
-      if (prepareCurrentTokenRef.current !== token) return
-      if (!audioInfo) return
-      primePausedAudio(audioInfo, key)
-      queueReadAhead(page, sentence)
-      setPreloadState((prev) => (
-        prev.state === 'idle' || prev.state === 'verifying'
-          ? { ...prev, state: 'current-ready', ready: Math.max(prev.ready || 0, 1), readyIndices: [sentence], total: prev.total || 1 }
-          : prev
-      ))
-    } finally {
-      if (prepareCurrentTokenRef.current === token) {
-        setIsGenerating(false)
-      }
-    }
-  }, [bookId, pageData, getCacheKey, fetchSentenceAudio, primePausedAudio, queueReadAhead])
-
-  useEffect(() => {
-    if (!bookId || !settingsHydratedRef.current || !settingsReady) return
-    prepareCurrentChunk()
-  }, [bookId, settingsReady, currentPage, currentSentence, pageData, ttsEngine, voice, speed, prepareCurrentChunk])
 
   // Check whether the current chapter/page is already cached, but do not start
   // generation. Preload is intentionally user-triggered from the pill.
@@ -396,7 +488,6 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       })
       if (r.status === 409 || r.status === 423) {
         const data = await r.json().catch(() => null)
-        if (data?.error === 'model_required') dispatchModelRequired(data.engine || ttsEngine, data.install || null)
         throw new Error(data?.detail || `status ${r.status}`)
       }
       // Defensive: when the dev proxy can't reach the backend, Vite may serve
@@ -454,7 +545,6 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       })
       if (r.status === 409 || r.status === 423) {
         const data = await r.json().catch(() => null)
-        if (data?.error === 'model_required') dispatchModelRequired(data.engine || ttsEngine, data.install || null)
         throw new Error(data?.detail || `status ${r.status}`)
       }
       if (!r.ok) throw new Error(`status ${r.status}`)
@@ -489,7 +579,6 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       })
       if (queued.status === 409 || queued.status === 423) {
         const data = await queued.json().catch(() => null)
-        if (data?.error === 'model_required') dispatchModelRequired(data.engine || ttsEngine, data.install || null)
         throw new Error(data?.detail || `preload ${queued.status}`)
       }
       if (!queued.ok) throw new Error(`preload ${queued.status}`)
@@ -553,6 +642,150 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
     return null
   }, [book, getPageData])
+
+  const isAudioReady = useCallback((page, sentence) => {
+    const cached = audioCacheRef.current.get(getCacheKey(page, sentence))
+    return Boolean(cached && !(cached instanceof Promise))
+  }, [getCacheKey])
+
+  const collectReadablePositions = useCallback(async (page, sentence, count): Promise<LeadPosition[]> => {
+    if (!book || count <= 0) return []
+    const positions: LeadPosition[] = []
+    let pageNum = Math.max(0, page)
+    let sentenceIdx = Math.max(0, sentence)
+
+    while (pageNum < book.page_count && positions.length < count) {
+      const data = await getPageData(pageNum)
+      if (!data?.sentences?.length) {
+        pageNum += 1
+        sentenceIdx = 0
+        continue
+      }
+
+      while (sentenceIdx < data.sentences.length && positions.length < count) {
+        if (data.sentences[sentenceIdx]?.text?.trim()) {
+          positions.push({ page: pageNum, sentence: sentenceIdx })
+        }
+        sentenceIdx += 1
+      }
+
+      pageNum += 1
+      sentenceIdx = 0
+    }
+
+    return positions
+  }, [book, getPageData])
+
+  const summarizeLead = useCallback((positions: LeadPosition[]) => {
+    let ready = 0
+    let scheduled = 0
+    let current: LeadPosition | null = null
+    positions.forEach((pos) => {
+      const cached = audioCacheRef.current.get(getCacheKey(pos.page, pos.sentence))
+      if (cached) {
+        scheduled += 1
+        if (!(cached instanceof Promise)) {
+          ready += 1
+        } else if (!current) {
+          current = pos
+        }
+      } else if (!current) {
+        current = pos
+      }
+    })
+    return {
+      ready,
+      target: positions.length,
+      scheduled,
+      current: current || positions[0] || null,
+    }
+  }, [getCacheKey])
+
+  const publishBufferState = useCallback((
+    state: BufferState['state'],
+    positions: LeadPosition[],
+    reason: string,
+    fallbackCurrent: LeadPosition | null = null,
+  ) => {
+    const targets = positions.slice(0, Math.min(LEAD_PREFETCH_SENTENCES, positions.length))
+    const next = summarizeLead(targets)
+    setBufferState({
+      state,
+      ready: next.ready,
+      target: next.target,
+      scheduled: next.scheduled,
+      current: next.current || fallbackCurrent,
+      reason,
+      updatedAt: Date.now(),
+    })
+    return next
+  }, [summarizeLead])
+
+  const primeLeadBuffer = useCallback((
+    positions: LeadPosition[],
+    sessionId: number,
+    reason = 'Generating ahead while narration plays',
+  ) => {
+    const targets = positions.slice(0, Math.min(LEAD_PREFETCH_SENTENCES, positions.length))
+    const publish = () => publishBufferState('playing', targets, targets.length > 0 ? reason : '')
+    const summary = publish()
+
+    targets.forEach((pos) => {
+      if (!isAudioReady(pos.page, pos.sentence)) {
+        void fetchSentenceAudio(pos.page, pos.sentence, { background: true }).finally(() => {
+          if (playbackSessionRef.current === sessionId && isPlayingRef.current) {
+            publish()
+          }
+        })
+      }
+    })
+
+    if (summary.scheduled < summary.target) {
+      publish()
+    }
+    return summary
+  }, [fetchSentenceAudio, isAudioReady, publishBufferState])
+
+  const waitForLeadBuffer = useCallback(async (
+    positions: LeadPosition[],
+    sessionId: number,
+    minReady: number,
+    timeoutMs: number,
+    reason: string,
+  ) => {
+    const targets = positions.slice(0, Math.min(LEAD_PREFETCH_SENTENCES, positions.length))
+    const requiredReady = Math.min(Math.max(0, minReady), targets.length)
+    if (targets.length === 0 || requiredReady === 0) {
+      return publishBufferState('prebuffering', targets, reason)
+    }
+
+    const publishState = () => {
+      return publishBufferState('prebuffering', targets, reason)
+    }
+
+    let summary = publishState()
+    if (summary.ready >= requiredReady) return summary
+
+    targets.forEach((pos) => {
+      if (!isAudioReady(pos.page, pos.sentence)) {
+        void fetchSentenceAudio(pos.page, pos.sentence, { background: true })
+      }
+    })
+    summary = publishState()
+
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    while (
+      playbackSessionRef.current === sessionId &&
+      isPlayingRef.current &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, BUFFER_POLL_MS))
+      summary = publishState()
+      if (summary.ready >= requiredReady) return summary
+    }
+
+    return summarizeLead(targets)
+  }, [fetchSentenceAudio, isAudioReady, publishBufferState, summarizeLead])
 
   const playAudio = useCallback((audioInfo, sessionId, startProgress = 0) => {
     return new Promise((resolve) => {
@@ -740,11 +973,22 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     setGenerationError('')
     isPlayingRef.current = true
     setIsPlaying(true)
+    setBufferState({
+      state: 'warming',
+      ready: 0,
+      target: 0,
+      scheduled: 0,
+      current: { page: startPage, sentence: startSentence },
+      reason: 'Finding the next readable sentence',
+      updatedAt: Date.now(),
+    })
+    let needsLeadBeforePlay = true
 
     let position = await findNextReadablePosition(startPage, startSentence)
     if (!position) {
       setIsPlaying(false)
       isPlayingRef.current = false
+      setBufferState(idleBufferState())
       return
     }
 
@@ -770,16 +1014,47 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       // place the cursor at end-of-chunk and over-advance Follow Along).
       publishChunkProgress(firstChunkProgress, true)
 
-      const audioPromise = fetchSentenceAudio(page, sentence)
+      const leadPositionsPromise = collectReadablePositions(page, sentence + 1, READ_AHEAD_SENTENCES)
+      setBufferState({
+        state: 'warming',
+        ready: 0,
+        target: 0,
+        scheduled: 0,
+        current: { page, sentence },
+        reason: 'Preparing the current sentence',
+        updatedAt: Date.now(),
+      })
+      setIsGenerating(true)
+      const generationStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+      const audioPromise = fetchSentenceAudio(page, sentence, { promptForMissingModel: true })
       queueReadAhead(page, sentence)
-      const audioInfo = await audioPromise
+      const audioInfo = await audioPromise.finally(() => {
+        if (playbackSessionRef.current === sessionId) setIsGenerating(false)
+      })
+      const generationWaitMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - generationStartedAt
+      if (playbackSessionRef.current !== sessionId) return
+      const leadPositions = await leadPositionsPromise.catch(() => [])
       if (playbackSessionRef.current !== sessionId) return
       if (!audioInfo) {
         setIsPlaying(false)
         isPlayingRef.current = false
+        setBufferState(idleBufferState())
         return
       }
 
+      if (leadPositions.length > 0 && (needsLeadBeforePlay || generationWaitMs > UNDERRUN_WAIT_MS)) {
+        await waitForLeadBuffer(
+          leadPositions,
+          sessionId,
+          needsLeadBeforePlay ? STARTUP_READY_LEAD_SENTENCES : REFILL_READY_LEAD_SENTENCES,
+          needsLeadBeforePlay ? STARTUP_LEAD_WAIT_MS : REFILL_LEAD_WAIT_MS,
+          needsLeadBeforePlay ? 'Starting with a lead buffer' : 'Refilling after a slow generation',
+        )
+        if (playbackSessionRef.current !== sessionId) return
+      }
+
+      primeLeadBuffer(leadPositions, sessionId)
+      needsLeadBeforePlay = false
       const result = await playAudio(audioInfo, sessionId, firstChunkProgress)
       firstChunkProgress = 0
       if (result !== 'done') {
@@ -787,10 +1062,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
           setIsPlaying(false)
           isPlayingRef.current = false
         }
+        setBufferState(idleBufferState())
         return
       }
 
-      await new Promise(res => setTimeout(res, 200))
       if (playbackSessionRef.current !== sessionId) return
 
       if (sentence % 3 === 0) {
@@ -805,8 +1080,20 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     if (playbackSessionRef.current === sessionId && isPlayingRef.current) {
       setIsPlaying(false)
       isPlayingRef.current = false
+      setBufferState(idleBufferState())
     }
-  }, [book, findNextReadablePosition, playAudio, fetchSentenceAudio, queueReadAhead, savePosition, publishChunkProgress])
+  }, [
+    book,
+    collectReadablePositions,
+    findNextReadablePosition,
+    playAudio,
+    fetchSentenceAudio,
+    queueReadAhead,
+    savePosition,
+    publishChunkProgress,
+    primeLeadBuffer,
+    waitForLeadBuffer,
+  ])
 
   useEffect(() => {
     if (!bookId || !settingsHydratedRef.current) return
@@ -826,6 +1113,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     playbackSessionRef.current += 1
     isPlayingRef.current = false
     setIsPlaying(false)
+    setIsGenerating(false)
+    setBufferState(idleBufferState())
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
@@ -854,6 +1143,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     playbackSessionRef.current += 1
     isPlayingRef.current = false
     setIsPlaying(false)
+    setIsGenerating(false)
+    setBufferState(idleBufferState())
     if (audioRef.current) audioRef.current.pause()
 
     if (page !== currentPageRef.current) {
@@ -879,6 +1170,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const pause = useCallback(() => {
     playbackSessionRef.current += 1
     setIsPlaying(false)
+    setIsGenerating(false)
+    setBufferState(idleBufferState())
     isPlayingRef.current = false
     if (audioRef.current) audioRef.current.pause()
     pendingStartProgressRef.current = chunkProgressPublishRef.current.value || 0
@@ -940,6 +1233,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   return {
     isPlaying,
     isGenerating,
+    bufferState,
     generationError,
     currentSentence,
     speed,

@@ -16,24 +16,45 @@ import {
   isTauriRuntime,
   listenForOpenFile,
   openBackendLog,
+  sendAppHeartbeat,
   sendPreviewHeartbeat,
   startBackend,
-  stopBackend,
   takePendingOpenFile,
 } from './api'
 import CursorHalo from './components/CursorHalo'
 import TitleBar from './components/TitleBar'
-import { fadeIn, pageTransition, spring } from './motion'
+import { appViewTransition, fadeIn, spring } from './motion'
 import './App.css'
 
 const THEMES = ['sepia', 'light', 'dark', 'folio']
 const PAGE_TOTAL_DEBOUNCE_MS = 500
 const PAGE_TOTAL_STABILITY_MS = 6000
+const STATUS_POLL_FAST_MS = 1000
+const STATUS_POLL_IDLE_MS = 2500
+const ACTIVE_MODEL_STATES = new Set(['download_queued', 'downloading', 'verifying'])
+const APP_HEARTBEAT_ACTIVE_WORK_MS = 30_000
+const APP_HEARTBEAT_THROTTLE_MS = 5_000
+const BACKEND_RESTART_THROTTLE_MS = 5_000
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseFloat(String(value))
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(max, Math.max(min, parsed))
+}
+
+function statusHasActiveWork(status: TtsStatus | null): boolean {
+  if (!status) return true
+  const runtimes = Object.values(status.tts_engines || {})
+  const models = Object.values(status.models || {})
+  const activity = status.tts_activity
+  return Boolean(
+    status.model_loading ||
+    activity?.active ||
+    activity?.running?.length ||
+    activity?.pending?.length ||
+    runtimes.some((runtime) => runtime.model_loading || runtime.download_active) ||
+    models.some((model) => model.download_active || ACTIVE_MODEL_STATES.has(model.state))
+  )
 }
 
 export default function App() {
@@ -50,6 +71,7 @@ export default function App() {
   })
   const [searchTarget, setSearchTarget] = useState<any>(null)
   const [followAlongMode, setFollowAlongMode] = useState(false)
+  const [hasSelectedReaderLine, setHasSelectedReaderLine] = useState(false)
   const [pageNavHidden, setPageNavHidden] = useState(false)
   const pageNavHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -61,8 +83,9 @@ export default function App() {
   const [ttsEngineStatus, setTtsEngineStatus] = useState<Record<string, TtsRuntimeInfo>>({})
   const [modelStatus, setModelStatus] = useState<Record<string, ModelInstallInfo>>({})
   const [installPromptEngine, setInstallPromptEngine] = useState<string | null>(null)
-  const [startupMinElapsed, setStartupMinElapsed] = useState(false)
   const [startupTimedOut, setStartupTimedOut] = useState(false)
+  const [backendLaunchStarted, setBackendLaunchStarted] = useState(false)
+  const [backendLaunchSettled, setBackendLaunchSettled] = useState(false)
   const [backendStartCommandFailed, setBackendStartCommandFailed] = useState(false)
   const [backendLogPath, setBackendLogPath] = useState<string | null>(null)
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null)
@@ -88,38 +111,46 @@ export default function App() {
     let timer: ReturnType<typeof setTimeout> | null = null
     const poll = async () => {
       if (cancelled) return
+      let nextPollDelay = STATUS_POLL_FAST_MS
       try {
         const r = await apiFetch('/api/status')
         const d = await r.json() as TtsStatus
         if (cancelled) return
-        setBackendReachable(true)
-        setGpuEnabled(d.gpu)
-        setModelLoaded(d.model_loaded)
-        setModelLoading(d.model_loading)
+        nextPollDelay = statusHasActiveWork(d) ? STATUS_POLL_FAST_MS : STATUS_POLL_IDLE_MS
+        setBackendReachable(prev => prev || true)
+        setGpuEnabled(prev => prev === d.gpu ? prev : d.gpu)
+        setModelLoaded(prev => prev === d.model_loaded ? prev : d.model_loaded)
+        setModelLoading(prev => prev === d.model_loading ? prev : d.model_loading)
         setTtsStatus(d)
         setTtsEngineStatus(d.tts_engines || {})
         setModelStatus(d.models || {})
       } catch {
+        nextPollDelay = STATUS_POLL_FAST_MS
         if (!cancelled) {
-          setBackendReachable(false)
-          setModelLoaded(false)
-          setModelLoading(false)
+          setBackendReachable(prev => prev ? false : prev)
+          setModelLoaded(prev => prev ? false : prev)
+          setModelLoading(prev => prev ? false : prev)
           setTtsStatus(null)
           setTtsEngineStatus({})
           setModelStatus({})
         }
       } finally {
-        if (!cancelled) timer = setTimeout(poll, 1000)
+        if (!cancelled) timer = setTimeout(poll, nextPollDelay)
       }
     }
+    poll()
+    setBackendLaunchStarted(true)
     startBackend()
       .then((started) => {
-        if (!started && isTauriRuntime()) setBackendStartCommandFailed(true)
+        if (started) sendAppHeartbeat()?.catch(() => {})
+        if (!cancelled && !started && isTauriRuntime()) setBackendStartCommandFailed(true)
       })
       .catch(() => {
-        if (isTauriRuntime()) setBackendStartCommandFailed(true)
+        if (!cancelled && isTauriRuntime()) setBackendStartCommandFailed(true)
       })
-      .finally(poll)
+      .finally(() => {
+        if (!cancelled) setBackendLaunchSettled(true)
+      })
     return () => {
       cancelled = true
       if (timer) clearTimeout(timer)
@@ -152,16 +183,6 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onBeforeUnload = () => {
-      if (isTauriRuntime()) stopBackend().catch(() => {})
-    }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => {
-      window.removeEventListener('beforeunload', onBeforeUnload)
-    }
-  }, [])
-
-  useEffect(() => {
     if (!isPreviewWatchdogEnabled()) return
 
     sendPreviewHeartbeat()?.catch(() => {})
@@ -183,10 +204,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const minTimer = setTimeout(() => setStartupMinElapsed(true), 1400)
     const timeoutTimer = setTimeout(() => setStartupTimedOut(true), 30000)
     return () => {
-      clearTimeout(minTimer)
       clearTimeout(timeoutTimer)
     }
   }, [])
@@ -202,9 +221,13 @@ export default function App() {
   const bookState = useBookState()
   const {
     book, pageData, currentPage, loading, textLoading, recentBooks, recentLoaded,
-    openBook, uploadBook, goToPage, savePosition, addBookmark, removeBookmark, closeBook, deleteBook,
+    openBook, uploadBook, goToPage, savePosition, applyBookSettings, addBookmark, removeBookmark, closeBook, deleteBook,
   } = bookState
   const activeBookId = book?.id ?? null
+
+  useEffect(() => {
+    setHasSelectedReaderLine(false)
+  }, [activeBookId])
 
   useEffect(() => {
     if (!pendingOpenFile || !backendReachable) return
@@ -216,24 +239,95 @@ export default function App() {
     })
   }, [backendReachable, openBook, pendingOpenFile])
 
-  const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition })
+  const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition, applyBookSettings })
   const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio } = audio
   const audioChunkProgressRef = useRef(0)
   const activeTtsStatus = ttsEngineStatus?.[audio.ttsEngine] || null
-  const activeModelLoaded = audio.ttsEngine === 'chatterbox-turbo'
-    ? (activeTtsStatus?.model_loaded ?? false)
-    : (activeTtsStatus?.model_loaded ?? modelLoaded)
+  const activeModelLoaded = activeTtsStatus?.model_loaded ?? modelLoaded
   const activeModelLoading = activeTtsStatus?.model_loading ?? modelLoading
-  const activeGpuEnabled = audio.ttsEngine === 'chatterbox-turbo'
-    ? (activeTtsStatus?.selected_device ? activeTtsStatus.selected_device === 'cuda' : null)
-    : gpuEnabled
+  const activeGpuEnabled = activeTtsStatus?.selected_device
+    ? activeTtsStatus.selected_device === 'cuda'
+    : (String(activeTtsStatus?.selected_provider || '').toLowerCase().includes('cuda') || gpuEnabled)
   const activeRuntime = activeTtsStatus || ttsStatus?.tts_runtime || null
   const activeInstall = modelStatus?.[audio.ttsEngine] || null
-  const startupReady = backendReachable && startupMinElapsed && (recentLoaded || startupTimedOut)
+  const startupReady = backendReachable && (recentLoaded || startupTimedOut)
+  const appLifecycleRef = useRef({
+    backendReachable: false,
+    busy: true,
+    isGenerating: false,
+    isPlaying: false,
+  })
+  const appLastHeartbeatRef = useRef(0)
+  const backendRestartAttemptRef = useRef(0)
 
   useEffect(() => {
     audioChunkProgressRef.current = audio.chunkProgress || 0
   }, [audio.chunkProgress])
+
+  useEffect(() => {
+    appLifecycleRef.current = {
+      backendReachable,
+      busy: Boolean(loading || textLoading || !backendLaunchSettled || (backendReachable && statusHasActiveWork(ttsStatus))),
+      isGenerating: audio.isGenerating,
+      isPlaying: audio.isPlaying,
+    }
+  }, [audio.isGenerating, audio.isPlaying, backendLaunchSettled, backendReachable, loading, textLoading, ttsStatus])
+
+  useEffect(() => {
+    const sendHeartbeat = (force = false) => {
+      const now = Date.now()
+      if (!force && now - appLastHeartbeatRef.current < APP_HEARTBEAT_THROTTLE_MS) return
+      appLastHeartbeatRef.current = now
+      sendAppHeartbeat()?.catch(() => {})
+    }
+
+    const ensureBackendStarted = () => {
+      const now = Date.now()
+      if (!isTauriRuntime() || appLifecycleRef.current.backendReachable) return
+      if (now - backendRestartAttemptRef.current < BACKEND_RESTART_THROTTLE_MS) return
+      backendRestartAttemptRef.current = now
+      startBackend()
+        .then((started) => {
+          if (started) sendHeartbeat(true)
+        })
+        .catch(() => {})
+    }
+
+    const markUiActivity = () => {
+      if (document.visibilityState === 'hidden') return
+      sendHeartbeat()
+      ensureBackendStarted()
+    }
+
+    const activityEvents = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'focus']
+    const listenerOptions: AddEventListenerOptions = { passive: true }
+    activityEvents.forEach((eventName) => {
+      window.addEventListener(eventName, markUiActivity, listenerOptions)
+    })
+
+    const activeWorkHeartbeat = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      const state = appLifecycleRef.current
+      if (state.busy || state.isGenerating || state.isPlaying) {
+        sendHeartbeat(true)
+      }
+    }, APP_HEARTBEAT_ACTIVE_WORK_MS)
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') markUiActivity()
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    markUiActivity()
+
+    return () => {
+      window.clearInterval(activeWorkHeartbeat)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      activityEvents.forEach((eventName) => {
+        window.removeEventListener(eventName, markUiActivity, listenerOptions)
+      })
+    }
+  }, [])
 
   useEffect(() => {
     const onModelRequired = (event: Event) => {
@@ -334,13 +428,22 @@ export default function App() {
   const goToPageFromUser = useCallback((page: number) => {
     flushCurrentVisualPosition()
     exitFollowAlong()
+    setHasSelectedReaderLine(false)
     const result = goToPage(page)
     savePosition(page, 0)
     return result
   }, [exitFollowAlong, flushCurrentVisualPosition, goToPage, savePosition])
 
+  const goToPageFromViewer = useCallback((page: number) => {
+    if (!followAlongMode) flushCurrentVisualPosition()
+    const result = goToPage(page)
+    if (!followAlongMode) savePosition(page, 0)
+    return result
+  }, [flushCurrentVisualPosition, followAlongMode, goToPage, savePosition])
+
   const seekToSentenceFromUser = useCallback((page: number, sentence: number, options: any = {}) => {
     flushCurrentVisualPosition()
+    setHasSelectedReaderLine(true)
     seekToSentence(page, sentence, options)
   }, [seekToSentence, flushCurrentVisualPosition])
 
@@ -353,10 +456,8 @@ export default function App() {
     if (!followAlongMode) return
     if (!audio.isPlaying) {
       setFollowAlongMode(false)
-      return
     }
-    jumpToReader()
-  }, [followAlongMode, audio.isPlaying, audio.readingPage, audio.currentSentence, jumpToReader])
+  }, [followAlongMode, audio.isPlaying])
 
   useEffect(() => {
     if (!followAlongMode) return
@@ -395,12 +496,14 @@ export default function App() {
 
     revealPageNav()
     const onActivity = () => revealPageNav()
-    window.addEventListener('mousemove', onActivity, { passive: true })
+    window.addEventListener('pointermove', onActivity, { passive: true })
+    window.addEventListener('pointerdown', onActivity, { passive: true })
     window.addEventListener('keydown', onActivity)
     window.addEventListener('touchstart', onActivity, { passive: true })
     window.addEventListener('wheel', onActivity, { passive: true })
     return () => {
-      window.removeEventListener('mousemove', onActivity)
+      window.removeEventListener('pointermove', onActivity)
+      window.removeEventListener('pointerdown', onActivity)
       window.removeEventListener('keydown', onActivity)
       window.removeEventListener('touchstart', onActivity)
       window.removeEventListener('wheel', onActivity)
@@ -443,6 +546,7 @@ export default function App() {
 
     flushCurrentVisualPosition()
     exitFollowAlong()
+    setHasSelectedReaderLine(false)
     await goToPage(result.page)
     setSearchTarget({
       bookId: book?.id,
@@ -508,14 +612,35 @@ export default function App() {
   ), [backendReachable, activeModelLoading, activeModelLoaded, activeGpuEnabled])
 
   const appView = !book && !startupReady ? 'loading' : !book ? 'library' : 'reader'
+  const previousAppViewRef = useRef(appView)
+  const appTransition = useMemo(
+    () => ({ from: previousAppViewRef.current, to: appView }),
+    [appView],
+  )
+
+  useEffect(() => {
+    previousAppViewRef.current = appView
+  }, [appView])
 
   const renderReader = () => {
     if (!book) return null
     const progressCurrent = reflowProgress?.current ?? currentPage + 1
     const progressTotal = reflowProgress?.total ?? book.page_count
+    const pageNavAutoHidden = followAlongMode && pageNavHidden
+    const pageNavMotion = pageNavAutoHidden
+      ? { opacity: 0, y: 80, scale: 0.96 }
+      : { opacity: 1, y: 0, scale: 1 }
 
     return (
-      <m.div key="reader" className="app-motion-view" variants={pageTransition} initial="initial" animate="animate" exit="exit">
+      <m.div
+        key="reader"
+        className="app-motion-view app-motion-reader"
+        custom={{ ...appTransition, view: 'reader' }}
+        variants={appViewTransition}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+      >
         <div className={`app-shell theme-${theme} grain ${followAlongMode ? 'follow-along-active' : ''}`}>
           <TitleBar
             bookTitle={book.title}
@@ -567,7 +692,7 @@ export default function App() {
                 bookId={book.id}
                 reflow={reflow}
                 chapterIdx={currentPage}
-                setChapterIdx={goToPageFromUser}
+                setChapterIdx={goToPageFromViewer}
                 runningHead={book.title}
                 currentSentence={audio.currentSentence}
                 activeChapterIdx={audio.readingPage ?? currentPage}
@@ -596,6 +721,9 @@ export default function App() {
                 whileHover={{ y: -1, scale: 1.03 }}
                 whileTap={{ scale: 0.97 }}
                 className={`page-nav prev ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
+                animate={pageNavMotion}
+                style={{ pointerEvents: pageNavAutoHidden ? 'none' : undefined }}
+                aria-hidden={pageNavAutoHidden || undefined}
                 onPointerEnter={revealPageNav}
                 onFocus={revealPageNav}
                 onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
@@ -608,6 +736,9 @@ export default function App() {
                 whileHover={{ y: -1, scale: 1.03 }}
                 whileTap={{ scale: 0.97 }}
                 className={`page-nav next ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
+                animate={pageNavMotion}
+                style={{ pointerEvents: pageNavAutoHidden ? 'none' : undefined }}
+                aria-hidden={pageNavAutoHidden || undefined}
                 onPointerEnter={revealPageNav}
                 onFocus={revealPageNav}
                 onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
@@ -630,6 +761,9 @@ export default function App() {
             downloadTotalBytes={activeTtsStatus?.download_total_bytes ?? 0}
             engineFallbackReason={activeTtsStatus?.fallback_reason ?? null}
             engineLoadError={activeTtsStatus?.last_load_error ?? null}
+            engineRuntime={activeRuntime}
+            ttsActivity={ttsStatus?.tts_activity ?? null}
+            bufferState={audio.bufferState}
             play={audio.play}
             pause={audio.pause}
             stop={audio.stop}
@@ -646,6 +780,7 @@ export default function App() {
             currentSentence={audio.currentSentence}
             sentenceCount={pageData?.sentences?.length || 0}
             pageData={pageData}
+            playRequiresLineSelection={!audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
             sleepTimer={audio.sleepTimer}
             setSleepTimer={audio.setSleepTimer}
             preloadState={audio.preloadState}
@@ -662,11 +797,21 @@ export default function App() {
   }
 
   const appContent = appView === 'loading' ? (
-    <m.div key="loading" className="app-motion-view" variants={pageTransition} initial="initial" animate="animate" exit="exit">
+    <m.div
+      key="loading"
+      className="app-motion-view app-motion-loading"
+      custom={{ ...appTransition, view: 'loading' }}
+      variants={appViewTransition}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+    >
       <LoadingScreen
         theme={theme}
         motion={motion}
         status={ttsStatus}
+        backendLaunchStarted={backendLaunchStarted}
+        backendLaunchSettled={backendLaunchSettled}
         backendReachable={backendReachable}
         recentLoaded={recentLoaded}
         recentBooks={recentBooks}
@@ -680,7 +825,15 @@ export default function App() {
       />
     </m.div>
   ) : appView === 'library' ? (
-    <m.div key="library" className="app-motion-view" variants={pageTransition} initial="initial" animate="animate" exit="exit">
+    <m.div
+      key="library"
+      className="app-motion-view app-motion-library"
+      custom={{ ...appTransition, view: 'library' }}
+      variants={appViewTransition}
+      initial="initial"
+      animate="animate"
+      exit="exit"
+    >
       <div className={`app-shell app-enter theme-${theme} grain`}>
         <TitleBar />
         <CursorHalo motion={motion} />
@@ -712,9 +865,11 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion={motion ? 'user' : 'always'} transition={spring.quick}>
-      <AnimatePresence mode="wait" initial={false}>
-        {appContent}
-      </AnimatePresence>
+      <div className={`app-transition-stage theme-${theme}`}>
+        <AnimatePresence mode="sync" initial={false}>
+          {appContent}
+        </AnimatePresence>
+      </div>
     </MotionConfig>
   )
 }

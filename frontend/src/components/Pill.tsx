@@ -3,11 +3,11 @@ import type React from 'react'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
 import { apiResourceUrl } from '../api'
+import { engineDisplayName, engineShortLabel, speedRangeForEngine, voiceLabel } from '../ttsVoices'
 import {
   buttonHover,
   buttonTap,
   controlsReveal,
-  fadeIn,
   pillContentContinuity,
   pillControlHover,
   pillControlTap,
@@ -18,7 +18,14 @@ import {
 } from '../motion'
 
 const BARS = 64
-const SPEEDS = [0.75, 0.85, 0.95, 1, 1.1, 1.2, 1.35]
+const PILL_MORPH_MS = pillMorph.ms
+
+function isInteractiveShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false
+  return Boolean(target.closest(
+    'button, input, select, textarea, a[href], [contenteditable="true"], [role="button"], [role="radio"], [role="switch"]',
+  ))
+}
 
 function fmtTime(sec) {
   sec = Math.max(0, Math.round(sec))
@@ -27,18 +34,41 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
+function fmtBytes(bytes) {
+  const safe = Number(bytes || 0)
+  if (safe >= 1024 ** 3) return `${(safe / (1024 ** 3)).toFixed(1)} GB`
+  if (safe >= 1024 ** 2) return `${(safe / (1024 ** 2)).toFixed(0)} MB`
+  if (safe >= 1024) return `${(safe / 1024).toFixed(0)} KB`
+  return `${safe} B`
+}
+
+function finiteNumber(value, fallback = 0) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function compactText(value, max = 150) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (text.length <= max) return text
+  return `${text.slice(0, Math.max(0, max - 1)).trim()}…`
+}
+
 export default memo(function Pill({
   isPlaying, isGenerating, textLoading, modelLoaded, modelLoading,
   installState = null,
   downloadActive = false, downloadBytes = 0, downloadTotalBytes = 0,
   engineFallbackReason = null, engineLoadError = null,
+  engineRuntime = null,
+  ttsActivity = null,
+  bufferState = null,
   generationError,
   play, pause, stop, skipSentence,
   currentPage, pageCount, goToPage,
   speed, setSpeed, volume, setVolume,
-  ttsEngine = 'kokoro',
+  ttsEngine = 'supertonic',
   voice,
-  currentSentence, sentenceCount, pageData,
+  currentSentence, sentenceCount,
+  playRequiresLineSelection = false,
   sleepTimer, setSleepTimer,
   preloadState,
   preloadChapter,
@@ -62,11 +92,12 @@ export default memo(function Pill({
   const [pillMotion, setPillMotion] = useState('')
   const [pulse, setPulse] = useState(0)
   const [controlsHidden, setControlsHidden] = useState(false)
+  const [selectionHintVisible, setSelectionHintVisible] = useState(false)
   const pillRef = useRef<HTMLDivElement | null>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pillMotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectionHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const PILL_MORPH_MS = pillMorph.ms
   const setExpandedWithMotion = useCallback((next) => {
     if (pillMotionTimerRef.current) clearTimeout(pillMotionTimerRef.current)
     setPillMotion(next ? 'expanding' : 'collapsing')
@@ -92,13 +123,44 @@ export default memo(function Pill({
     }
   }, [followAlongMode, isPlaying])
 
-  const handleKeyDown = useCallback((e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return
+  const showSelectionHint = useCallback(() => {
+    setSelectionHintVisible(true)
+    if (selectionHintTimerRef.current) clearTimeout(selectionHintTimerRef.current)
+    selectionHintTimerRef.current = setTimeout(() => {
+      setSelectionHintVisible(false)
+      selectionHintTimerRef.current = null
+    }, 3200)
+  }, [])
+
+  const togglePlay = useCallback(() => {
+    if (isPlaying) {
+      setSelectionHintVisible(false)
+      pause()
+      return
+    }
+    if (playRequiresLineSelection) {
+      showSelectionHint()
+      return
+    }
+    play()
+  }, [isPlaying, pause, play, playRequiresLineSelection, showSelectionHint])
+
+  useEffect(() => {
+    if (!playRequiresLineSelection) setSelectionHintVisible(false)
+  }, [playRequiresLineSelection])
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (
+      e.defaultPrevented ||
+      e.altKey ||
+      e.ctrlKey ||
+      e.metaKey ||
+      isInteractiveShortcutTarget(e.target)
+    ) return
     switch (e.code) {
       case 'Space':
         e.preventDefault()
-        if (isPlaying) pause()
-        else play()
+        togglePlay()
         break
       case 'ArrowRight':
         e.preventDefault()
@@ -117,7 +179,7 @@ export default memo(function Pill({
         goToPage(currentPage - 1)
         break
     }
-  }, [isPlaying, play, pause, skipSentence, goToPage, currentPage])
+  }, [togglePlay, skipSentence, goToPage, currentPage])
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown)
@@ -126,6 +188,7 @@ export default memo(function Pill({
 
   useEffect(() => () => {
     if (pillMotionTimerRef.current) clearTimeout(pillMotionTimerRef.current)
+    if (selectionHintTimerRef.current) clearTimeout(selectionHintTimerRef.current)
   }, [])
 
   useEffect(() => {
@@ -186,17 +249,6 @@ export default memo(function Pill({
   const totalMinsEstimate = pageCount * 2
   const elapsedMins = bookProgress * totalMinsEstimate
 
-  // Teleprompter text — show prev / current / next sentence
-  const sToText = (s) => s?.words?.map(w => w.text).join(' ') || ''
-  const sentenceList = pageData?.sentences || []
-  const currentText = sToText(sentenceList[currentSentence])
-  const prevText = sToText(sentenceList[currentSentence - 1])
-  const nextText = sToText(sentenceList[currentSentence + 1])
-
-  const togglePlay = () => {
-    if (isPlaying) pause()
-    else play()
-  }
   const SLEEP_STOPS = [null, 5, 15, 30, 60]
   const cycleSleep = () => {
     const cur = sleepTimer === null ? null : Math.ceil(sleepTimer)
@@ -217,9 +269,8 @@ export default memo(function Pill({
   const sleepRingPct = sleepMinutes != null ? Math.min(1, sleepMinutes / sleepRingMax) : 0
 
   // Speed slider — snap to discrete stops on commit, but allow smooth drag
-  const SPEED_MIN = 0.75
-  const SPEED_MAX = 1.35
-  const speedPct = ((speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)) * 100
+  const speedRange = speedRangeForEngine(ttsEngine)
+  const speedPct = ((speed - speedRange.min) / (speedRange.max - speedRange.min)) * 100
   const onSpeedDrag = (e) => {
     const v = parseFloat(e.target.value)
     setSpeed(v)
@@ -227,9 +278,9 @@ export default memo(function Pill({
   const onSpeedCommit = (e) => {
     // Snap to nearest preset on release for tactile feedback
     const v = parseFloat(e.target.value)
-    let nearest = SPEEDS[0]
+    let nearest = speedRange.presets[0]
     let best = Infinity
-    for (const s of SPEEDS) {
+    for (const s of speedRange.presets) {
       const d = Math.abs(s - v)
       if (d < best) { best = d; nearest = s }
     }
@@ -239,39 +290,36 @@ export default memo(function Pill({
   const volumePct = Math.round(volume * 100)
 
   const statusLabel = () => {
+    const engineName = engineDisplayName(ttsEngine)
     if (generationError) return generationError
     if (installState && !installState.ready) {
-      if (installState.state === 'failed') return installState.error || `${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'} install failed`
+      if (installState.state === 'failed') return installState.error || `${engineName} install failed`
       if (installState.state === 'download_queued' || installState.state === 'downloading') {
         const total = installState.total_bytes > 0 ? installState.total_bytes : 1
         const pct = Math.min(99, Math.max(1, Math.round(((installState.downloaded_bytes || 0) / total) * 100)))
-        return `Downloading ${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'}… ${pct}%`
+        return `Downloading ${engineName}… ${pct}%`
       }
-      if (installState.state === 'verifying') return `Verifying ${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'}…`
-      return `${ttsEngine === 'chatterbox-turbo' ? 'Chatterbox' : 'Kokoro'} not installed`
+      if (installState.state === 'verifying') return `Verifying ${engineName}…`
+      return `${engineName} not installed`
     }
     // Engine-level load failure (memory pressure, missing dep, etc.) wins
     // over the generic generationError so the user gets the real reason.
-    if (engineLoadError && ttsEngine === 'chatterbox-turbo' && !modelLoaded) {
+    if (engineLoadError && !modelLoaded) {
       return engineLoadError
     }
-    if (ttsEngine === 'chatterbox-turbo') {
-      if (downloadActive) {
-        const total = downloadTotalBytes > 0 ? downloadTotalBytes : 1
-        const pct = Math.min(99, Math.max(0, Math.round((downloadBytes / total) * 100)))
-        const mb = (downloadBytes / (1024 * 1024)).toFixed(0)
-        const totalMb = (total / (1024 * 1024)).toFixed(0)
-        return `Downloading Chatterbox… ${pct}% · ${mb}/${totalMb} MB`
-      }
-      if (modelLoading) return 'Loading Chatterbox…'
-      if (isGenerating) return 'Generating audio…'
-      // CPU-mode advisory once the model is ready — sticky in the subtitle so
-      // the user understands why playback is slow before they assume it's broken.
-      if (modelLoaded && engineFallbackReason && !isPlaying) {
-        return engineFallbackReason
-      }
-    } else if (!modelLoaded) {
-      return modelLoading ? 'Loading model…' : 'Model not ready'
+    if (downloadActive) {
+      const total = downloadTotalBytes > 0 ? downloadTotalBytes : 1
+      const pct = Math.min(99, Math.max(0, Math.round((downloadBytes / total) * 100)))
+      const mb = (downloadBytes / (1024 * 1024)).toFixed(0)
+      const totalMb = (total / (1024 * 1024)).toFixed(0)
+      return `Downloading ${engineName}… ${pct}% · ${mb}/${totalMb} MB`
+    }
+    if (modelLoading) return `Loading ${engineName}…`
+    if (!modelLoaded) {
+      return `${engineName} not ready`
+    }
+    if (modelLoaded && engineFallbackReason && !isPlaying) {
+      return engineFallbackReason
     }
     if (textLoading) return 'Extracting text (OCR)…'
     if (isGenerating) return 'Generating audio…'
@@ -308,12 +356,288 @@ export default memo(function Pill({
     : pl.state === 'error' ? 'Retry'
     : 'Preload'
 
+  const modelActivity = useMemo(() => {
+    const engineName = engineDisplayName(ttsEngine)
+    const provider = engineRuntime?.selected_provider || engineRuntime?.provider || engineRuntime?.selected_device || null
+    const installProgress = installState?.total_bytes > 0
+      ? (installState.downloaded_bytes || 0) / installState.total_bytes
+      : Number(installState?.progress || 0)
+    const runtimeDownloadProgress = downloadTotalBytes > 0 ? downloadBytes / downloadTotalBytes : 0
+    const audioDetail = sentenceCount > 0
+      ? `Sentence ${currentSentence + 1}/${sentenceCount} · page ${currentPage + 1}/${pageCount}`
+      : `Page ${currentPage + 1}/${pageCount}`
+    const runningJob = ttsActivity?.running?.[0] || null
+    const pendingJob = ttsActivity?.pending?.[0] || null
+    const activityJob = runningJob || ttsActivity?.active || pendingJob || null
+    const activityStatus = runningJob ? 'running' : (activityJob?.status || (pendingJob ? 'pending' : null))
+    const activityMeta = activityJob?.metadata || {}
+    const activityPage = finiteNumber(
+      activityMeta.page_number,
+      finiteNumber(activityMeta.page, currentPage) + 1,
+    )
+    const activitySentence = finiteNumber(
+      activityMeta.sentence_number,
+      finiteNumber(activityMeta.sentence, currentSentence) + 1,
+    )
+    const activitySentenceCount = finiteNumber(activityMeta.sentence_count, sentenceCount)
+    const activityTargetLabel = `S${activitySentence}${activitySentenceCount > 0 ? `/${activitySentenceCount}` : ''} · p${activityPage}/${pageCount}`
+    const activitySnippet = compactText(activityMeta.text, 132)
+    const activityMatchesCurrent = (
+      finiteNumber(activityMeta.page, currentPage) === currentPage
+      && finiteNumber(activityMeta.sentence, currentSentence) === currentSentence
+    )
+    const leadReady = finiteNumber(bufferState?.ready, 0)
+    const leadTarget = finiteNumber(bufferState?.target, 0)
+    const leadScheduled = Math.max(leadReady, finiteNumber(bufferState?.scheduled, 0))
+    const leadProgress = leadTarget > 0 ? Math.max(0.04, Math.min(0.96, leadReady / leadTarget)) : 0
+    const runningCount = Array.isArray(ttsActivity?.running) ? ttsActivity.running.length : (runningJob ? 1 : 0)
+    const pendingCount = Array.isArray(ttsActivity?.pending) ? ttsActivity.pending.length : (pendingJob ? 1 : 0)
+    const queueDetail = runningCount > 0 || pendingCount > 0
+      ? `${runningCount} generating · ${pendingCount} queued`
+      : 'No backend queue reported'
+    const leadSentence = bufferState?.current
+      ? `sentence ${finiteNumber(bufferState.current.sentence, 0) + 1} · page ${finiteNumber(bufferState.current.page, currentPage) + 1}/${pageCount}`
+      : 'next sentence'
+    const bufferLabel = leadTarget > 0 ? `${leadReady}/${leadTarget} ready` : 'Idle'
+    const bufferDetail = leadTarget > 0
+      ? `${leadScheduled}/${leadTarget} scheduled · ${queueDetail}`
+      : queueDetail
+    const bufferBadge = leadTarget > 0
+      ? `${leadReady}/${leadTarget} ready${leadScheduled > leadReady ? ` · ${leadScheduled}/${leadTarget} queued` : ''}`
+      : null
+    const playbackBadge = sentenceCount > 0
+      ? `Reading S${currentSentence + 1}/${sentenceCount} · p${currentPage + 1}/${pageCount}`
+      : `Page ${currentPage + 1}/${pageCount}`
+    const leadDetail = leadTarget > 0
+      ? `${bufferState?.reason || 'Preparing lead audio'} while checking ${leadSentence}.`
+      : `${bufferState?.reason || 'Preparing lead audio'}.`
+
+    let headline = 'Ready'
+    let detail = 'Selected model is waiting.'
+    let tone = 'ready'
+    let progressValue = modelLoaded ? 1 : 0
+    let progressMode = modelLoaded ? 'known' : 'idle'
+    let badges: string[] = []
+
+    if (generationError) {
+      headline = 'Attention needed'
+      detail = generationError
+      tone = 'error'
+      progressMode = 'idle'
+      badges = []
+    } else if (installState && !installState.ready) {
+      tone = installState.state === 'failed' ? 'error' : 'busy'
+      progressValue = Math.max(0, Math.min(0.99, installProgress || 0))
+      badges = [engineName]
+      if (installState.state === 'failed') {
+        headline = 'Install failed'
+        detail = installState.error || `${engineName} could not finish installing.`
+        progressMode = 'idle'
+      } else if (installState.state === 'download_queued') {
+        headline = 'Queued download'
+        detail = `${engineName} is waiting for the model download slot.`
+        progressMode = 'indeterminate'
+      } else if (installState.state === 'downloading') {
+        headline = 'Downloading model'
+        detail = installState.total_bytes > 0
+          ? `${fmtBytes(installState.downloaded_bytes)} of ${fmtBytes(installState.total_bytes)}`
+          : `${Math.round(progressValue * 100)}% downloaded`
+        progressMode = 'known'
+      } else if (installState.state === 'verifying') {
+        headline = 'Verifying model'
+        detail = `${engineName} assets are being checked before use.`
+        progressMode = 'indeterminate'
+      } else {
+        headline = 'Model not installed'
+        detail = `${engineName} needs a local model before narration can start.`
+        progressMode = 'idle'
+      }
+    } else if (engineLoadError && !modelLoaded) {
+      headline = 'Load failed'
+      detail = engineLoadError
+      tone = 'error'
+      progressMode = 'idle'
+      badges = [engineName]
+    } else if (downloadActive) {
+      headline = 'Downloading model data'
+      detail = downloadTotalBytes > 0
+        ? `${fmtBytes(downloadBytes)} of ${fmtBytes(downloadTotalBytes)}`
+        : 'Receiving model assets from the backend.'
+      tone = 'busy'
+      progressValue = Math.max(0, Math.min(0.99, runtimeDownloadProgress))
+      progressMode = downloadTotalBytes > 0 ? 'known' : 'indeterminate'
+      badges = [engineName]
+    } else if (modelLoading) {
+      headline = 'Loading model'
+      detail = provider ? `Loading on ${provider}.` : 'Loading selected model into memory.'
+      tone = 'busy'
+      progressValue = 0.58
+      progressMode = 'indeterminate'
+      badges = [provider].filter(Boolean)
+    } else if (textLoading) {
+      headline = 'Extracting text'
+      detail = 'Preparing readable sentence data for this page.'
+      tone = 'busy'
+      progressValue = 0.35
+      progressMode = 'indeterminate'
+      badges = [playbackBadge]
+    } else if (activityStatus === 'running') {
+      headline = isPlaying && !isGenerating && !activityMatchesCurrent
+        ? 'Playing and generating ahead'
+        : 'Generating audio'
+      detail = activitySnippet || 'Preparing sentence audio for the playback buffer.'
+      tone = 'busy'
+      progressValue = 0.72
+      progressMode = 'indeterminate'
+      badges = [activityTargetLabel, bufferBadge, queueDetail].filter(Boolean)
+    } else if (isPlaying && activityStatus === 'pending') {
+      headline = 'Queued for buffer'
+      detail = activitySnippet || 'The next sentence is waiting for a synthesis slot.'
+      tone = 'busy'
+      progressValue = leadTarget > 0 ? leadProgress : progress
+      progressMode = leadTarget > 0 ? 'known' : 'indeterminate'
+      badges = [activityTargetLabel, bufferBadge, queueDetail].filter(Boolean)
+    } else if (bufferState?.state === 'prebuffering') {
+      headline = 'Filling playback buffer'
+      detail = leadDetail
+      tone = 'busy'
+      progressValue = leadTarget > 0 ? leadProgress : 0.42
+      progressMode = leadTarget > 0 ? 'known' : 'indeterminate'
+      badges = [playbackBadge, bufferBadge, queueDetail].filter(Boolean)
+    } else if (isGenerating) {
+      headline = 'Generating audio'
+      detail = `Synthesizing ${audioDetail.toLowerCase()}.`
+      tone = 'busy'
+      progressValue = Math.max(0.08, Math.min(0.95, progress))
+      progressMode = 'indeterminate'
+      badges = [playbackBadge]
+    } else if (isPlaying && leadTarget > 0) {
+      const building = leadReady < leadTarget || leadScheduled < leadTarget
+      headline = building ? 'Building buffer' : 'Playing from buffer'
+      detail = building
+        ? 'Narration is playing while the next sentences are prepared.'
+        : 'Lead audio is ready for uninterrupted playback.'
+      tone = building ? 'busy' : 'live'
+      progressValue = building ? leadProgress : progress
+      progressMode = building ? 'known' : 'known'
+      badges = [playbackBadge, bufferBadge].filter(Boolean)
+    } else if (isPlaying) {
+      headline = 'Playing narration'
+      detail = audioDetail
+      tone = 'live'
+      progressValue = progress
+      progressMode = 'known'
+      badges = [playbackBadge]
+    } else if (!modelLoaded) {
+      headline = 'Model ready on demand'
+      detail = 'The selected model will load when playback starts.'
+      tone = 'idle'
+      progressValue = 0
+      progressMode = 'idle'
+      badges = []
+    } else if (engineFallbackReason) {
+      headline = 'Ready with fallback'
+      detail = engineFallbackReason
+      tone = 'ready'
+      progressValue = 1
+      progressMode = 'known'
+      badges = []
+    }
+
+    const modelTrackValue = activityStatus === 'running'
+      ? 'Generating'
+      : activityStatus === 'pending'
+        ? 'Queued'
+      : modelLoading || downloadActive ? 'Loading'
+      : modelLoaded ? 'Ready' : 'On demand'
+    const modelTrackDetail = activityStatus === 'running' || activityStatus === 'pending'
+      ? activityTargetLabel
+      : provider || 'Runtime selected'
+    const audioTrackDetail = isPlaying
+      ? audioDetail
+      : sentenceCount > 0 ? `Paused at ${audioDetail.toLowerCase()}` : audioDetail
+    const chapterValue = pl.total > 0 ? `${pl.ready}/${pl.total}` : preloadShortLabel
+    const chapterTrackDetail = pl.total > 0
+      ? `${plFailed ? `${plFailed} failed · ` : ''}${preloadLabel}`
+      : 'Tap preload to cache the chapter'
+
+    const tracks = [
+      {
+        key: 'model',
+        label: 'Model',
+        value: modelTrackValue,
+        detail: modelTrackDetail,
+        progress: progressValue,
+        mode: progressMode,
+      },
+      {
+        key: 'buffer',
+        label: 'Buffer',
+        value: bufferLabel,
+        detail: bufferDetail,
+        progress: leadTarget > 0 ? leadProgress : 0,
+        mode: leadTarget > 0 ? ((leadReady < leadTarget || leadScheduled < leadTarget) ? 'known' : 'known') : (runningCount > 0 || pendingCount > 0 ? 'indeterminate' : 'idle'),
+      },
+      {
+        key: 'audio',
+        label: 'Playback',
+        value: isGenerating ? 'Generating current' : isPlaying ? 'Playing' : 'Standing by',
+        detail: audioTrackDetail,
+        progress,
+        mode: sentenceCount > 0 ? 'known' : 'idle',
+      },
+      {
+        key: 'chapter',
+        label: 'Chapter',
+        value: chapterValue,
+        detail: chapterTrackDetail,
+        progress: preloadProgress,
+        mode: plBusy && pl.total === 0 ? 'indeterminate' : (pl.total > 0 ? 'known' : 'idle'),
+      },
+    ]
+
+    return { headline, detail, tone, progress: progressValue, progressMode, badges, tracks }
+  }, [
+    currentPage,
+    currentSentence,
+    downloadActive,
+    downloadBytes,
+    downloadTotalBytes,
+    engineFallbackReason,
+    engineLoadError,
+    engineRuntime,
+    generationError,
+    installState,
+    isGenerating,
+    isPlaying,
+    modelLoaded,
+    modelLoading,
+    pageCount,
+    bufferState,
+    pl.total,
+    pl.ready,
+    plBusy,
+    plFailed,
+    preloadLabel,
+    preloadProgress,
+    preloadShortLabel,
+    progress,
+    sentenceCount,
+    ttsActivity,
+    textLoading,
+    ttsEngine,
+  ])
+
   const handlePreload = (e) => {
     e.stopPropagation()
     if (!plBusy) preloadChapter?.()
   }
 
   const primaryClick = () => {
+    if (!isPlaying && playRequiresLineSelection) {
+      togglePlay()
+      return
+    }
     if (installState && !installState.ready && !modelLoaded) {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('folio:model-required', { detail: { engine: ttsEngine, install: installState } }))
@@ -331,7 +655,7 @@ export default memo(function Pill({
 
   const metaLine = plActive
     ? preloadLabel
-    : (status || `${ttsEngine === 'chatterbox-turbo' ? 'CHATTERBOX' : 'KOKORO'} · ${voice?.toUpperCase?.() || ''} · PAGE ${currentPage + 1}/${pageCount}`)
+    : (status || `${engineShortLabel(ttsEngine)} · ${voiceLabel(ttsEngine, voice)} · PAGE ${currentPage + 1}/${pageCount}`)
 
   // Render both content trees during the morph so the pill is never empty.
   // The arriving tree drives layout (.pill grows/shrinks to fit it); the
@@ -357,6 +681,26 @@ export default memo(function Pill({
       onPointerEnter={revealControls}
       onFocusCapture={revealControls}
     >
+      <AnimatePresence initial={false}>
+        {selectionHintVisible && (
+          <m.div
+            className="pill-selection-hint"
+            role="status"
+            aria-live="polite"
+            initial={{ opacity: 0, y: 8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={spring.quick}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <span className="pill-selection-hint-dot" aria-hidden="true" />
+            <span>
+              <strong>Select a line first</strong>
+              <small>Click any sentence in the page, then press play.</small>
+            </span>
+          </m.div>
+        )}
+      </AnimatePresence>
       <m.div
         ref={pillRef}
         className={`pill ${expanded ? 'expanded' : 'collapsed'} ${(isPlaying || isGenerating || textLoading || modelLoading || downloadActive) ? 'is-active' : ''} ${pillMotion} ${slowMo ? 'pill-slowmo' : ''}`}
@@ -498,14 +842,49 @@ export default memo(function Pill({
               </m.button>
             </div>
 
-            <div className="tele-stack">
-              <div className="tele-line tele-prev">{prevText || ''}</div>
-              <AnimatePresence mode="wait">
-                <m.div className={`tele-line tele-now ${!currentText ? 'tele-empty' : ''}`} key={currentSentence} variants={fadeIn} initial="initial" animate="animate" exit="exit">
-                  {currentText || (isPlaying ? '' : (status || ''))}
-                </m.div>
-              </AnimatePresence>
-              <div className="tele-line tele-next">{nextText || ''}</div>
+            <div className="tele-stack tele-stack-activity">
+              <section className={`pill-activity pill-activity-${modelActivity.tone}`} aria-label="Model activity">
+                <div className="pill-activity-head">
+                  <span className="pill-activity-dot" aria-hidden="true" />
+                  <div>
+                    <div className="pill-activity-kicker">Model activity</div>
+                    <strong>{modelActivity.headline}</strong>
+                    <p>{modelActivity.detail}</p>
+                    {modelActivity.badges.length > 0 && (
+                      <div className="pill-activity-badges" aria-label="Activity details">
+                        {modelActivity.badges.map((badge) => (
+                          <span key={badge}>{badge}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div
+                  className={`pill-activity-meter meter-${modelActivity.progressMode}`}
+                  style={{ '--meter-progress': `${Math.max(0, Math.min(1, modelActivity.progress)) * 100}%` } as React.CSSProperties}
+                  aria-hidden="true"
+                >
+                  <span />
+                </div>
+                <div className="pill-activity-grid">
+                  {modelActivity.tracks.map((track) => (
+                    <div className={`pill-activity-track track-${track.mode} track-key-${track.key}`} key={track.key}>
+                      <div className="track-copy">
+                        <span>{track.label}</span>
+                        <strong>{track.value}</strong>
+                        <em>{track.detail}</em>
+                      </div>
+                      <div
+                        className={`track-meter meter-${track.mode}`}
+                        style={{ '--meter-progress': `${Math.max(0, Math.min(1, track.progress || 0)) * 100}%` } as React.CSSProperties}
+                        aria-hidden="true"
+                      >
+                        <span />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
             </div>
 
             <div>
@@ -530,52 +909,57 @@ export default memo(function Pill({
             </div>
 
             <m.div className="pill-expanded-controls" layout>
-              <button className="pill-btn" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 0} title="Previous page">
-                <Icons.SkipBack size={18} />
-              </button>
-              <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence">
-                <Icons.Rewind size={18} />
-              </button>
-              <button
-                className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
-                onClick={primaryClick}
-                title="Play/Pause"
-              >
-                {isPlaying ? <Icons.Pause size={22} /> : <Icons.Play size={22} />}
-              </button>
-              <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence">
-                <Icons.Forward size={18} />
-              </button>
-              <button className="pill-btn" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= pageCount - 1} title="Next page">
-                <Icons.SkipForward size={18} />
-              </button>
-              <AnimatePresence>
-              {showFollowAlong && (
-                <m.button
-                  className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''} ${followAlongMode && isPlaying ? 'is-live' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
-                  title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
-                  aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
-                  aria-pressed={followAlongMode}
-                  variants={controlsReveal}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  layout
-                  transition={spring.pillControl}
-                  whileHover={pillControlHover}
-                  whileTap={pillControlTap}
+              <div className="pill-expanded-transport">
+                <button className="pill-btn" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 0} title="Previous page">
+                  <Icons.SkipBack size={18} />
+                </button>
+                <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence">
+                  <Icons.Rewind size={18} />
+                </button>
+                <button
+                  className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
+                  onClick={primaryClick}
+                  title="Play/Pause"
                 >
-                  <span className="follow-status-mark" aria-hidden="true">
-                    <span className="live-dot" />
-                  </span>
-                  <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
-                </m.button>
-              )}
-              </AnimatePresence>
-              <button className="pill-btn" onClick={stop} title="Stop">
-                <Icons.Stop size={16} />
-              </button>
+                  {isPlaying ? <Icons.Pause size={22} /> : <Icons.Play size={22} />}
+                </button>
+                <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence">
+                  <Icons.Forward size={18} />
+                </button>
+                <button className="pill-btn" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= pageCount - 1} title="Next page">
+                  <Icons.SkipForward size={18} />
+                </button>
+              </div>
+              <div className="pill-expanded-actions">
+                <span className="pill-divider" aria-hidden="true" />
+                <AnimatePresence>
+                  {showFollowAlong && (
+                    <m.button
+                      className={`pill-btn follow-along-btn is-prominent ${followAlongMode ? 'active' : ''} ${followAlongMode && isPlaying ? 'is-live' : ''}`}
+                      onClick={(e) => { e.stopPropagation(); toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
+                      title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
+                      aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
+                      aria-pressed={followAlongMode}
+                      variants={controlsReveal}
+                      initial="initial"
+                      animate="animate"
+                      exit="exit"
+                      layout
+                      transition={spring.pillControl}
+                      whileHover={pillControlHover}
+                      whileTap={pillControlTap}
+                    >
+                      <span className="follow-status-mark" aria-hidden="true">
+                        <span className="live-dot" />
+                      </span>
+                      <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
+                    </m.button>
+                  )}
+                </AnimatePresence>
+                <button className="pill-btn" onClick={stop} title="Stop">
+                  <Icons.Stop size={16} />
+                </button>
+              </div>
             </m.div>
 
             <div className="pill-secondary-row" onClick={(e) => e.stopPropagation()}>
@@ -603,8 +987,8 @@ export default memo(function Pill({
                 <input
                   type="range"
                   className="pill-slider"
-                  min={SPEED_MIN}
-                  max={SPEED_MAX}
+                  min={speedRange.min}
+                  max={speedRange.max}
                   step="0.01"
                   value={speed}
                   onChange={onSpeedDrag}
@@ -614,7 +998,7 @@ export default memo(function Pill({
                   aria-label="Playback speed"
                 />
                 <div className="pill-speed-presets">
-                  {[0.85, 1.0, 1.2].map((s) => (
+                  {speedRange.presets.slice(1, 4).map((s) => (
                     <button
                       key={s}
                       className={Math.abs(speed - s) < 0.025 ? 'is-active' : ''}
@@ -684,11 +1068,11 @@ export default memo(function Pill({
               <div className="pill-tile tile-voice">
                 <div className="tile-head">
                   <span className="tile-label">Narrator</span>
-                  <span className="tile-value">{ttsEngine === 'chatterbox-turbo' ? 'CHATTERBOX' : 'KOKORO'}</span>
+                  <span className="tile-value">{engineShortLabel(ttsEngine)}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <div className="voice-avatar">{(voice || '?')[0].toUpperCase()}</div>
-                  <span style={{ fontFamily: 'var(--font-display)', fontStyle: 'italic', fontSize: 16, color: 'var(--paper)' }}>{voice}</span>
+                  <span className="voice-name">{voiceLabel(ttsEngine, voice)}</span>
                 </div>
               </div>
 

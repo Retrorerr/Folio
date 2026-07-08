@@ -1,168 +1,150 @@
 # Folio
 
-Folio is a Windows desktop reader for people who like to move between reading and listening without losing the thread.
+**A local-first Windows reader for moving between EPUB text and natural narration without losing your place.**
 
-It opens EPUB books, remembers where you left off, and uses local text-to-speech so a book can become sentence-aware audio without sending the text away from your machine.
+Folio turns an EPUB library into a quiet reading desk: open a book, pick a line, press play, and follow sentence-aware local narration with a cursor that stays tied to the text. Books, reading state, audio cache, and model files stay on your machine.
 
-## What It Does
+![Folio library dashboard](docs/screenshots/dashboard-library.png)
 
-- Opens EPUB files from a polished desktop app.
-- Keeps recent books, reading position, bookmarks, and settings.
-- Generates local speech with Kokoro ONNX or Chatterbox Turbo.
-- Highlights and advances through sentences while audio plays.
-- Supports EPUB reflow, full-text search, and chapter navigation.
-- Shows a startup loading screen with backend, model, RAM, and GPU status.
-- Uses a custom Windows titlebar and TypeScript React frontend.
-- Bundles the backend, frontend, and model runtime into a Tauri installer.
+![Folio reader with expanded narration controls](docs/screenshots/reader-expanded-pill.png)
+
+## Why Folio
+
+Most EPUB readers treat reading and listening as separate modes. Folio is built around the handoff between them.
+
+- **Local narration:** Generate speech with Supertonic 3 or Kokoro from the desktop app.
+- **Sentence-aware playback:** Start from a selected line, follow the live reading position, and resume from saved progress.
+- **Visible model activity:** The expanded playback pill shows current generation, queued buffer, playback state, and chapter readiness.
+- **No mystery startup:** The loading screen reports backend, model, hardware, RAM, and app-shell progress.
+- **Library dashboard:** Continue reading, search metadata, see reading goals, recent books, counts, and highlights.
+- **Folder auto-scan:** Choose a library folder and scan for newly added EPUBs.
+- **Windows-native shell:** Tauri packaging, custom titlebar, instant window close, and backend sidecar lifecycle management.
+
+## Screens In Motion
+
+The playback pill is the heart of Folio. It can stay compact while reading, then expand into a detailed console for narration, speed, volume, sleep timer, narrator choice, chapter preload, and buffer status.
+
+The reader cursor is line-aware rather than just page-aware. It supports hover, selected-line, and playback states, hides during page turns, and keeps Follow Along responsible for turning pages only when the reader asks for it.
 
 ## Install
 
-Download the latest Windows installer from GitHub Releases and run it:
+Download the latest Windows installer from GitHub Releases and run:
 
 ```text
 Folio_<version>_x64-setup.exe
 ```
 
-The installer includes the app, backend sidecar, and required model files. The first launch may take a moment while Windows finishes extracting the bundled resources.
+The installer includes the desktop shell and bundled backend sidecar. Voice models are installed on demand when narration is requested, so theme changes, opening a book, or browsing settings will not repeatedly prompt for a model download.
 
-Runtime data is stored in your user profile:
+Runtime data is stored under:
 
 ```text
 %APPDATA%\com.folio.reader
 ```
 
-That folder holds uploaded books, reading state, generated audio cache, and logs.
+That folder contains uploaded books, reading state, generated audio cache, model metadata, and backend logs.
 
-## For Developers
+## Current Capabilities
 
-### Prerequisites
+- EPUB import, recent books, metadata search, and dashboard summaries.
+- Reflowed two-page reader with chapter navigation, page turns, bookmarks, and search.
+- Supertonic 3 and Kokoro narration engines with per-book engine, voice, and speed settings.
+- Detailed generation and buffering telemetry in the expanded playback pill.
+- Follow Along mode that keeps the visible page aligned with the current reading position.
+- Settings panel for themes, narrator selection, model install state, cache maintenance, updates, and auto-scan folder selection.
+- Local FastAPI backend protected by an app-scoped token in preview and packaged builds.
+- Tauri Windows installer with bundled resources and sidecar startup/shutdown handling.
 
+## Development
+
+### Requirements
+
+- Windows
 - Node.js 20+
 - Python 3.11+
 - Rust and Cargo
-- Windows tooling required by Tauri
+- Tauri build prerequisites for Windows
 
-### Build The App
+### Install Dependencies
+
+```powershell
+npm install
+npm --prefix frontend install
+```
+
+Backend dependencies are installed by the project scripts. For manual backend work:
+
+```powershell
+cd backend
+pip install -r requirements.txt
+```
+
+### Run Locally
+
+Tauri development mode:
+
+```powershell
+npm run tauri:dev
+```
+
+Codex/browser preview mode:
+
+```powershell
+npm run preview:codex:restart
+```
+
+Manual frontend/backend debugging:
+
+```powershell
+cd backend
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+```powershell
+cd frontend
+npm run dev
+```
+
+### Validate
+
+```powershell
+npm --prefix frontend run typecheck
+npm --prefix frontend run lint
+npm --prefix frontend run test
+npm --prefix frontend run build
+npm run backend:test -- --SkipInstall
+```
+
+## Build The Installer
 
 From the repo root:
 
 ```powershell
-npm install
 npm run tauri:build
 ```
 
 The build script:
 
 - builds the Python backend sidecar;
-- builds the TypeScript React frontend with the Tauri API base;
+- builds the React frontend for the Tauri runtime;
 - packages the Windows installer with Tauri;
-- includes bundled resources from `src-tauri/resources`.
+- copies bundled resources from `src-tauri/resources`.
 
-The installer is written to:
+Installer output:
 
 ```text
 src-tauri\target\release\bundle\nsis\
 ```
 
-## Local Development
-
-Run the Tauri dev workflow:
-
-```powershell
-npm run tauri:dev
-```
-
-Or run the frontend/backend pieces manually when debugging:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-```powershell
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-## Release Checklist
-
-1. Update the version in:
-   - `package.json`
-   - `package-lock.json`
-   - `src-tauri/Cargo.toml`
-   - `src-tauri/tauri.conf.json`
-
-2. Build:
-
-```powershell
-npm run tauri:build
-```
-
-3. Upload the installer from:
-
-```text
-src-tauri\target\release\bundle\nsis\Folio_<version>_x64-setup.exe
-```
-
-4. Tag the release with the same version, for example:
-
-```text
-v0.1.9
-```
-
-## Uploading A GitHub Release
-
-Using the GitHub website:
-
-1. Open the repository on GitHub.
-2. Go to **Releases**.
-3. Click **Draft a new release**.
-4. Create or choose a tag such as `v0.1.9`.
-5. Use a release title like `Folio 0.1.9`.
-6. Attach the `.exe` installer from the Tauri bundle folder.
-7. Publish the release.
-
-Using GitHub CLI:
-
-```powershell
-gh release create v0.1.9 `
-  "src-tauri\target\release\bundle\nsis\Folio_0.1.9_x64-setup.exe" `
-  --title "Folio 0.1.9" `
-  --notes "Windows desktop installer for Folio 0.1.9."
-```
-
-## Updating
-
-Folio includes the Tauri updater plugin and a Settings button for checking updates. The app-side wiring is present, but automatic updates need a published signed updater manifest in the GitHub release channel before they can fully work.
-
-Until that release manifest is published, update by installing the newer `.exe` from GitHub Releases.
-
 ## Repository Layout
 
 ```text
-backend/       FastAPI app, book parsing, reflow, search, covers, and TTS
-frontend/      TypeScript React reader UI
-scripts/       Windows build and Tauri helper scripts
-src-tauri/     Tauri desktop shell, app resources, icons, and sidecar wiring
+backend/       FastAPI app, EPUB parsing, reflow, covers, search, and TTS
+frontend/      React + TypeScript reader UI
+docs/          Packaging notes and screenshots
+scripts/       Windows build, install, and preview helpers
+src-tauri/     Tauri shell, resources, icons, and sidecar wiring
 ```
-
-## What Is Not Tracked
-
-The repo intentionally avoids committing local-only or bulky runtime files:
-
-- installed app output;
-- generated installers;
-- model binaries in `backend/models`;
-- Codex/Claude memory folders;
-- browser check profiles and preview screenshots;
-- uploaded books;
-- generated audio cache;
-- backend test/debug artifacts;
-- local updater signing keys.
-
-Bundled release resources live under `src-tauri/resources` at build time.
 
 ## Logs
 
@@ -172,7 +154,18 @@ Installed app logs are written to:
 %APPDATA%\com.folio.reader\backend.log
 ```
 
-That log records backend startup, bundled model discovery, book loading, TTS generation, and shutdown.
+Use this log to inspect backend startup, model discovery, book loading, TTS generation, and shutdown.
+
+## Release Notes
+
+Before publishing a release, update versions in:
+
+- `package.json`
+- `package-lock.json`
+- `src-tauri/Cargo.toml`
+- `src-tauri/tauri.conf.json`
+
+Then build and attach the installer from the NSIS bundle folder to a GitHub Release.
 
 ## License
 

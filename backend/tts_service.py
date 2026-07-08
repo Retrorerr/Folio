@@ -61,6 +61,7 @@ from model_manager import (
     user_install_info,
 )
 from paths import AUDIO_CACHE_DIR, MODELS_DIR
+from tts_defaults import DEFAULT_KOKORO_VOICE, DEFAULT_TTS_SPEED, KOKORO_ENGINE_ID
 
 try:
     from text_chunker import CHUNKER_VERSION
@@ -70,10 +71,11 @@ except Exception:
 SAMPLE_RATE = 24000
 CACHE_DIR = str(AUDIO_CACHE_DIR)
 os.makedirs(CACHE_DIR, exist_ok=True)
-DEFAULT_VOICE = "af_heart"
-DEFAULT_SPEED = 0.95
+DEFAULT_VOICE = DEFAULT_KOKORO_VOICE
+DEFAULT_SPEED = DEFAULT_TTS_SPEED
 MIN_SPEED = 0.75
 MAX_SPEED = 1.35
+CACHE_FORMAT_VERSION = "kokoro-v2"
 KOKORO_VOICES = [
     "af_heart",
     "af_bella",
@@ -106,7 +108,7 @@ VOICE_SOURCES = [
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
     ),
 ]
-ENGINE_ID = "kokoro"
+ENGINE_ID = KOKORO_ENGINE_ID
 ENGINE_LABEL = "Kokoro"
 EXPECTED_MODEL_BYTES = 325_532_387
 EXPECTED_VOICES_BYTES = 28_214_398
@@ -837,6 +839,10 @@ def get_kokoro() -> Kokoro:
         return _load_kokoro_locked()
 
 
+def get_model() -> Kokoro:
+    return get_kokoro()
+
+
 def _load_kokoro_locked() -> Kokoro:
     global _model_loading, _setup_error, _gpu_smoke_passed, _gpu_smoke_error
     global _cpu_fallback_used, _cpu_smoke_passed, _last_load_error
@@ -1063,6 +1069,8 @@ def _cache_key(text: str, voice: str, speed: float) -> str:
     filename, size_bytes, sha256_partial, provider = _cache_runtime_identity()
     raw = "|".join(
         [
+            CACHE_FORMAT_VERSION,
+            ENGINE_ID,
             CHUNKER_VERSION,
             text,
             voice,
@@ -1075,6 +1083,12 @@ def _cache_key(text: str, voice: str, speed: float) -> str:
         ]
     )
     return hashlib.md5(raw.encode()).hexdigest()
+
+
+def audio_cache_path(book_id: str, text: str, voice: str, speed: float) -> str:
+    cache_key = _cache_key(text, voice, speed)
+    name = f"{book_id}_{ENGINE_ID}_{cache_key}.wav"
+    return os.path.join(CACHE_DIR, name)
 
 
 def _cached_duration_ms(filepath: str) -> float | None:
@@ -1118,9 +1132,8 @@ def generate_sentence_audio(
     speed = validate_speed(speed)
 
     def cached_path() -> tuple[str, str]:
-        cache_key = _cache_key(text, voice, speed)
-        name = f"{book_id}_{cache_key}.wav"
-        return name, os.path.join(CACHE_DIR, name)
+        path = audio_cache_path(book_id, text, voice, speed)
+        return os.path.basename(path), path
 
     filename, filepath = cached_path()
     inflight_path = filepath

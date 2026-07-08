@@ -19,6 +19,7 @@ const BACKEND_PORT: u16 = 8000;
 struct BackendProcess(Mutex<Option<Child>>);
 struct PendingOpenFile(Mutex<Option<String>>);
 struct ApiToken(String);
+struct AppShutdown(Mutex<bool>);
 
 fn reap_backend_child(app: &tauri::AppHandle) {
     if let Some(mut child) = app.state::<BackendProcess>().0.lock().unwrap().take() {
@@ -39,17 +40,6 @@ fn backend_exe_resource_path() -> &'static str {
 
 fn resource_path(app: &tauri::AppHandle, path: &str) -> Option<PathBuf> {
     app.path().resolve(path, BaseDirectory::Resource).ok()
-}
-
-fn wait_for_backend(timeout: Duration) -> bool {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if is_backend_port_open() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
-    false
 }
 
 fn is_backend_port_open() -> bool {
@@ -79,6 +69,9 @@ fn generate_api_token() -> String {
 
 fn shutdown_backend_with_token(api_token: &str) {
     if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", BACKEND_PORT)) {
+        let timeout = Some(Duration::from_secs(1));
+        let _ = stream.set_read_timeout(timeout);
+        let _ = stream.set_write_timeout(timeout);
         let token_header = if api_token.is_empty() {
             String::new()
         } else {
@@ -95,9 +88,6 @@ fn shutdown_backend_with_token(api_token: &str) {
 
 fn shutdown_backend(api_token: &str) {
     shutdown_backend_with_token(api_token);
-    if is_backend_port_open() {
-        shutdown_backend_with_token("");
-    }
 }
 
 fn append_log(log_path: &Path, message: &str) {
@@ -185,14 +175,10 @@ fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Optio
     append_log(&log_path, &format!("[tauri] quality_model={}", describe_path(&models_dir.join("kokoro-v1.0.onnx"))));
     append_log(&log_path, &format!("[tauri] fallback_model={}", describe_path(&models_dir.join("kokoro-v1.0.int8.onnx"))));
     append_log(&log_path, &format!("[tauri] voices_file={}", describe_path(&models_dir.join("voices-v1.0.bin"))));
-    let chatterbox_reference_seed =
-        resource_path(app, "resources/chatterbox/default_reference.wav");
-    if let Some(reference_seed) = chatterbox_reference_seed.as_ref() {
-        append_log(
-            &log_path,
-            &format!("[tauri] chatterbox_reference_seed={}", describe_path(reference_seed)),
-        );
-    }
+    let supertonic_dir = models_dir.join("supertonic-3");
+    append_log(&log_path, &format!("[tauri] supertonic_dir={}", describe_path(&supertonic_dir)));
+    append_log(&log_path, &format!("[tauri] supertonic_vocoder={}", describe_path(&supertonic_dir.join("onnx").join("vocoder.onnx"))));
+    append_log(&log_path, &format!("[tauri] supertonic_voice_styles={}", describe_path(&supertonic_dir.join("voice_styles"))));
 
     if is_backend_port_open() {
         append_log(
@@ -202,6 +188,13 @@ fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Optio
         shutdown_backend(api_token);
         let stopped = wait_for_backend_down(Duration::from_secs(4));
         append_log(&log_path, &format!("[tauri] Existing backend stopped={stopped}"));
+        if !stopped {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "Port 8000 is still occupied after requesting backend shutdown",
+            )
+            .into());
+        }
     }
 
     let stdout = OpenOptions::new()
@@ -217,12 +210,6 @@ fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Optio
         .env("KOKORO_READER_UPLOAD_DIR", upload_dir)
         .env("KOKORO_READER_AUDIO_CACHE_DIR", audio_cache_dir)
         .env("KOKORO_READER_MODELS_DIR", models_dir)
-        .env(
-            "FOLIO_CHATTERBOX_REFERENCE_SEED",
-            chatterbox_reference_seed
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        )
         .env(
             "KOKORO_CORS_ORIGINS",
             "tauri://localhost,http://tauri.localhost,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000",
@@ -274,7 +261,7 @@ fn start_backend(app: tauri::AppHandle) -> Result<bool, String> {
     match spawn_backend(&app, &api_token) {
         Ok(Some(child)) => {
             *app.state::<BackendProcess>().0.lock().unwrap() = Some(child);
-            Ok(wait_for_backend(Duration::from_secs(30)))
+            Ok(true)
         }
         Ok(None) => Ok(false),
         Err(error) => Err(format!("Backend startup failed: {error}")),
@@ -346,6 +333,57 @@ fn open_backend_log(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(false)
 }
 
+#[tauri::command]
+fn select_library_folder(initial_dir: Option<String>) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Choose a Folio library folder'
+$dialog.ShowNewFolderButton = $true
+if ($env:FOLIO_INITIAL_LIBRARY_DIR -and (Test-Path -LiteralPath $env:FOLIO_INITIAL_LIBRARY_DIR -PathType Container)) {
+  $dialog.SelectedPath = $env:FOLIO_INITIAL_LIBRARY_DIR
+}
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+"#;
+        let mut command = Command::new("powershell.exe");
+        command
+            .args(["-NoProfile", "-STA", "-Command", script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(initial) = initial_dir {
+            command.env("FOLIO_INITIAL_LIBRARY_DIR", initial);
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+
+        let output = command
+            .output()
+            .map_err(|error| format!("Could not open folder picker: {error}"))?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if error.is_empty() {
+                "Folder picker did not complete.".to_string()
+            } else {
+                error
+            });
+        }
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(if selected.is_empty() { None } else { Some(selected) });
+    }
+
+    #[allow(unreachable_code)]
+    Ok(None)
+}
+
 fn main() {
     let initial_open_file = first_epub_arg(std::env::args().skip(1), None);
 
@@ -364,20 +402,41 @@ fn main() {
         .manage(BackendProcess(Mutex::new(None)))
         .manage(PendingOpenFile(Mutex::new(initial_open_file)))
         .manage(ApiToken(generate_api_token()))
+        .manage(AppShutdown(Mutex::new(false)))
         .invoke_handler(tauri::generate_handler![
             start_backend,
             stop_backend,
             get_api_token,
             take_pending_open_file,
             backend_log_path,
-            open_backend_log
+            open_backend_log,
+            select_library_folder
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
-                    let api_token = window.app_handle().state::<ApiToken>().0.clone();
-                    shutdown_backend(&api_token);
-                    reap_backend_child(&window.app_handle());
+                    api.prevent_close();
+                    let app_handle = window.app_handle().clone();
+                    let should_start_shutdown = {
+                        let shutdown_state = app_handle.state::<AppShutdown>();
+                        let mut guard = shutdown_state.0.lock().unwrap();
+                        if *guard {
+                            false
+                        } else {
+                            *guard = true;
+                            true
+                        }
+                    };
+                    let _ = window.hide();
+
+                    if should_start_shutdown {
+                        thread::spawn(move || {
+                            let api_token = app_handle.state::<ApiToken>().0.clone();
+                            shutdown_backend(&api_token);
+                            reap_backend_child(&app_handle);
+                            app_handle.exit(0);
+                        });
+                    }
                 }
             }
         })

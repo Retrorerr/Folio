@@ -5,11 +5,35 @@
   overflow: auto;
   display: flex;
   flex-direction: column;
+  padding-bottom: max(22px, env(safe-area-inset-bottom));
   color: var(--ink);
   background:
     radial-gradient(circle at 64% -12%, color-mix(in srgb, var(--ember) 18%, transparent), transparent 34%),
     radial-gradient(circle at 100% 80%, color-mix(in srgb, var(--paper-3) 24%, transparent), transparent 32%),
     linear-gradient(135deg, var(--paper) 0%, var(--paper-2) 44%, var(--paper-3) 100%);
+}
+
+.loading-screen,
+.loading-screen::before,
+.loading-stage,
+.loading-footer {
+  transition:
+    opacity 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1),
+    filter 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.loading-screen.is-ready .loading-stage {
+  transform: translateY(-6px) scale(0.996);
+}
+
+.loading-screen.is-ready .loading-footer {
+  transform: translateY(-3px);
+}
+
+.loading-screen.is-ready::before {
+  opacity: 0.82;
+  transform: scale(0.997);
 }
 
 .loading-screen::before {
@@ -52,14 +76,14 @@
 }
 
 .loading-stage {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   width: 100%;
-  min-height: min(480px, calc(100vh - 270px));
+  min-height: min(430px, calc(100vh - 300px));
   display: grid;
   grid-template-columns: minmax(360px, 0.9fr) minmax(430px, 1.1fr);
   gap: clamp(54px, 8vw, 128px);
   align-items: center;
-  padding: 116px clamp(56px, 10vw, 180px) 32px;
+  padding: 116px clamp(56px, 10vw, 180px) clamp(24px, 4vh, 44px);
 }
 
 .loading-hero {
@@ -295,7 +319,7 @@
   flex: 0 0 auto;
   position: relative;
   width: calc(100% - (clamp(56px, 10vw, 180px) * 2));
-  margin: 0 clamp(56px, 10vw, 180px) 54px;
+  margin: 0 clamp(56px, 10vw, 180px) clamp(32px, 5vh, 58px);
   padding: 18px 18px 20px;
   border: 1px solid color-mix(in srgb, var(--rule) 72%, transparent);
   border-radius: 14px;
