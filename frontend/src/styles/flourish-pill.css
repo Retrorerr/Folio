@@ -232,7 +232,7 @@
   z-index: 2;
 }
 
-.pill-expanded-head .meta h3 {
+.pill-expanded-head .meta h2 {
   font-size: 22px;
   margin-top: 1px;
 }
@@ -732,7 +732,7 @@
     radial-gradient(circle at 18% 20%, rgba(242, 189, 83, 0.10), transparent 28%),
     radial-gradient(circle at 82% 10%, rgba(255, 236, 177, 0.06), transparent 26%);
 }
-.theme-folio .pill-expanded-head .meta h3,
+.theme-folio .pill-expanded-head .meta h2,
 .theme-folio .tele-line.tele-now,
 .theme-folio .pill-tile .tile-value,
 .theme-folio .pill-tile.tile-page .page-display {

@@ -1,9 +1,8 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
-import { SettingsPanel } from './Sidebar'
 import { apiFetch, apiJson, apiResourceUrl } from '../api'
 import { buttonHover, buttonTap, listItem, listStagger, pageTransition, scaleIn, slideUp, spring } from '../motion'
 import type { BookState, DashboardHighlight, DashboardPayload, LibrarySearchResponse, WeeklyStat } from '../types'
@@ -40,6 +39,22 @@ const DASHBOARD_PAGE_TOTAL_PREFIX = 'folio:dashboard-page-total:'
 const PAGINATION_CACHE_PREFIX = 'folio:pagination:'
 const READER_NAME_KEY = 'folio:reader-name'
 const EMPTY_SHELF_SPINES = ['tall', 'short', 'lean', 'gold', 'wide', 'slim', 'dark']
+const loadSettingsModule = () => import('./Sidebar')
+const SettingsPanel = lazy(() => loadSettingsModule().then((module) => ({ default: module.SettingsPanel })))
+
+function SettingsPanelFallback({ theme }: { theme: string }) {
+  return (
+    <div className={`settings-overlay theme-${theme}`} role="status" aria-live="polite">
+      <div className="settings-shell settings-shell-loading">
+        <img src={theme === 'light' || theme === 'sepia' ? '/folio-icon.png' : '/folio-monochrome-icon.png'} alt="" />
+        <div>
+          <strong>Opening settings</strong>
+          <span>Preparing reader controls…</span>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const EMPTY_DASHBOARD: DashboardPayload = {
   books: [],
@@ -751,10 +766,13 @@ export default memo(function Welcome({
       setSearchBooks(null)
       return
     }
+    const controller = new AbortController()
+    let active = true
     const timeout = window.setTimeout(() => {
-      apiJson<LibrarySearchResponse>(`/api/library/search?q=${encodeURIComponent(trimmed)}`)
-        .then((data) => setSearchBooks(data.books || []))
-        .catch(() => {
+      apiJson<LibrarySearchResponse>(`/api/library/search?q=${encodeURIComponent(trimmed)}`, { signal: controller.signal })
+        .then((data) => { if (active) setSearchBooks(data.books || []) })
+        .catch((error) => {
+          if (!active || (error instanceof DOMException && error.name === 'AbortError')) return
           const normalized = trimmed.toLowerCase()
           setSearchBooks((dashboard.books || []).filter((book) => [
             book.title,
@@ -764,7 +782,11 @@ export default memo(function Welcome({
           ].join(' ').toLowerCase().includes(normalized)))
         })
     }, 160)
-    return () => window.clearTimeout(timeout)
+    return () => {
+      active = false
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
   }, [dashboard.books, query])
 
   const allBooks = useMemo(() => (
@@ -1127,7 +1149,7 @@ export default memo(function Welcome({
           <kbd>{OPEN_SHORTCUT}</kbd>
         </m.button>
         <AnimatePresence>
-          {importError && <m.div className="dash-import-error" variants={slideUp} initial="initial" animate="animate" exit="exit">{importError}</m.div>}
+          {importError && <m.div className="dash-import-error" role="alert" variants={slideUp} initial="initial" animate="animate" exit="exit">{importError}</m.div>}
         </AnimatePresence>
 
         <nav className="dash-nav" aria-label="Dashboard">
@@ -1139,6 +1161,7 @@ export default memo(function Welcome({
                 key={item.id}
                 type="button"
                 className={view === item.id ? 'active' : ''}
+                aria-current={view === item.id ? 'page' : undefined}
                 onClick={() => setView(item.id)}
                 layout
                 whileHover={buttonHover}
@@ -1205,7 +1228,16 @@ export default memo(function Welcome({
             </AnimatePresence>
           </div>
           <div className="dash-toolbar">
-            <m.button type="button" onClick={openSettings} title="Settings" aria-label="Open settings" whileHover={buttonHover} whileTap={buttonTap}>
+            <m.button
+              type="button"
+              onClick={openSettings}
+              onPointerEnter={() => { void loadSettingsModule().catch(() => {}) }}
+              onFocus={() => { void loadSettingsModule().catch(() => {}) }}
+              title="Settings"
+              aria-label="Open settings"
+              whileHover={buttonHover}
+              whileTap={buttonTap}
+            >
               <Icons.Settings size={16} />
             </m.button>
           </div>
@@ -1232,16 +1264,17 @@ export default memo(function Welcome({
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {settingsOpen && (
-            <SettingsPanel
-              key="dashboard-settings"
-              theme={theme}
-              setTheme={setTheme}
-              motion={motion}
-              setMotion={setMotion}
-              {...settingsPanelProps}
-              onLibraryFolderChanged={refreshDashboard}
-              onClose={closeSettings}
-            />
+            <Suspense key="dashboard-settings" fallback={<SettingsPanelFallback theme={theme} />}>
+              <SettingsPanel
+                theme={theme}
+                setTheme={setTheme}
+                motion={motion}
+                setMotion={setMotion}
+                {...settingsPanelProps}
+                onLibraryFolderChanged={refreshDashboard}
+                onClose={closeSettings}
+              />
+            </Suspense>
           )}
         </AnimatePresence>,
         document.body,

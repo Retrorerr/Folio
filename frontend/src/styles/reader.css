@@ -1566,6 +1566,24 @@
   padding-bottom: 112px;
 }
 
+@media (max-height: 960px) {
+  .page-scroll:not(.follow-along-scroll) {
+    padding-bottom: 220px;
+  }
+
+  .reader-main:not(.follow-along)::after {
+    content: "";
+    position: absolute;
+    z-index: 3;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 118px;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--paper) 92%, transparent) 82%);
+  }
+}
+
 .spread {
   width: min(1280px, 100%);
   position: relative;

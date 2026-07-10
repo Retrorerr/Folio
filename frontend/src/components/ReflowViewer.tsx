@@ -1534,6 +1534,13 @@ function ReflowViewer({
     return 0
   }, [])
 
+  const handleViewportKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' || isPageTurning) return
+    event.preventDefault()
+    const sentenceIdx = sentenceForContentPage(firstVisiblePage)
+    onSentenceSelect?.(chapterIdx, sentenceIdx, { progress: 0 })
+  }, [chapterIdx, firstVisiblePage, isPageTurning, onSentenceSelect, sentenceForContentPage])
+
   useEffect(() => {
     if (!onProgress || !reflow?.chapters) return
     const total = Math.max(1, bookPageTotal)
@@ -2040,9 +2047,14 @@ function ReflowViewer({
 
         <div
           className="reflow-viewport"
+          role="region"
+          tabIndex={0}
+          aria-label={`Reading page ${versoFooter}${showRecto ? ` and ${rectoFooter}` : ''}. Press Enter to begin narration from this page.`}
+          aria-keyshortcuts="Enter PageUp PageDown Space"
           onPointerMove={handleLinePointerMove}
           onPointerLeave={handleLinePointerLeave}
           onPointerDown={handleLinePointerDown}
+          onKeyDown={handleViewportKeyDown}
         >
           <div
             className="reflow-flow"

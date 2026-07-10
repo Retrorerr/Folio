@@ -90,7 +90,6 @@ export default memo(function Pill({
   //   'collapsed' | 'expanded' (steady)
   //   'expanding' | 'collapsing' (during morph: BOTH trees mounted)
   const [pillMotion, setPillMotion] = useState('')
-  const [pulse, setPulse] = useState(0)
   const [controlsHidden, setControlsHidden] = useState(false)
   const [selectionHintVisible, setSelectionHintVisible] = useState(false)
   const pillRef = useRef<HTMLDivElement | null>(null)
@@ -207,12 +206,6 @@ export default memo(function Pill({
       document.removeEventListener('keydown', onKey)
     }
   }, [expanded, setExpandedWithMotion])
-
-  useEffect(() => {
-    if (!isPlaying) return
-    const id = setInterval(() => setPulse((p) => p + 1), 200)
-    return () => clearInterval(id)
-  }, [isPlaying])
 
   useEffect(() => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
@@ -703,7 +696,9 @@ export default memo(function Pill({
       </AnimatePresence>
       <m.div
         ref={pillRef}
-        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${(isPlaying || isGenerating || textLoading || modelLoading || downloadActive) ? 'is-active' : ''} ${pillMotion} ${slowMo ? 'pill-slowmo' : ''}`}
+        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${isPlaying ? 'is-playing' : ''} ${(isPlaying || isGenerating || textLoading || modelLoading || downloadActive) ? 'is-active' : ''} ${pillMotion} ${slowMo ? 'pill-slowmo' : ''}`}
+        role="region"
+        aria-label="Narration playback controls"
         onClick={() => { if (!expanded) setExpandedWithMotion(true) }}
         layout
         transition={slowMo ? pillShellSlowTransition : pillShellTransition}
@@ -731,13 +726,16 @@ export default memo(function Pill({
 
               <div className="pill-waveform">
                 {heights.slice(0, 28).map((h, i) => {
-                  const live = isPlaying ? (0.7 + 0.3 * Math.sin((pulse + i) * 0.7)) : 1
                   const passed = (i / 28) < progress
                   return (
                     <div
                       key={i}
                       className="wave-bar"
-                      style={{ height: `${h * live * 100}%`, opacity: passed ? 1 : 0.28 }}
+                      style={{
+                        height: `${h * 100}%`,
+                        opacity: passed ? 1 : 0.28,
+                        '--wave-delay': `${i * -42}ms`,
+                      } as React.CSSProperties}
                     />
                   )
                 })}
@@ -748,18 +746,19 @@ export default memo(function Pill({
               {/* Transport cluster — fixed-width and never reflows so the
                   play button stays put when prep buttons morph. */}
               <div className="pill-controls-transport">
-                <m.button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)" whileHover={buttonHover} whileTap={buttonTap}>
+                <m.button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)" aria-label="Previous sentence" whileHover={buttonHover} whileTap={buttonTap}>
                   <Icons.Rewind size={16} />
                 </m.button>
                 <m.button
                   className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
                   onClick={primaryClick}
                   title="Play/Pause (Space)"
+                  aria-label={isPlaying ? 'Pause narration' : 'Play narration'}
                   whileTap={buttonTap}
                 >
                   {isPlaying ? <Icons.Pause size={18} /> : <Icons.Play size={18} />}
                 </m.button>
-                <m.button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)" whileHover={buttonHover} whileTap={buttonTap}>
+                <m.button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)" aria-label="Next sentence" whileHover={buttonHover} whileTap={buttonTap}>
                   <Icons.Forward size={16} />
                 </m.button>
               </div>
@@ -808,7 +807,7 @@ export default memo(function Pill({
                   </span>
                   <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
                 </m.button>
-                <m.button className="pill-btn pill-expand-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand" whileTap={buttonTap}>
+                <m.button className="pill-btn pill-expand-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand" aria-label="Expand playback controls" whileTap={buttonTap}>
                   <Icons.ChevronDown size={16} style={{ transform: 'rotate(180deg)' }} />
                 </m.button>
               </div>
@@ -834,10 +833,10 @@ export default memo(function Pill({
                 <div className={`eyebrow ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>
                   {plActive ? preloadLabel.toUpperCase() : (status ? status.toUpperCase() : `NOW PLAYING · PAGE ${currentPage + 1} OF ${pageCount}`)}
                 </div>
-                <h3>{book?.title || 'Kokoro Reader'}</h3>
+                <h2>{book?.title || 'Kokoro Reader'}</h2>
                 <div className="a">{book?.author ? `by ${book.author}` : ''}{voice ? ` · read by ${voice}` : ''}</div>
               </div>
-              <m.button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(false) }} whileTap={buttonTap}>
+              <m.button className="collapse-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(false) }} aria-label="Collapse playback controls" whileTap={buttonTap}>
                 <Icons.ChevronDown size={18} />
               </m.button>
             </div>
@@ -891,12 +890,14 @@ export default memo(function Pill({
               <div className="pill-wave-lg">
                 {heights.map((h, i) => {
                   const passed = i <= currentIndex
-                  const live = isPlaying && passed ? (0.7 + 0.3 * Math.sin((pulse + i) * 0.5)) : 1
                   return (
                     <div
                       key={i}
                       className={`wave-bar-lg ${passed ? 'passed' : 'future'}`}
-                      style={{ height: `${h * live * 100}%` }}
+                      style={{
+                        height: `${h * 100}%`,
+                        '--wave-delay': `${i * -24}ms`,
+                      } as React.CSSProperties}
                     />
                   )
                 })}
