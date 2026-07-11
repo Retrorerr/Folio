@@ -153,8 +153,8 @@
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--ember) 4%, transparent), transparent 32%),
     color-mix(in srgb, var(--paper) 16%, transparent);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  -webkit-backdrop-filter: blur(10px) saturate(1.03);
+  backdrop-filter: blur(10px) saturate(1.03);
 }
 
 .settings-shell {
