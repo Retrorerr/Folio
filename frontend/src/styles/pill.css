@@ -127,7 +127,7 @@
   background: var(--ink);
   color: var(--pill-fg);
   border-radius: 999px;
-  padding: 10px 12px 10px 16px;
+  padding: 10px 14px;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -195,7 +195,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   grid-column: 1;
 }
 .pill-expanded-content {
@@ -258,7 +258,12 @@
 .pill.expanded {
   width: min(760px, calc(100vw - 32px));
   min-width: min(640px, calc(100vw - 32px));
+  max-height: calc(100dvh - 88px);
   padding: 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border-radius: 24px;
   flex-direction: column;
   align-items: stretch;
@@ -340,7 +345,7 @@
 .pill-meta .t {
   font-family: var(--font-display);
   font-style: italic;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.2;
   color: var(--pill-fg);
   white-space: nowrap;
@@ -349,8 +354,8 @@
 }
 .pill-meta .a {
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
   color: var(--ink-3);
   text-transform: uppercase;
   white-space: nowrap;
@@ -361,8 +366,10 @@
 .theme-folio .pill-meta .a { color: var(--pill-fg-muted); }
 
 .pill-waveform {
-  flex: 0 0 auto;
-  width: 110px;
+  flex: 1 1 72px;
+  min-width: 24px;
+  max-width: 72px;
+  width: 72px;
   height: 32px;
   display: flex;
   align-items: center;
@@ -370,6 +377,7 @@
 }
 .wave-bar {
   flex: 1;
+  min-width: 1px;
   background: var(--ember);
   border-radius: 999px;
   transition:
@@ -397,14 +405,26 @@
    outer container width is steady. */
 .pill-controls-prep {
   display: flex;
-  gap: 4px;
+  gap: 7px;
   align-items: center;
   grid-column: 3;
-  justify-self: end;
-  flex: 0 0 auto;
+  justify-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   justify-content: flex-end;
-  /* Width budget holds the widest prep state so transport stays anchored. */
-  min-width: 248px;
+  min-width: 0;
+}
+
+.pill-controls-prep.state-playing {
+  gap: 4px;
+}
+
+.pill-controls-prep.state-playing .pill-btn.follow-along-btn.is-prominent {
+  inline-size: 120px;
+  padding-inline: 9px;
+  gap: 6px;
+  font-size: 10px;
 }
 .pill-btn {
   width: 36px; height: 36px;
@@ -661,7 +681,7 @@
   color: var(--ember);
   margin-bottom: 4px;
 }
-.pill-expanded-head .meta h3 {
+.pill-expanded-head .meta h2 {
   font-family: var(--font-display);
   font-style: italic;
   font-weight: 400;
@@ -1214,7 +1234,7 @@
     align-items: flex-start;
   }
 
-  .pill-expanded-head .meta h3 {
+  .pill-expanded-head .meta h2 {
     font-size: 20px;
   }
 

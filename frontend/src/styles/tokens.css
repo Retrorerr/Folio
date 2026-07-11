@@ -5,9 +5,9 @@
 
 :root {
   /* Type */
-  --font-serif: "Newsreader", "Iowan Old Style", "Palatino", Georgia, serif;
-  --font-display: "Instrument Serif", "Newsreader", Georgia, serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-serif: "Newsreader Variable", "Newsreader", "Iowan Old Style", "Palatino", Georgia, serif;
+  --font-display: "Instrument Serif", "Newsreader Variable", "Newsreader", Georgia, serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* Scale */
   --radius-sm: 6px;
@@ -155,6 +155,15 @@ button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: none; }
 ::selection { background: var(--ember-wash); color: var(--ink); }
 
+:where(button, input, select, textarea, a[href], [tabindex]):focus-visible {
+  outline: 2px solid var(--ember-soft);
+  outline-offset: 3px;
+}
+
+:where(button, input, select, textarea):disabled {
+  cursor: not-allowed;
+}
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 999px; border: 2px solid var(--paper); }
@@ -169,4 +178,16 @@ button { cursor: pointer; background: none; border: none; }
     scroll-behavior: auto !important;
     transition-duration: 1ms !important;
   }
+}
+
+/* The in-app motion preference must be as complete as the OS preference.
+   MotionConfig covers Motion components; this covers CSS-driven flourishes. */
+.motion-reduced,
+.motion-reduced *,
+.motion-reduced *::before,
+.motion-reduced *::after {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 1ms !important;
 }
