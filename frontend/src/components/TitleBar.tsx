@@ -124,7 +124,7 @@ export default function TitleBar({
           title="Close"
           onClick={() => runWindowAction('close')}
         >
-          <Icons.X size={16} stroke={1.8} />
+          <Icons.X size={10} stroke={1.5} />
         </button>
       </div>
     </header>

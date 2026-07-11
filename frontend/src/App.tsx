@@ -1,13 +1,9 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { AnimatePresence, MotionConfig, motion as m } from 'motion/react'
 import type { GlobalSettings, ModelInstallInfo, Position, SearchResult, TtsRuntimeInfo, TtsStatus } from './types'
 import useBookState from './hooks/useBookState'
 import useAudioPlayback from './hooks/useAudioPlayback'
-import Welcome from './components/Welcome'
 import LoadingScreen from './components/LoadingScreen'
-import ReflowViewer from './components/ReflowViewer'
-import Pill from './components/Pill'
-import Sidebar from './components/Sidebar'
 import { Icons } from './components/icons'
 import {
   apiFetch,
@@ -35,6 +31,28 @@ const ACTIVE_MODEL_STATES = new Set(['download_queued', 'downloading', 'verifyin
 const APP_HEARTBEAT_ACTIVE_WORK_MS = 30_000
 const APP_HEARTBEAT_THROTTLE_MS = 5_000
 const BACKEND_RESTART_THROTTLE_MS = 5_000
+const loadWelcome = () => import('./components/Welcome')
+const loadReflowViewer = () => import('./components/ReflowViewer')
+const loadPill = () => import('./components/Pill')
+const loadSidebar = () => import('./components/Sidebar')
+const Welcome = lazy(loadWelcome)
+const ReflowViewer = lazy(loadReflowViewer)
+const Pill = lazy(loadPill)
+const Sidebar = lazy(loadSidebar)
+
+function SurfaceFallback({ theme, label, detail }: { theme: string; label: string; detail: string }) {
+  const logoSrc = theme === 'light' || theme === 'sepia' ? '/folio-icon.png' : '/folio-monochrome-icon.png'
+  return (
+    <div className="surface-fallback" role="status" aria-live="polite">
+      <img src={logoSrc} alt="" />
+      <div>
+        <strong>{label}</strong>
+        <span>{detail}</span>
+      </div>
+      <div className="surface-fallback-progress" aria-hidden="true"><span /></div>
+    </div>
+  )
+}
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseFloat(String(value))
@@ -90,6 +108,11 @@ export default function App() {
   const [backendLogPath, setBackendLogPath] = useState<string | null>(null)
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null)
   const settingsHydrated = useRef(false)
+
+  useEffect(() => {
+    const preloadTimer = window.setTimeout(() => { void loadWelcome().catch(() => {}) }, 40)
+    return () => window.clearTimeout(preloadTimer)
+  }, [])
 
   const saveSetting = useCallback((key: string, value: unknown) => {
     if (!settingsHydrated.current) return
@@ -592,25 +615,6 @@ export default function App() {
     if (visualPageCountTimerRef.current) clearTimeout(visualPageCountTimerRef.current)
   }, [])
 
-  const statusBadges = useMemo(() => (
-    <>
-      <span className={`gpu-badge ${backendReachable ? 'gpu-on' : 'gpu-off'}`}>
-        {backendReachable ? 'Backend Ready' : 'Starting Backend'}
-      </span>
-      {backendReachable && activeModelLoading && (
-        <span className="gpu-badge">Voice Model Loading</span>
-      )}
-      {backendReachable && activeModelLoaded && (
-        <span className="gpu-badge gpu-on">Voice Model Ready</span>
-      )}
-      {activeGpuEnabled !== null && activeGpuEnabled !== undefined && (
-        <span className={`gpu-badge ${activeGpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
-          {activeGpuEnabled ? 'GPU Accelerated' : 'CPU Mode'}
-        </span>
-      )}
-    </>
-  ), [backendReachable, activeModelLoading, activeModelLoaded, activeGpuEnabled])
-
   const appView = !book && !startupReady ? 'loading' : !book ? 'library' : 'reader'
   const previousAppViewRef = useRef(appView)
   const appTransition = useMemo(
@@ -620,6 +624,14 @@ export default function App() {
 
   useEffect(() => {
     previousAppViewRef.current = appView
+  }, [appView])
+
+  useEffect(() => {
+    if (appView !== 'library') return
+    const preloadTimer = window.setTimeout(() => {
+      void Promise.allSettled([loadSidebar(), loadReflowViewer(), loadPill()])
+    }, 900)
+    return () => window.clearTimeout(preloadTimer)
   }, [appView])
 
   const renderReader = () => {
@@ -657,140 +669,146 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <m.div className="reader-shell" layout transition={spring.layout}>
-            <Sidebar
-              book={book}
-              reflow={reflow}
-              currentPage={currentPage}
-              currentSentence={audio.currentSentence}
-              goToPage={goToPageFromUser}
-              addBookmark={addBookmark}
-              removeBookmark={removeBookmark}
-              voice={audio.voice}
-              setVoice={audio.setVoice}
-              ttsEngine={audio.ttsEngine}
-              setTtsEngine={audio.setTtsEngine}
-              modelStatus={modelStatus}
-              installPromptEngine={installPromptEngine}
-              clearInstallPrompt={() => setInstallPromptEngine(null)}
-              speed={audio.speed}
-              theme={theme}
-              setTheme={setTheme}
-              motion={motion}
-              setMotion={setMotion}
-              wheelPaging={wheelPaging}
-              setWheelPaging={setWheelPaging}
-              tab={sidebarTab}
-              setTab={handleSidebarTab}
-              onNavigateSearchResult={handleSearchNavigate}
-              onHome={onHome}
-              hidden={followAlongMode}
-            />
-
-            <m.div className={`reader-main ${followAlongMode ? 'follow-along' : ''}`} layout transition={spring.layout}>
-              <ReflowViewer
-                bookId={book.id}
+          <Suspense fallback={<SurfaceFallback theme={theme} label="Preparing your book" detail="Laying out pages and playback controls…" />}>
+            <m.div className="reader-shell" layout transition={spring.layout}>
+              <Sidebar
+                book={book}
                 reflow={reflow}
-                chapterIdx={currentPage}
-                setChapterIdx={goToPageFromViewer}
-                runningHead={book.title}
+                currentPage={currentPage}
                 currentSentence={audio.currentSentence}
-                activeChapterIdx={audio.readingPage ?? currentPage}
-                chunkProgress={audio.chunkProgress}
-                isPlaying={audio.isPlaying}
-                onProgress={handleReflowProgress}
-                navRef={reflowNavRef}
-                motion={motion}
-                wheelPaging={followAlongMode ? false : wheelPaging}
-                searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-                followAlongMode={followAlongMode}
-                onSentenceSelect={seekToSentenceFromUser}
+                goToPage={goToPageFromUser}
+                addBookmark={addBookmark}
+                removeBookmark={removeBookmark}
+                voice={audio.voice}
+                setVoice={audio.setVoice}
+                ttsEngine={audio.ttsEngine}
+                setTtsEngine={audio.setTtsEngine}
+                modelStatus={modelStatus}
+                installPromptEngine={installPromptEngine}
+                clearInstallPrompt={() => setInstallPromptEngine(null)}
+                speed={audio.speed}
                 theme={theme}
-                resumePosition={book.last_position}
-                onVisualPositionChange={handleVisualPositionChange}
+                setTheme={setTheme}
+                motion={motion}
+                setMotion={setMotion}
+                wheelPaging={wheelPaging}
+                setWheelPaging={setWheelPaging}
+                tab={sidebarTab}
+                setTab={handleSidebarTab}
+                onNavigateSearchResult={handleSearchNavigate}
+                onHome={onHome}
+                hidden={followAlongMode}
               />
 
-              <div
-                className={`page-nav-reveal-zone ${followAlongMode && pageNavHidden ? 'active' : ''}`}
-                onPointerEnter={revealPageNav}
-                onPointerMove={revealPageNav}
-              />
-              <m.button
-                layout
-                transition={spring.quick}
-                whileHover={{ y: -1, scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                className={`page-nav prev ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
-                animate={pageNavMotion}
-                style={{ pointerEvents: pageNavAutoHidden ? 'none' : undefined }}
-                aria-hidden={pageNavAutoHidden || undefined}
-                onPointerEnter={revealPageNav}
-                onFocus={revealPageNav}
-                onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
-              >
-                <Icons.ChevronLeft size={18} />
-              </m.button>
-              <m.button
-                layout
-                transition={spring.quick}
-                whileHover={{ y: -1, scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                className={`page-nav next ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
-                animate={pageNavMotion}
-                style={{ pointerEvents: pageNavAutoHidden ? 'none' : undefined }}
-                aria-hidden={pageNavAutoHidden || undefined}
-                onPointerEnter={revealPageNav}
-                onFocus={revealPageNav}
-                onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
-              >
-                <Icons.ChevronRight size={18} />
-              </m.button>
+              <m.main className={`reader-main ${followAlongMode ? 'follow-along' : ''}`} layout transition={spring.layout}>
+                <ReflowViewer
+                  bookId={book.id}
+                  reflow={reflow}
+                  chapterIdx={currentPage}
+                  setChapterIdx={goToPageFromViewer}
+                  runningHead={book.title}
+                  currentSentence={audio.currentSentence}
+                  activeChapterIdx={audio.readingPage ?? currentPage}
+                  chunkProgress={audio.chunkProgress}
+                  isPlaying={audio.isPlaying}
+                  onProgress={handleReflowProgress}
+                  navRef={reflowNavRef}
+                  motion={motion}
+                  wheelPaging={followAlongMode ? false : wheelPaging}
+                  searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+                  followAlongMode={followAlongMode}
+                  onSentenceSelect={seekToSentenceFromUser}
+                  theme={theme}
+                  resumePosition={book.last_position}
+                  onVisualPositionChange={handleVisualPositionChange}
+                />
+
+                <div
+                  className={`page-nav-reveal-zone ${followAlongMode && pageNavHidden ? 'active' : ''}`}
+                  onPointerEnter={revealPageNav}
+                  onPointerMove={revealPageNav}
+                />
+                <m.button
+                  layout
+                  transition={spring.quick}
+                  whileHover={{ y: -1, scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className={`page-nav prev ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
+                  animate={pageNavMotion}
+                  style={{ pointerEvents: pageNavAutoHidden ? 'none' : undefined }}
+                  aria-hidden={pageNavAutoHidden || undefined}
+                  onPointerEnter={revealPageNav}
+                  onFocus={revealPageNav}
+                  aria-label="Previous page"
+                  title="Previous page"
+                  onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
+                >
+                  <Icons.ChevronLeft size={18} />
+                </m.button>
+                <m.button
+                  layout
+                  transition={spring.quick}
+                  whileHover={{ y: -1, scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className={`page-nav next ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
+                  animate={pageNavMotion}
+                  style={{ pointerEvents: pageNavAutoHidden ? 'none' : undefined }}
+                  aria-hidden={pageNavAutoHidden || undefined}
+                  onPointerEnter={revealPageNav}
+                  onFocus={revealPageNav}
+                  aria-label="Next page"
+                  title="Next page"
+                  onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
+                >
+                  <Icons.ChevronRight size={18} />
+                </m.button>
+              </m.main>
             </m.div>
-          </m.div>
 
-          <Pill
-            isPlaying={audio.isPlaying}
-            isGenerating={audio.isGenerating}
-            generationError={audio.generationError}
-            textLoading={textLoading}
-            modelLoaded={activeModelLoaded}
-            modelLoading={activeModelLoading}
-            installState={activeInstall}
-            downloadActive={!!activeTtsStatus?.download_active}
-            downloadBytes={activeTtsStatus?.download_bytes ?? 0}
-            downloadTotalBytes={activeTtsStatus?.download_total_bytes ?? 0}
-            engineFallbackReason={activeTtsStatus?.fallback_reason ?? null}
-            engineLoadError={activeTtsStatus?.last_load_error ?? null}
-            engineRuntime={activeRuntime}
-            ttsActivity={ttsStatus?.tts_activity ?? null}
-            bufferState={audio.bufferState}
-            play={audio.play}
-            pause={audio.pause}
-            stop={audio.stop}
-            skipSentence={audio.skipSentence}
-            currentPage={currentPage}
-            pageCount={book.page_count}
-            goToPage={goToPageFromUser}
-            speed={audio.speed}
-            setSpeed={audio.setSpeed}
-            volume={audio.volume}
-            setVolume={setVolume}
-            ttsEngine={audio.ttsEngine}
-            voice={audio.voice}
-            currentSentence={audio.currentSentence}
-            sentenceCount={pageData?.sentences?.length || 0}
-            pageData={pageData}
-            playRequiresLineSelection={!audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
-            sleepTimer={audio.sleepTimer}
-            setSleepTimer={audio.setSleepTimer}
-            preloadState={audio.preloadState}
-            preloadChapter={audio.preloadChapter}
-            readingPage={audio.readingPage}
-            jumpToReader={jumpToReader}
-            followAlongMode={followAlongMode}
-            toggleFollowAlong={toggleFollowAlong}
-            book={book}
-          />
+            <Pill
+              isPlaying={audio.isPlaying}
+              isGenerating={audio.isGenerating}
+              generationError={audio.generationError}
+              textLoading={textLoading}
+              modelLoaded={activeModelLoaded}
+              modelLoading={activeModelLoading}
+              installState={activeInstall}
+              downloadActive={!!activeTtsStatus?.download_active}
+              downloadBytes={activeTtsStatus?.download_bytes ?? 0}
+              downloadTotalBytes={activeTtsStatus?.download_total_bytes ?? 0}
+              engineFallbackReason={activeTtsStatus?.fallback_reason ?? null}
+              engineLoadError={activeTtsStatus?.last_load_error ?? null}
+              engineRuntime={activeRuntime}
+              ttsActivity={ttsStatus?.tts_activity ?? null}
+              bufferState={audio.bufferState}
+              play={audio.play}
+              pause={audio.pause}
+              stop={audio.stop}
+              skipSentence={audio.skipSentence}
+              currentPage={currentPage}
+              pageCount={book.page_count}
+              goToPage={goToPageFromUser}
+              speed={audio.speed}
+              setSpeed={audio.setSpeed}
+              volume={audio.volume}
+              setVolume={setVolume}
+              ttsEngine={audio.ttsEngine}
+              voice={audio.voice}
+              currentSentence={audio.currentSentence}
+              sentenceCount={pageData?.sentences?.length || 0}
+              pageData={pageData}
+              playRequiresLineSelection={!audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
+              sleepTimer={audio.sleepTimer}
+              setSleepTimer={audio.setSleepTimer}
+              preloadState={audio.preloadState}
+              preloadChapter={audio.preloadChapter}
+              readingPage={audio.readingPage}
+              jumpToReader={jumpToReader}
+              followAlongMode={followAlongMode}
+              toggleFollowAlong={toggleFollowAlong}
+              book={book}
+            />
+          </Suspense>
         </div>
       </m.div>
     )
@@ -837,35 +855,36 @@ export default function App() {
       <div className={`app-shell app-enter theme-${theme} grain`}>
         <TitleBar />
         <CursorHalo motion={motion} />
-        <Welcome
-          theme={theme}
-          setTheme={setTheme}
-          motion={motion}
-          setMotion={setMotion}
-          onUpload={uploadBook}
-          recentBooks={recentBooks}
-          onOpenRecent={openBook}
-          onDeleteRecent={deleteBook}
-          statusBadges={statusBadges}
-          settingsPanelProps={{
-            wheelPaging,
-            setWheelPaging,
-            voice: audio.voice,
-            setVoice: audio.setVoice,
-            ttsEngine: audio.ttsEngine,
-            setTtsEngine: audio.setTtsEngine,
-            modelStatus,
-            installPromptEngine,
-            clearInstallPrompt: () => setInstallPromptEngine(null),
-          }}
-        />
+        <Suspense fallback={<SurfaceFallback theme={theme} label="Opening your library" detail="Restoring your shelf and reading history…" />}>
+          <Welcome
+            theme={theme}
+            setTheme={setTheme}
+            motion={motion}
+            setMotion={setMotion}
+            onUpload={uploadBook}
+            recentBooks={recentBooks}
+            onOpenRecent={openBook}
+            onDeleteRecent={deleteBook}
+            settingsPanelProps={{
+              wheelPaging,
+              setWheelPaging,
+              voice: audio.voice,
+              setVoice: audio.setVoice,
+              ttsEngine: audio.ttsEngine,
+              setTtsEngine: audio.setTtsEngine,
+              modelStatus,
+              installPromptEngine,
+              clearInstallPrompt: () => setInstallPromptEngine(null),
+            }}
+          />
+        </Suspense>
       </div>
     </m.div>
   ) : renderReader()
 
   return (
     <MotionConfig reducedMotion={motion ? 'user' : 'always'} transition={spring.quick}>
-      <div className={`app-transition-stage theme-${theme}`}>
+      <div className={`app-transition-stage theme-${theme} ${motion ? 'motion-enabled' : 'motion-reduced'}`}>
         <AnimatePresence mode="sync" initial={false}>
           {appContent}
         </AnimatePresence>

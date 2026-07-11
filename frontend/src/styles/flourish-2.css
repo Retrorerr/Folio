@@ -509,29 +509,19 @@ html.theme-transitioning::before {
 }
 
 /* ---------------------------------------------------------------------------
-   PILL WAVEFORM — proper sine-wave dance when playing
-   The bars are existing .wave-bar elements (10 of them). We don't change
-   markup — just add a per-child phase animation that overrides the JS-set
-   inline height with a smooth oscillation ONLY when .pill is hovered or
-   .pill-cover.rotating (i.e., audio is playing).
+   PILL WAVEFORM — compositor-driven playback motion. The old implementation
+   updated React state five times per second and forced the full player to
+   rerender; transforms keep the animation smooth without touching layout.
 --------------------------------------------------------------------------- */
-.pill:has(.pill-cover.rotating) .wave-bar {
+.pill.is-playing .wave-bar,
+.pill.is-playing .wave-bar-lg.passed {
   animation: wave-dance 1.2s ease-in-out infinite;
+  animation-delay: var(--wave-delay, 0ms);
   transform-origin: center;
 }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(1)  { animation-delay: 0.00s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(2)  { animation-delay: 0.08s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(3)  { animation-delay: 0.16s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(4)  { animation-delay: 0.24s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(5)  { animation-delay: 0.32s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(6)  { animation-delay: 0.40s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(7)  { animation-delay: 0.48s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(8)  { animation-delay: 0.56s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(9)  { animation-delay: 0.64s; }
-.pill:has(.pill-cover.rotating) .wave-bar:nth-child(10) { animation-delay: 0.72s; }
 @keyframes wave-dance {
-  0%, 100% { transform: scaleY(0.4); opacity: 0.6; }
-  50%      { transform: scaleY(1.0); opacity: 1; }
+  0%, 100% { transform: scaleY(0.68); }
+  50%      { transform: scaleY(1.0); }
 }
 
 /* ---------------------------------------------------------------------------
@@ -664,7 +654,8 @@ html.theme-transitioning::before {
 @media (prefers-reduced-motion: reduce) {
   .welcome-left .mote,
   .welcome-topbar .motes-row .mote,
-  .pill:has(.pill-cover.rotating) .wave-bar,
+  .pill.is-playing .wave-bar,
+  .pill.is-playing .wave-bar-lg.passed,
   .voice-card.active::after,
   .teleprompter::after,
   .empty-library .empty-mark::before,

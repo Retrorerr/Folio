@@ -817,6 +817,7 @@ export function SettingsPanel({
                     key={t}
                     data-t={t}
                     className={`theme-option ${theme === t ? 'active' : ''}`}
+                    aria-pressed={theme === t}
                     onClick={(e) => {
                       runThemeTransition(e, t, theme, setTheme)
                     }}
@@ -830,7 +831,7 @@ export function SettingsPanel({
                 ))}
               </m.div>
               <div className="control-row">
-                <span className="k" id="motion-toggle-label">Page-turn animation</span>
+                <span className="k" id="motion-toggle-label">Interface motion and page turns</span>
                 <button
                   type="button"
                   className={`toggle ${motion ? 'on' : ''}`}
@@ -895,12 +896,13 @@ export function SettingsPanel({
                 </div>
                 <span>{activeVoice}</span>
               </div>
-              <m.div className="tts-engine-switch" layout>
+              <m.div className="tts-engine-switch" role="group" aria-label="Narration engine" layout>
                 {ttsEngines.map((engine) => (
                   <m.button
                     key={engine.id}
                     type="button"
                     className={`tts-engine-option ${activeEngine === engine.id ? 'active' : ''}`}
+                    aria-pressed={activeEngine === engine.id}
                     onClick={() => requestEngine(engine.id)}
                     layout
                     whileTap={buttonTap}

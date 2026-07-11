@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react'
+import TitleBar from './components/TitleBar'
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -30,46 +31,21 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
     if (this.state.error) {
       const message = this.state.error?.message || String(this.state.error)
       return (
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '100vh',
-            padding: '2rem',
-            fontFamily: 'system-ui, sans-serif',
-            color: 'var(--ink, #2a2520)',
-            background: 'var(--paper-2, #f5efe6)',
-            textAlign: 'center',
-            gap: '1rem',
-          }}
-        >
-          <h1 style={{ fontSize: '1.5rem', margin: 0 }}>Something went wrong</h1>
-          <pre
-            style={{
-              maxWidth: '40rem',
-              whiteSpace: 'pre-wrap',
-              opacity: 0.7,
-              fontSize: '0.85rem',
-              margin: 0,
-            }}
-          >
-            {message}
-          </pre>
-          <button
-            onClick={this.handleReload}
-            style={{
-              padding: '0.5rem 1.25rem',
-              borderRadius: '999px',
-              border: '1px solid currentColor',
-              background: 'transparent',
-              color: 'inherit',
-              cursor: 'pointer',
-            }}
-          >
-            Reload
-          </button>
+        <div className="error-screen theme-folio">
+          <TitleBar />
+          <main className="error-card" role="alert">
+            <img src="/folio-monochrome-icon.png" alt="" />
+            <div className="error-kicker">Folio recovery</div>
+            <h1>Your reading session hit a snag.</h1>
+            <p>Your library and reading position are stored locally. Reload Folio to restore the app safely.</p>
+            <button type="button" className="error-reload" onClick={this.handleReload} autoFocus>
+              Reload Folio
+            </button>
+            <details>
+              <summary>Technical details</summary>
+              <pre>{message}</pre>
+            </details>
+          </main>
         </div>
       )
     }
