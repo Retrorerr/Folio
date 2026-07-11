@@ -428,8 +428,9 @@ function activeLineRect(active: Element, words: any[], currentIdx: number, viewp
   // Drop caps create an oversized first-letter box that can distort the
   // paragraph-level line rect. For that opening sentence, keep the measured
   // line scoped to the sentence's own fragments.
-  const hasDropCap = Boolean(active.querySelector('.drop-cap'))
-  const lineSource = hasDropCap ? active : (active.closest('.reflow-para') || active)
+  const lineSource = active.closest('.reflow-para') || active
+  const dropCap = lineSource.querySelector('.drop-cap')
+  const hasDropCap = Boolean(dropCap)
   const sourceRange = document.createRange()
   sourceRange.selectNodeContents(lineSource)
   const sourceRects = Array.from(sourceRange.getClientRects()).filter(rect => (
@@ -463,9 +464,7 @@ function activeLineRect(active: Element, words: any[], currentIdx: number, viewp
 
   let rect = expandRect(lineRect, 18, 9)
   if (viewportRect) rect = clampRectToBounds(rect, viewportRect)
-  const dropCapRect = hasDropCap
-    ? active.querySelector('.drop-cap')?.getBoundingClientRect()
-    : null
+  const dropCapRect = dropCap?.getBoundingClientRect() || null
   const markerRect = lineMarkerAnchorRect(lineRect, currentRect, viewportRect, dropCapRect)
   const lineKey = [
     lineSource.getAttribute('data-block-index') || '',
@@ -488,7 +487,7 @@ type CursorPlacement = {
 }
 
 const LINE_CURSOR_GUTTER = 26
-const LINE_CURSOR_HORIZONTAL_SNAP_DISTANCE = 8
+const LINE_CURSOR_COLUMN_SNAP_DISTANCE = 96
 
 function placeLineOverlay(el: HTMLElement, rect: CursorPlacement, opacity: number, mode: CursorMode) {
   const opacityKey = `${opacity}`
@@ -512,7 +511,7 @@ function placeLineOverlay(el: HTMLElement, rect: CursorPlacement, opacity: numbe
   const shouldSnapHorizontal = (
     !shouldSnapPosition &&
     positionChanged &&
-    horizontalDistance > LINE_CURSOR_HORIZONTAL_SNAP_DISTANCE
+    horizontalDistance > LINE_CURSOR_COLUMN_SNAP_DISTANCE
   )
 
   // A cursor returning from a hidden page should appear at its destination,
@@ -585,14 +584,20 @@ function lineMarkerAnchorRect(
   // to the cap's left edge and grow it to the cap's full height; subsequent
   // lines return to the regular line-sized marker even while wrapping beside
   // the float.
-  const dropCapOpeningLine = Boolean(
+  const dropCapWrapsLine = Boolean(
     dropCapRect &&
     lineRect.bottom >= dropCapRect.top &&
-    lineRect.top <= dropCapRect.bottom &&
+    lineRect.top <= dropCapRect.bottom + lineRect.height
+  )
+  const dropCapOpeningLine = Boolean(
+    dropCapRect &&
+    dropCapWrapsLine &&
     Math.abs(lineRect.top - dropCapRect.top) <= Math.max(12, lineRect.height * 0.75)
   )
-  if (dropCapRect && dropCapOpeningLine) {
+  if (dropCapRect && dropCapWrapsLine) {
     left = Math.max(columnLeft, dropCapRect.left)
+  }
+  if (dropCapRect && dropCapOpeningLine) {
     top = Math.min(lineRect.top, dropCapRect.top)
     bottom = Math.max(lineRect.bottom, dropCapRect.bottom)
   }
