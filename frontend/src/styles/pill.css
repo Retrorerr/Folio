@@ -367,7 +367,7 @@
 
 .pill-waveform {
   flex: 0 0 auto;
-  width: 56px;
+  width: 72px;
   height: 32px;
   display: flex;
   align-items: center;
@@ -402,7 +402,7 @@
    outer container width is steady. */
 .pill-controls-prep {
   display: flex;
-  gap: 4px;
+  gap: 7px;
   align-items: center;
   grid-column: 3;
   justify-self: end;

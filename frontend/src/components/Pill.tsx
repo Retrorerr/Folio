@@ -724,22 +724,6 @@ export default memo(function Pill({
                 <div className={`a ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>{metaLine}</div>
               </div>
 
-              <div className="pill-waveform">
-                {heights.slice(0, 28).map((h, i) => {
-                  const passed = (i / 28) < progress
-                  return (
-                    <div
-                      key={i}
-                      className="wave-bar"
-                      style={{
-                        height: `${h * 100}%`,
-                        opacity: passed ? 1 : 0.28,
-                        '--wave-delay': `${i * -42}ms`,
-                      } as React.CSSProperties}
-                    />
-                  )
-                })}
-              </div>
             </div>
 
             <div className="pill-controls" onClick={(e) => e.stopPropagation()}>
@@ -765,6 +749,22 @@ export default memo(function Pill({
               {/* Prep cluster — reserves width for the wider variant so morphing
                   preload ↔ follow-along never shifts the transport buttons. */}
               <div className={`pill-controls-prep ${isPlaying ? 'state-playing' : 'state-paused'}`}>
+                <div className="pill-waveform" aria-hidden="true">
+                  {heights.slice(0, 28).map((h, i) => {
+                    const passed = (i / 28) < progress
+                    return (
+                      <div
+                        key={i}
+                        className="wave-bar"
+                        style={{
+                          height: `${h * 100}%`,
+                          opacity: passed ? 1 : 0.28,
+                          '--wave-delay': `${i * -42}ms`,
+                        } as React.CSSProperties}
+                      />
+                    )
+                  })}
+                </div>
                 <span className="pill-divider" aria-hidden="true" />
                 <m.button
                   className={`pill-preload-control preload-${pl.state} is-compact`}
