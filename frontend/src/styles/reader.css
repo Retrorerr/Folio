@@ -809,12 +809,14 @@
 }
 .settings-shell {
   width: min(1080px, calc(100vw - 48px));
-  height: auto;
+  height: min(820px, calc(100vh - 84px));
   max-height: calc(100vh - 84px);
-  display: block;
+  display: flex;
+  flex-direction: column;
   background: color-mix(in srgb, var(--paper) 94%, transparent);
 }
 .settings-main {
+  flex: 1;
   min-height: 0;
 }
 .settings-full-head {
@@ -847,6 +849,8 @@
   grid-template-columns: minmax(300px, 0.84fr) minmax(440px, 1.16fr);
   padding: 16px 24px 24px;
   gap: 14px;
+  min-height: 0;
+  overflow: auto;
 }
 .settings-full-body .settings-group {
   padding: 14px 15px;
@@ -885,9 +889,9 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  max-height: none;
-  overflow: visible;
-  padding-right: 0;
+  max-height: 100%;
+  overflow: auto;
+  padding-right: 4px;
 }
 .settings-shell .voice-card {
   min-height: 116px;
@@ -1027,9 +1031,7 @@
 .theme-option[data-t="light"] .swatch { background: #f7f4ed; }
 .theme-option[data-t="sepia"] .swatch { background: #f3e7cf; }
 .theme-option[data-t="dark"] .swatch {
-  background:
-    radial-gradient(circle at 72% 28%, #4d9ed4 0 17%, transparent 18%),
-    linear-gradient(135deg, #111417 0 68%, #24577a 69% 100%);
+  background: linear-gradient(135deg, #111417 0 68%, #24577a 69% 100%);
 }
 .theme-option[data-t="folio"] .swatch {
   background:
