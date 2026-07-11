@@ -890,7 +890,7 @@
   padding-right: 0;
 }
 .settings-shell .voice-card {
-  min-height: 98px;
+  min-height: 116px;
   padding: 13px;
   border-radius: 10px;
   display: flex;
@@ -910,8 +910,15 @@
   line-height: 1.38;
 }
 .settings-shell .voice-card-head {
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: start;
   gap: 10px;
+}
+.settings-shell .voice-title {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
 }
 .settings-shell .voice-mark {
   width: 32px;
@@ -921,11 +928,17 @@
 .settings-shell .voice-name {
   font-size: 18px;
   line-height: 1;
+  white-space: nowrap;
+  overflow: visible;
 }
 .settings-shell .voice-id {
   display: none;
 }
 .settings-shell .voice-tag {
+  grid-column: 2;
+  grid-row: 2;
+  justify-self: start;
+  width: fit-content;
   max-width: 128px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1013,7 +1026,11 @@
 }
 .theme-option[data-t="light"] .swatch { background: #f7f4ed; }
 .theme-option[data-t="sepia"] .swatch { background: #f3e7cf; }
-.theme-option[data-t="dark"] .swatch { background: #111417; }
+.theme-option[data-t="dark"] .swatch {
+  background:
+    radial-gradient(circle at 72% 28%, #4d9ed4 0 17%, transparent 18%),
+    linear-gradient(135deg, #111417 0 68%, #24577a 69% 100%);
+}
 .theme-option[data-t="folio"] .swatch {
   background:
     linear-gradient(135deg, #090a0c 0 55%, #f2bd53 56% 100%);
