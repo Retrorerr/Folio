@@ -241,9 +241,9 @@
 .app-titlebar.is-library {
   --titlebar-height: 44px;
   position: absolute;
-  inset: 0 8px auto auto;
+  inset: 0 0 auto auto;
   width: var(--titlebar-controls-width);
-  min-height: 36px;
+  min-height: 32px;
   padding-left: 0;
   padding-right: 0;
   gap: 0;
@@ -306,14 +306,14 @@
   top: 0;
   right: 0;
   bottom: auto;
-  height: 36px;
+  height: 32px;
   gap: 0;
   align-items: center;
 }
 
 .app-titlebar.is-library .titlebar-control {
-  width: 42px;
-  height: 36px;
+  width: var(--titlebar-control-width);
+  height: 32px;
   border: 0;
   border-radius: 0;
   opacity: 1;
@@ -494,35 +494,47 @@
   position: absolute;
   top: 0;
   right: 0;
-  bottom: 0;
+  bottom: auto;
   z-index: 3200;
   display: flex;
   align-items: stretch;
-  height: var(--titlebar-height);
+  height: 32px;
 }
 
 .titlebar-control {
   width: var(--titlebar-control-width);
-  height: var(--titlebar-height);
+  height: 32px;
   display: grid;
   place-items: center;
   color: var(--ink-2);
   border-radius: 0;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
+    background-color 80ms linear,
+    color 80ms linear;
 }
 
 .titlebar-control:hover {
-  background: color-mix(in srgb, var(--paper-3) 82%, transparent);
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
   color: var(--ink);
-  transform: translateY(-1px);
+  transform: none;
+}
+
+.titlebar-control:active {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.titlebar-control:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--ink) 56%, transparent);
+  outline-offset: -2px;
 }
 
 .titlebar-control.titlebar-close:hover {
   background: #c42b1c;
+  color: #fff;
+}
+
+.titlebar-control.titlebar-close:active {
+  background: #a6271a;
   color: #fff;
 }
 
@@ -535,10 +547,10 @@
 }
 
 .titlebar-maximize {
-  width: 11px;
-  height: 11px;
-  border: 1.5px solid currentColor;
-  border-radius: 2px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  border-radius: 0;
 }
 
 @media (max-width: 760px) {

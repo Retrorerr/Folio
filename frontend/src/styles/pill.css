@@ -366,7 +366,9 @@
 .theme-folio .pill-meta .a { color: var(--pill-fg-muted); }
 
 .pill-waveform {
-  flex: 0 0 auto;
+  flex: 1 1 72px;
+  min-width: 24px;
+  max-width: 72px;
   width: 72px;
   height: 32px;
   display: flex;
@@ -375,6 +377,7 @@
 }
 .wave-bar {
   flex: 1;
+  min-width: 1px;
   background: var(--ember);
   border-radius: 999px;
   transition:
@@ -405,10 +408,23 @@
   gap: 7px;
   align-items: center;
   grid-column: 3;
-  justify-self: end;
-  flex: 0 0 auto;
+  justify-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   justify-content: flex-end;
   min-width: 0;
+}
+
+.pill-controls-prep.state-playing {
+  gap: 4px;
+}
+
+.pill-controls-prep.state-playing .pill-btn.follow-along-btn.is-prominent {
+  inline-size: 120px;
+  padding-inline: 9px;
+  gap: 6px;
+  font-size: 10px;
 }
 .pill-btn {
   width: 36px; height: 36px;
