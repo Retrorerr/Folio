@@ -615,25 +615,6 @@ export default function App() {
     if (visualPageCountTimerRef.current) clearTimeout(visualPageCountTimerRef.current)
   }, [])
 
-  const statusBadges = useMemo(() => (
-    <>
-      <span className={`gpu-badge ${backendReachable ? 'gpu-on' : 'gpu-off'}`}>
-        {backendReachable ? 'Backend Ready' : 'Starting Backend'}
-      </span>
-      {backendReachable && activeModelLoading && (
-        <span className="gpu-badge">Voice Model Loading</span>
-      )}
-      {backendReachable && activeModelLoaded && (
-        <span className="gpu-badge gpu-on">Voice Model Ready</span>
-      )}
-      {activeGpuEnabled !== null && activeGpuEnabled !== undefined && (
-        <span className={`gpu-badge ${activeGpuEnabled ? 'gpu-on' : 'gpu-off'}`}>
-          {activeGpuEnabled ? 'GPU Accelerated' : 'CPU Mode'}
-        </span>
-      )}
-    </>
-  ), [backendReachable, activeModelLoading, activeModelLoaded, activeGpuEnabled])
-
   const appView = !book && !startupReady ? 'loading' : !book ? 'library' : 'reader'
   const previousAppViewRef = useRef(appView)
   const appTransition = useMemo(
@@ -884,7 +865,6 @@ export default function App() {
             recentBooks={recentBooks}
             onOpenRecent={openBook}
             onDeleteRecent={deleteBook}
-            statusBadges={statusBadges}
             settingsPanelProps={{
               wheelPaging,
               setWheelPaging,

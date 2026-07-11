@@ -27,7 +27,6 @@ type WelcomeProps = {
   recentBooks: BookState[]
   onOpenRecent: (filepath: string) => void | Promise<unknown>
   onDeleteRecent?: (bookId: string, deleteFile?: boolean) => void | Promise<unknown>
-  statusBadges?: React.ReactNode
   settingsPanelProps?: Record<string, unknown>
 }
 
@@ -721,7 +720,6 @@ export default memo(function Welcome({
   recentBooks,
   onOpenRecent,
   onDeleteRecent,
-  statusBadges,
   settingsPanelProps,
 }: WelcomeProps) {
   const [dashboard, setDashboard] = useState<DashboardPayload>(EMPTY_DASHBOARD)
@@ -1206,7 +1204,6 @@ export default memo(function Welcome({
 
         <footer className="dash-sidebar-footer">
           <span>{backendVersion}</span>
-          {statusBadges && <div className="dash-status-badges">{statusBadges}</div>}
         </footer>
       </m.aside>
 

@@ -127,7 +127,7 @@
   background: var(--ink);
   color: var(--pill-fg);
   border-radius: 999px;
-  padding: 10px 12px 10px 16px;
+  padding: 10px 14px;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -187,7 +187,7 @@
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   column-gap: 10px;
 }
@@ -367,7 +367,7 @@
 
 .pill-waveform {
   flex: 0 0 auto;
-  width: 84px;
+  width: 56px;
   height: 32px;
   display: flex;
   align-items: center;
