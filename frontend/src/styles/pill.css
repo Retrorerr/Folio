@@ -187,7 +187,7 @@
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 10px;
 }
@@ -195,7 +195,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   grid-column: 1;
 }
 .pill-expanded-content {
@@ -345,7 +345,7 @@
 .pill-meta .t {
   font-family: var(--font-display);
   font-style: italic;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.2;
   color: var(--pill-fg);
   white-space: nowrap;
@@ -354,8 +354,8 @@
 }
 .pill-meta .a {
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
   color: var(--ink-3);
   text-transform: uppercase;
   white-space: nowrap;
@@ -367,7 +367,7 @@
 
 .pill-waveform {
   flex: 0 0 auto;
-  width: 110px;
+  width: 84px;
   height: 32px;
   display: flex;
   align-items: center;
@@ -408,8 +408,7 @@
   justify-self: end;
   flex: 0 0 auto;
   justify-content: flex-end;
-  /* Width budget holds the widest prep state so transport stays anchored. */
-  min-width: 248px;
+  min-width: 0;
 }
 .pill-btn {
   width: 36px; height: 36px;

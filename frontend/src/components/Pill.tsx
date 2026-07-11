@@ -648,7 +648,7 @@ export default memo(function Pill({
 
   const metaLine = plActive
     ? preloadLabel
-    : (status || `${engineShortLabel(ttsEngine)} · ${voiceLabel(ttsEngine, voice)} · PAGE ${currentPage + 1}/${pageCount}`)
+    : (status || `${voiceLabel(ttsEngine, voice)} voice · ${engineShortLabel(ttsEngine)}`)
 
   // Render both content trees during the morph so the pill is never empty.
   // The arriving tree drives layout (.pill grows/shrinks to fit it); the
@@ -767,7 +767,7 @@ export default memo(function Pill({
               <div className={`pill-controls-prep ${isPlaying ? 'state-playing' : 'state-paused'}`}>
                 <span className="pill-divider" aria-hidden="true" />
                 <m.button
-                  className={`pill-preload-control preload-${pl.state} ${isPlaying ? 'is-compact' : 'is-prominent'}`}
+                  className={`pill-preload-control preload-${pl.state} is-compact`}
                   onClick={handlePreload}
                   disabled={plBusy || plReady}
                   title={preloadButtonLabel}

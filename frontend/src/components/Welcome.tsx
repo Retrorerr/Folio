@@ -991,25 +991,11 @@ export default memo(function Welcome({
           </div>
         </section>
 
-      <div className="dash-home-grid">
+      <div className="dash-home-primary">
         <ContinuePanel book={continueBook} onOpen={handleOpen} />
-        <section className="dash-panel dash-stats-panel">
-          <div className="dash-section-head">
-            <div>
-              <h2>Library summary</h2>
-              <p>Real counts from your local EPUB state.</p>
-            </div>
-          </div>
-          <div className="dash-stat-grid">
-            <StatCard icon="Library" label="Books" value={dashboard.counts.books} detail={`${displayPagesTotal} pages`} />
-            <StatCard icon="Users" label="Authors" value={dashboard.counts.authors} />
-            <StatCard icon="Bookmark" label="Pages read" value={displayPagesReadTotal} />
-            <StatCard icon="Highlight" label="Highlights" value={dashboard.counts.highlights} />
-          </div>
-        </section>
       </div>
 
-      <section className="dash-section">
+      <section className="dash-section dash-section-editorial">
         <div className="dash-section-head">
           <div>
             <h2>Recently added</h2>
@@ -1018,6 +1004,21 @@ export default memo(function Welcome({
           <button type="button" onClick={() => setView('library')}>View all</button>
         </div>
         <BookGrid books={(dashboard.recently_added?.length ? dashboard.recently_added : allBooks).slice(0, 6)} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="Your shelf is empty" emptyCopy="Import an EPUB and it will appear here." />
+      </section>
+
+      <section className="dash-section dash-section-editorial dash-summary-section">
+        <div className="dash-section-head compact">
+          <div>
+            <h2>Library summary</h2>
+            <p>Real counts from your local EPUB state.</p>
+          </div>
+        </div>
+        <div className="dash-stat-grid">
+          <StatCard icon="Library" label="Books" value={dashboard.counts.books} detail={`${displayPagesTotal} pages`} />
+          <StatCard icon="Users" label="Authors" value={dashboard.counts.authors} />
+          <StatCard icon="Bookmark" label="Pages read" value={displayPagesReadTotal} />
+          <StatCard icon="Highlight" label="Highlights" value={dashboard.counts.highlights} />
+        </div>
       </section>
 
       <div className="dash-home-grid lower">
