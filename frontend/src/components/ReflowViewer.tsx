@@ -488,36 +488,42 @@ type CursorPlacement = {
 }
 
 const LINE_CURSOR_GUTTER = 26
-const LINE_CURSOR_SNAP_DISTANCE = 18
+const LINE_CURSOR_HORIZONTAL_SNAP_DISTANCE = 8
 
 function placeLineOverlay(el: HTMLElement, rect: CursorPlacement, opacity: number, mode: CursorMode) {
   const opacityKey = `${opacity}`
   const wasVisible = el.classList.contains('is-visible')
   const previousMode = el.dataset.cursorMode
   const previousX = Number.parseFloat(el.dataset.cursorX || '')
-  const previousY = Number.parseFloat(el.dataset.cursorY || '')
   const positionChanged = el.dataset.cursorKey !== rect.key
   const modeChanged = el.dataset.cursorMode !== mode
   const opacityChanged = el.dataset.cursorOpacity !== opacityKey
   if (!positionChanged && !modeChanged && !opacityChanged && wasVisible) return
 
-  const travelDistance = Number.isFinite(previousX) && Number.isFinite(previousY)
-    ? Math.hypot(rect.x - previousX, rect.y - previousY)
+  const horizontalDistance = Number.isFinite(previousX)
+    ? Math.abs(rect.x - previousX)
     : 0
   const shouldSnapPosition = (
     !wasVisible ||
     (positionChanged && (
-      previousMode !== mode ||
-      travelDistance > LINE_CURSOR_SNAP_DISTANCE
+      previousMode !== mode
     ))
+  )
+  const shouldSnapHorizontal = (
+    !shouldSnapPosition &&
+    positionChanged &&
+    horizontalDistance > LINE_CURSOR_HORIZONTAL_SNAP_DISTANCE
   )
 
   // A cursor returning from a hidden page should appear at its destination,
   // not travel across the spread from the last visible line. Playback handoff
-  // and line jumps snap for the same reason: the marker should never sweep
-  // through paragraph text while it is catching up to the reader.
+  // and cross-column jumps snap for the same reason: the marker should never
+  // sweep horizontally through paragraph text while it is catching up to the
+  // reader. Vertical movement stays animated because the marker remains in
+  // the clear gutter beside the text for the entire journey.
   if (shouldSnapPosition) el.dataset.cursorMode = 'instant'
   else el.dataset.cursorMode = mode
+  el.dataset.cursorPosition = shouldSnapHorizontal ? 'horizontal-snap' : 'smooth'
 
   if (positionChanged) {
     el.style.transform = `translate3d(${rect.x}px, ${rect.y}px, 0)`
@@ -534,6 +540,14 @@ function placeLineOverlay(el: HTMLElement, rect: CursorPlacement, opacity: numbe
   el.dataset.cursorSticky = mode === 'selected' ? 'true' : 'false'
   el.style.opacity = opacityKey
   el.classList.toggle('is-visible', opacity > 0)
+  if (shouldSnapHorizontal) {
+    const key = rect.key
+    requestAnimationFrame(() => {
+      if (el.isConnected && el.dataset.cursorKey === key) {
+        el.dataset.cursorPosition = 'smooth'
+      }
+    })
+  }
 }
 
 function lineMarkerRect(region: any, rootRect: DOMRect, scrollEl: Element | null): CursorPlacement {
@@ -562,16 +576,33 @@ function lineMarkerAnchorRect(
     ? viewportRect.left + rectColumnIndex(currentRect, viewportRect) * layout.stride
     : lineRect.left
   let left = Math.max(columnLeft, lineRect.left)
-  if (dropCapRect && rectIntersects(lineRect, dropCapRect, 0)) {
+  let top = lineRect.top
+  let bottom = lineRect.bottom
+
+  // A floated drop cap normally sits immediately to the left of the opening
+  // text, so its rectangle does not intersect the line rectangle horizontally.
+  // Detect the opening line by vertical proximity instead. Anchor the marker
+  // to the cap's left edge and grow it to the cap's full height; subsequent
+  // lines return to the regular line-sized marker even while wrapping beside
+  // the float.
+  const dropCapOpeningLine = Boolean(
+    dropCapRect &&
+    lineRect.bottom >= dropCapRect.top &&
+    lineRect.top <= dropCapRect.bottom &&
+    Math.abs(lineRect.top - dropCapRect.top) <= Math.max(12, lineRect.height * 0.75)
+  )
+  if (dropCapRect && dropCapOpeningLine) {
     left = Math.max(columnLeft, dropCapRect.left)
+    top = Math.min(lineRect.top, dropCapRect.top)
+    bottom = Math.max(lineRect.bottom, dropCapRect.bottom)
   }
   return {
     left,
-    top: lineRect.top,
+    top,
     right: Math.max(left + 2, lineRect.right),
-    bottom: lineRect.bottom,
+    bottom,
     width: Math.max(2, lineRect.right - left),
-    height: lineRect.height,
+    height: Math.max(2, bottom - top),
   }
 }
 
@@ -1370,7 +1401,16 @@ function ReflowViewer({
     const viewportKey = viewportRect
       ? `${Math.round(viewportRect.width)}:${Math.round(viewportRect.height)}`
       : 'none'
-    const cacheKey = `${chapterIdx}:${viewPage}:${pagesPerView}:${currentSentence}:${liveCache.key}:${viewportKey}`
+    const activeRect = active.getBoundingClientRect()
+    const activeStyle = getComputedStyle(active)
+    const layoutKey = [
+      Math.round(activeRect.width * 2) / 2,
+      activeStyle.fontFamily,
+      activeStyle.fontSize,
+      activeStyle.lineHeight,
+      activeStyle.letterSpacing,
+    ].join(':')
+    const cacheKey = `${chapterIdx}:${viewPage}:${pagesPerView}:${currentSentence}:${liveCache.key}:${viewportKey}:${layoutKey}`
     if (playbackLineCacheRef.current.key !== cacheKey) {
       playbackLineCacheRef.current = { key: cacheKey, placements: new Map() }
     }
