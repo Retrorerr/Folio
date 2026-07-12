@@ -1017,15 +1017,17 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "folio"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "getrandom 0.3.4",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-mobile-runtime",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3903,6 +3905,7 @@ dependencies = [
  "plist",
  "raw-window-handle",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "serde_repr",
@@ -4001,6 +4004,17 @@ dependencies = [
  "tauri-utils",
  "toml 0.9.12+spec-1.1.0",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-mobile-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

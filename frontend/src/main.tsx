@@ -2,20 +2,13 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles/fonts.css'
 import './index.css'
+import './styles/android.css'
 import App from './App'
 import ErrorBoundary from './ErrorBoundary'
-
-function isTauriRuntime(): boolean {
-  return Boolean(
-    window.__TAURI_INTERNALS__ ||
-    window.__TAURI__ ||
-    window.location.protocol === 'tauri:' ||
-    window.location.hostname === 'tauri.localhost',
-  )
-}
+import { isAndroidRuntime, isTauriRuntime, requireAndroidBridge } from './platform'
 
 async function setTauriWindowIcon() {
-  if (!isTauriRuntime()) return
+  if (!isTauriRuntime() || isAndroidRuntime()) return
   try {
     const [{ getCurrentWindow }, { Image }] = await Promise.all([
       import('@tauri-apps/api/window'),
@@ -30,18 +23,39 @@ async function setTauriWindowIcon() {
   }
 }
 
-void setTauriWindowIcon()
-
 const root = document.getElementById('root')
 
 if (!root) {
   throw new Error('Folio root element was not found')
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </StrictMode>,
-)
+const reactRoot = createRoot(root)
+
+async function boot() {
+  if (isAndroidRuntime()) document.documentElement.dataset.platform = 'android'
+
+  try {
+    await requireAndroidBridge()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    reactRoot.render(
+      <main className="runtime-boot-error" role="alert">
+        <h1>Folio could not start</h1>
+        <p>{message}</p>
+        <p>Reinstall this Android build. Folio will not fall back to a desktop or network backend.</p>
+      </main>,
+    )
+    return
+  }
+
+  void setTauriWindowIcon()
+  reactRoot.render(
+    <StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </StrictMode>,
+  )
+}
+
+void boot()

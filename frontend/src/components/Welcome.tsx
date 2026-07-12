@@ -1,9 +1,11 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
+import { SettingsPanel } from './Sidebar'
 import { apiFetch, apiJson, apiResourceUrl } from '../api'
+import { buildDashboardGreeting } from '../dashboardGreeting'
 import { buttonHover, buttonTap, listItem, listStagger, pageTransition, scaleIn, slideUp, spring } from '../motion'
 import type { BookState, DashboardHighlight, DashboardPayload, LibrarySearchResponse, WeeklyStat } from '../types'
 
@@ -12,7 +14,7 @@ async function currentWindow() {
   return getCurrentWindow()
 }
 
-type DashboardView = 'home' | 'continue' | 'library' | 'audiobooks' | 'highlights' | 'notes' | 'history'
+type DashboardView = 'home' | 'library' | 'audiobooks' | 'highlights' | 'notes' | 'history'
 type MetadataKind = 'genres'
 type LibraryFilter = {
   author: string
@@ -38,23 +40,6 @@ const DASHBOARD_PAGE_TOTAL_PREFIX = 'folio:dashboard-page-total:'
 const PAGINATION_CACHE_PREFIX = 'folio:pagination:'
 const READER_NAME_KEY = 'folio:reader-name'
 const EMPTY_SHELF_SPINES = ['tall', 'short', 'lean', 'gold', 'wide', 'slim', 'dark']
-const loadSettingsModule = () => import('./Sidebar')
-const SettingsPanel = lazy(() => loadSettingsModule().then((module) => ({ default: module.SettingsPanel })))
-
-function SettingsPanelFallback({ theme }: { theme: string }) {
-  return (
-    <div className={`settings-overlay theme-${theme}`} role="status" aria-live="polite">
-      <div className="settings-shell settings-shell-loading">
-        <img src={theme === 'light' || theme === 'sepia' ? '/folio-icon.png' : '/folio-monochrome-icon.png'} alt="" />
-        <div>
-          <strong>Opening settings</strong>
-          <span>Preparing reader controls…</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 const EMPTY_DASHBOARD: DashboardPayload = {
   books: [],
   recent_books: [],
@@ -86,13 +71,12 @@ const EMPTY_DASHBOARD: DashboardPayload = {
   notes: [],
 }
 
-const NAV_ITEMS: Array<{ id: DashboardView; label: string; icon: keyof typeof Icons; countKey?: keyof DashboardPayload['counts'] }> = [
-  { id: 'continue', label: 'Continue Reading', icon: 'Play' },
-  { id: 'library', label: 'Library', icon: 'Library', countKey: 'books' },
-  { id: 'audiobooks', label: 'Audiobooks', icon: 'Headphones', countKey: 'audiobooks' },
-  { id: 'highlights', label: 'Highlights', icon: 'Highlight', countKey: 'highlights' },
-  { id: 'notes', label: 'Notes', icon: 'Note', countKey: 'notes' },
-  { id: 'history', label: 'History', icon: 'Clock', countKey: 'history' },
+const NAV_ITEMS: Array<{ id: DashboardView; label: string; icon: keyof typeof Icons }> = [
+  { id: 'library', label: 'Library', icon: 'Library' },
+  { id: 'audiobooks', label: 'Audiobooks', icon: 'Headphones' },
+  { id: 'highlights', label: 'Highlights', icon: 'Highlight' },
+  { id: 'notes', label: 'Notes', icon: 'Note' },
+  { id: 'history', label: 'History', icon: 'Clock' },
 ]
 
 function clampProgress(value: unknown): number {
@@ -114,14 +98,6 @@ function normalizeReaderName(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 40)
 }
 
-function greetingForHour(date = new Date()): string {
-  const hour = date.getHours()
-  if (hour >= 5 && hour < 12) return 'morning'
-  if (hour >= 12 && hour < 17) return 'afternoon'
-  if (hour >= 17 && hour < 21) return 'evening'
-  return 'night'
-}
-
 function parsePaginationCounts(raw: string | null, expectedChapters: number): number[] | null {
   if (!raw || expectedChapters <= 0) return null
   try {
@@ -137,8 +113,24 @@ function parsePaginationCounts(raw: string | null, expectedChapters: number): nu
 }
 
 function readStoredPaginationMeta(book: BookState): { total: number | null; current: number | null } {
+  const fallback = (totalValue: number | null) => {
+    if (!totalValue) return { total: null, current: null }
+    const savedVisualPage = Math.max(0, Number(book.last_position?.visual_page || 0))
+    if (savedVisualPage > 0) return { total: totalValue, current: Math.min(totalValue, savedVisualPage) }
+    if (book.progress !== undefined) {
+      return {
+        total: totalValue,
+        current: Math.min(
+          totalValue,
+          Math.max(1, Math.round(clampProgress(book.progress) * (totalValue - 1)) + 1),
+        ),
+      }
+    }
+    return { total: totalValue, current: null }
+  }
   const storage = safeLocalStorage()
-  if (!storage || !book?.id) return { total: null, current: null }
+  const backendTotal = Math.max(0, Number(book.visual_page_count || 0)) || null
+  if (!storage || !book?.id) return fallback(backendTotal)
 
   const chapterCount = Math.max(1, Number(book.page_count || 0))
   const layoutKey = book.last_position?.layout_key || ''
@@ -172,9 +164,10 @@ function readStoredPaginationMeta(book: BookState): { total: number | null; curr
   }
 
   const storedTotal = Number.parseInt(storage.getItem(`${DASHBOARD_PAGE_TOTAL_PREFIX}${book.id}`) || '', 10)
-  return Number.isFinite(storedTotal) && storedTotal > 0
-    ? { total: storedTotal, current: null }
-    : { total: null, current: null }
+  const total = Number.isFinite(storedTotal) && storedTotal > 0
+    ? storedTotal
+    : backendTotal
+  return fallback(total)
 }
 
 function displayPageCount(book: BookState, pagination = readStoredPaginationMeta(book)): number {
@@ -248,18 +241,21 @@ function ContinuePanel({ book, onOpen }: { book: BookState | null; onOpen: (book
       <m.section className="dash-panel dash-continue-empty" layout variants={scaleIn}>
         <div className="dash-empty-mark"><Icons.Book size={22} /></div>
         <h2>No book in progress</h2>
-        <p>Add an EPUB or open a library book to make it your next read.</p>
+        <p>Add an EPUB or PDF, or open a library book to make it your next read.</p>
       </m.section>
     )
   }
 
   const progress = bookProgress(book)
   return (
-    <m.section
+    <m.button
+      type="button"
       className={`dash-panel dash-continue ${book.exists === false ? 'is-missing' : ''}`}
       layout
       variants={scaleIn}
       transition={spring.layout}
+      aria-label={`Resume ${book.title} at ${Math.round(progress * 100)}%`}
+      onClick={() => onOpen(book)}
     >
       <BookCover book={book} className="dash-continue-cover" />
       <div className="dash-continue-copy">
@@ -270,15 +266,22 @@ function ContinuePanel({ book, onOpen }: { book: BookState | null; onOpen: (book
           <span>{pageLabel(book)}</span>
           <span>{formatDate(book.last_opened_at || book.updated_at)}</span>
         </div>
-        <div className="dash-progress-bar"><span style={{ width: `${progress * 100}%` }} /></div>
+        <div
+          className="dash-progress-bar"
+          role="progressbar"
+          aria-label={`Reading progress for ${book.title}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress * 100)}
+        ><span style={{ width: `${progress * 100}%` }} /></div>
       </div>
       <div className="dash-continue-actions">
-        <button type="button" className="dash-primary-btn" onClick={() => onOpen(book)}>
+        <span className="dash-primary-btn" aria-hidden="true">
           <Icons.Play size={14} />
           Resume
-        </button>
+        </span>
       </div>
-    </m.section>
+    </m.button>
   )
 }
 
@@ -338,6 +341,141 @@ function BookCard({
   )
 }
 
+function historyGroupLabel(value?: number | null): string {
+  if (!value) return 'Earlier'
+  const date = new Date(value)
+  const today = new Date()
+  const startOfDay = (input: Date) => new Date(input.getFullYear(), input.getMonth(), input.getDate()).getTime()
+  const daysAgo = Math.round((startOfDay(today) - startOfDay(date)) / 86400000)
+  if (daysAgo === 0) return 'Today'
+  if (daysAgo === 1) return 'Yesterday'
+  return 'Earlier'
+}
+
+function HistoryList({
+  books,
+  onOpen,
+  onDelete,
+}: {
+  books: BookState[]
+  onOpen: (book: BookState) => void
+  onDelete?: (event: React.MouseEvent, book: BookState) => void
+}) {
+  if (!books.length) {
+    return <EmptyState icon="Clock" title="No history yet" copy="Open a book to create reading history." />
+  }
+
+  const groups = books.reduce<Array<{ label: string; books: BookState[] }>>((result, book) => {
+    const label = historyGroupLabel(book.last_opened_at || book.updated_at)
+    const group = result.find((item) => item.label === label)
+    if (group) group.books.push(book)
+    else result.push({ label, books: [book] })
+    return result
+  }, [])
+
+  return (
+    <div className="dash-history-list">
+      {groups.map((group) => (
+        <section className="dash-history-group" key={group.label}>
+          <h3 className="dash-history-group-label">{group.label}</h3>
+          <div className="dash-history-group-rows">
+            {group.books.map((book, index) => {
+              const progress = bookProgress(book)
+              return (
+                <m.article className={`dash-history-list-row ${book.exists === false ? 'is-missing' : ''}`} key={book.id} layout variants={listItem} transition={spring.layout}>
+                  <m.button
+                    type="button"
+                    className="dash-history-list-open"
+                    aria-label={`Open ${book.title} by ${book.author || 'Unknown author'}`}
+                    onClick={() => onOpen(book)}
+                    whileHover={buttonHover}
+                    whileTap={buttonTap}
+                  >
+                    <div className="dash-history-list-cover"><BookCover book={book} index={index} /></div>
+                    <div className="dash-history-list-meta">
+                      <h4>{book.title}</h4>
+                      <p>{book.author || 'Unknown author'}</p>
+                      <span>{formatDate(book.last_opened_at || book.updated_at)}</span>
+                    </div>
+                    <div className="dash-history-list-progress">
+                      <div className="dash-history-list-progress-head">
+                        <strong>{progress > 0 ? `${Math.round(progress * 100)}%` : 'New'}</strong>
+                        <span>{pageLabel(book)}</span>
+                      </div>
+                      <div className="dash-mini-progress"><span style={{ width: `${progress * 100}%` }} /></div>
+                    </div>
+                    <span className="dash-history-list-pages">{displayPageCount(book)} pp</span>
+                    <Icons.ChevronRight size={18} />
+                  </m.button>
+                  {onDelete && (
+                    <button
+                      type="button"
+                      className="dash-remove-book"
+                      title="Remove from history"
+                      aria-label={`Remove ${book.title}`}
+                      onClick={(event) => onDelete(event, book)}
+                    >
+                      <Icons.X size={14} />
+                    </button>
+                  )}
+                </m.article>
+              )
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function ReaderNameControl({
+  readerName,
+  readerNameDraft,
+  showNameForm,
+  compact = false,
+  onReaderNameDraftChange,
+  onSaveReaderName,
+  onEditReaderName,
+}: {
+  readerName: string
+  readerNameDraft: string
+  showNameForm: boolean
+  compact?: boolean
+  onReaderNameDraftChange: (value: string) => void
+  onSaveReaderName: (event: React.FormEvent<HTMLFormElement>) => void
+  onEditReaderName: () => void
+}) {
+  if (showNameForm) {
+    return (
+      <form className={`dash-name-form ${compact ? 'compact' : ''}`} onSubmit={onSaveReaderName}>
+        <label htmlFor={compact ? 'reader-name-home' : 'reader-name'}>What should Folio call you?</label>
+        <div>
+          <Icons.User size={16} />
+          <input
+            id={compact ? 'reader-name-home' : 'reader-name'}
+            value={readerNameDraft}
+            maxLength={40}
+            autoComplete="name"
+            placeholder="Reader name"
+            onChange={(event) => onReaderNameDraftChange(event.target.value)}
+          />
+          <button type="submit" disabled={!normalizeReaderName(readerNameDraft)}>
+            Save
+          </button>
+        </div>
+      </form>
+    )
+  }
+
+  return (
+    <div className={`dash-reader-chip ${compact ? 'compact' : ''}`}>
+      <Icons.User size={15} />
+      <span>Reading as {readerName}</span>
+      <button type="button" onClick={onEditReaderName}>Change</button>
+    </div>
+  )
+}
+
 function StatCard({ label, value, detail, icon }: { label: string; value: string | number; detail?: string; icon: keyof typeof Icons }) {
   const Icon = Icons[icon]
   return (
@@ -382,9 +520,9 @@ function HighlightList({ items, emptyTitle, emptyCopy }: { items: DashboardHighl
             {item.type === 'note' ? <Icons.Note size={16} /> : item.type === 'bookmark' ? <Icons.Bookmark size={16} /> : <Icons.Highlight size={16} />}
           </div>
           <div>
-            <p>{item.text || item.note || `Page ${(item.page || 0) + 1}`}</p>
+            <p>{item.text || item.note || `Page ${item.visual_page || (item.page || 0) + 1}`}</p>
             {item.note && item.note !== item.text && <blockquote>{item.note}</blockquote>}
-            <span>{item.book_title} - page {(item.page || 0) + 1}</span>
+            <span>{item.book_title} - page {item.visual_page || (item.page || 0) + 1}</span>
           </div>
         </m.article>
       ))}
@@ -522,6 +660,7 @@ function EmptyState({ icon, title, copy }: { icon: keyof typeof Icons; title: st
 
 function EmptyLibraryWelcome({
   greetingTitle,
+  greetingMessage,
   readerName,
   readerNameDraft,
   showNameForm,
@@ -532,6 +671,7 @@ function EmptyLibraryWelcome({
   onAddBook,
 }: {
   greetingTitle: string
+  greetingMessage: string
   readerName: string
   readerNameDraft: string
   showNameForm: boolean
@@ -546,39 +686,23 @@ function EmptyLibraryWelcome({
       <m.section className="dash-empty-welcome" layout variants={slideUp}>
         <div className="dash-empty-welcome-copy">
           <h1>{greetingTitle}</h1>
-          <p>Start with one EPUB. Folio will keep the shelf local, remember your place, and stay out of the way.</p>
+          <p>{greetingMessage} Add an EPUB or PDF and Folio will remember your place while keeping the shelf local.</p>
 
-          {showNameForm ? (
-            <form className="dash-name-form" onSubmit={onSaveReaderName}>
-              <label htmlFor="reader-name">What should Folio call you?</label>
-              <div>
-                <Icons.User size={16} />
-                <input
-                  id="reader-name"
-                  value={readerNameDraft}
-                  maxLength={40}
-                  placeholder="Reader name"
-                  onChange={(event) => onReaderNameDraftChange(event.target.value)}
-                />
-                <button type="submit" disabled={!normalizeReaderName(readerNameDraft)}>
-                  Save
-                </button>
-              </div>
-            </form>
-          ) : (
-            <div className="dash-reader-chip">
-              <Icons.User size={15} />
-              <span>Reading as {readerName}</span>
-              <button type="button" onClick={onEditReaderName}>Change</button>
-            </div>
-          )}
+          <ReaderNameControl
+            readerName={readerName}
+            readerNameDraft={readerNameDraft}
+            showNameForm={showNameForm}
+            onReaderNameDraftChange={onReaderNameDraftChange}
+            onSaveReaderName={onSaveReaderName}
+            onEditReaderName={onEditReaderName}
+          />
 
           <div className="dash-empty-actions">
             <button type="button" className="dash-primary-btn" onClick={onAddBook}>
               <Icons.Upload size={15} />
-              {importing ? 'Opening book' : 'Choose first EPUB'}
+              {importing ? 'Opening book' : 'Choose first book'}
             </button>
-            <span>or drop an EPUB anywhere on this window</span>
+            <span>or drop an EPUB or PDF anywhere on this window</span>
           </div>
         </div>
 
@@ -727,6 +851,7 @@ export default memo(function Welcome({
   const [query, setQuery] = useState('')
   const [searchBooks, setSearchBooks] = useState<BookState[] | null>(null)
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>({ author: '', genre: '' })
+  const [historyMode, setHistoryMode] = useState<'grid' | 'list'>('list')
   const [drag, setDrag] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState('')
@@ -735,6 +860,7 @@ export default memo(function Welcome({
   const [readerName, setReaderName] = useState(() => normalizeReaderName(safeLocalStorage()?.getItem(READER_NAME_KEY) || ''))
   const [readerNameDraft, setReaderNameDraft] = useState(readerName)
   const [readerNameEditing, setReaderNameEditing] = useState(false)
+  const [greetingNow] = useState(() => Date.now())
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const refreshDashboard = useCallback(async () => {
@@ -757,6 +883,15 @@ export default memo(function Welcome({
   useEffect(() => {
     void refreshDashboard()
   }, [refreshDashboard])
+
+  useEffect(() => {
+    if (readerName) return
+    const suggestedName = normalizeReaderName(dashboard.profile?.reader_name || '')
+    if (!suggestedName) return
+    safeLocalStorage()?.setItem(READER_NAME_KEY, suggestedName)
+    setReaderName(suggestedName)
+    setReaderNameDraft(suggestedName)
+  }, [dashboard.profile?.reader_name, readerName])
 
   useEffect(() => {
     const trimmed = query.trim()
@@ -827,26 +962,34 @@ export default memo(function Welcome({
 
   const handleOpen = useCallback((book: BookState) => {
     if (book.exists === false) {
-      window.alert(`File not found:\n${book.filepath}\n\nRemove it from history or re-import the EPUB.`)
+      window.alert(`File not found:\n${book.filepath}\n\nRemove it from history or re-import the book.`)
       return
     }
-    onOpenRecent(book.filepath)
+    Promise.resolve(onOpenRecent(book.filepath)).catch((error) => {
+      const message = error instanceof Error ? error.message : 'Could not open that book.'
+      setImportError(message.length > 260 ? `${message.slice(0, 260)}...` : message)
+    })
   }, [onOpenRecent])
 
   const handleDelete = useCallback(async (event: React.MouseEvent, book: BookState) => {
     event.stopPropagation()
     const message = book.exists !== false
-      ? `Remove "${book.title}" from history and delete the EPUB?`
+      ? `Remove "${book.title}" from history and delete the local book copy?`
       : `Remove "${book.title}" from history?`
     if (!window.confirm(message)) return
-    await onDeleteRecent?.(book.id, book.exists !== false)
-    await refreshDashboard()
+    try {
+      await onDeleteRecent?.(book.id, book.exists !== false)
+      await refreshDashboard()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not remove that book.'
+      setImportError(message.length > 260 ? `${message.slice(0, 260)}...` : message)
+    }
   }, [onDeleteRecent, refreshDashboard])
 
   const importFile = useCallback(async (file?: File) => {
     if (!file || importing) return
-    if (!/\.epub$/i.test(file.name)) {
-      setImportError('Choose an EPUB file.')
+    if (!/\.(epub|pdf)$/i.test(file.name)) {
+      setImportError('Choose an EPUB or PDF file.')
       return
     }
     setImporting(true)
@@ -893,6 +1036,12 @@ export default memo(function Welcome({
     setReaderName(next)
     setReaderNameDraft(next)
     setReaderNameEditing(false)
+    setDashboard((prev) => ({ ...prev, profile: { ...prev.profile, reader_name: next } }))
+    apiFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reader_name: next }),
+    }).catch(() => {})
   }, [readerNameDraft])
 
   const editReaderName = useCallback(() => {
@@ -960,14 +1109,23 @@ export default memo(function Welcome({
 
   const libraryTitle = query.trim() ? `Search results for "${query.trim()}"` : hasLibraryFilter ? 'Filtered library' : 'Library'
   const backendVersion = dashboard.backend?.version ? `Folio ${dashboard.backend.version}` : 'Folio'
-  const greetingPeriod = useMemo(() => greetingForHour(), [])
-  const greetingTitle = readerName ? `Good ${greetingPeriod}, ${readerName}.` : `Good ${greetingPeriod}.`
+  const readingGoalProgress = clampProgress(dashboard.reading_goal.progress)
+  const readingGoalPercent = Math.round(readingGoalProgress * 100)
+  const greeting = useMemo(() => buildDashboardGreeting({
+    now: greetingNow,
+    readerName,
+    book: continueBook,
+    progress: bookProgress(continueBook),
+    weeklyStats: dashboard.weekly_stats,
+    totalBooks: allBooks.length,
+  }), [allBooks.length, continueBook, dashboard.weekly_stats, greetingNow, readerName])
   const showNameForm = !readerName || readerNameEditing
   const renderHome = () => {
     if (!allBooks.length && !query.trim()) {
       return (
         <EmptyLibraryWelcome
-          greetingTitle={greetingTitle}
+          greetingTitle={greeting.title}
+          greetingMessage={greeting.message}
           readerName={readerName}
           readerNameDraft={readerNameDraft}
           showNameForm={showNameForm}
@@ -983,9 +1141,18 @@ export default memo(function Welcome({
     return (
       <>
         <section className="dash-hero">
-          <div>
-            <h1>{greetingTitle}</h1>
-            <p>Pick up a book, review your notes, or add another EPUB to the shelf.</p>
+          <div className="dash-hero-copy">
+            <h1>{greeting.title}</h1>
+            <p>{greeting.message}</p>
+            <ReaderNameControl
+              compact
+              readerName={readerName}
+              readerNameDraft={readerNameDraft}
+              showNameForm={showNameForm}
+              onReaderNameDraftChange={setReaderNameDraft}
+              onSaveReaderName={saveReaderName}
+              onEditReaderName={editReaderName}
+            />
           </div>
         </section>
 
@@ -1001,14 +1168,14 @@ export default memo(function Welcome({
           </div>
           <button type="button" onClick={() => setView('library')}>View all</button>
         </div>
-        <BookGrid books={(dashboard.recently_added?.length ? dashboard.recently_added : allBooks).slice(0, 6)} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="Your shelf is empty" emptyCopy="Import an EPUB and it will appear here." />
+        <BookGrid books={(dashboard.recently_added?.length ? dashboard.recently_added : allBooks).slice(0, 6)} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="Your shelf is empty" emptyCopy="Import an EPUB or PDF and it will appear here." />
       </section>
 
       <section className="dash-section dash-section-editorial dash-summary-section">
         <div className="dash-section-head compact">
           <div>
             <h2>Library summary</h2>
-            <p>Real counts from your local EPUB state.</p>
+            <p>Real counts from your local reading state.</p>
           </div>
         </div>
         <div className="dash-stat-grid">
@@ -1045,18 +1212,6 @@ export default memo(function Welcome({
 
   const renderView = () => {
     if (view === 'home') return renderHome()
-    if (view === 'continue') {
-      const inProgress = visibleBooks.filter((book) => book.has_reading_progress || bookProgress(book) > 0)
-      return (
-        <>
-          <ContinuePanel book={continueBook} onOpen={handleOpen} />
-          <section className="dash-section">
-            <div className="dash-section-head"><div><h2>Reading queue</h2><p>Books with saved progress.</p></div></div>
-            <BookGrid books={inProgress} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="No saved progress yet" emptyCopy="Open a book and Folio will remember where you stop." />
-          </section>
-        </>
-      )
-    }
     if (view === 'library') {
       return (
         <>
@@ -1101,7 +1256,7 @@ export default memo(function Welcome({
                 </button>
               )}
             </div>
-            <BookGrid books={visibleBooks} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="No books found" emptyCopy="Adjust the search or filters, or import another EPUB." />
+            <BookGrid books={visibleBooks} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="No books found" emptyCopy="Adjust the search or filters, or import another book." />
           </section>
           <MetadataAssignment kind="genres" books={allBooks} onSaved={refreshDashboard} />
         </>
@@ -1118,35 +1273,70 @@ export default memo(function Welcome({
     }
     return (
       <section className="dash-section">
-        <div className="dash-section-head"><div><h2>History</h2><p>Sorted by the last time each book was opened.</p></div></div>
-        <BookGrid books={historyBooks} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="No history yet" emptyCopy="Open a book to create reading history." />
+        <div className="dash-section-head dash-history-head">
+          <div><h2>History</h2><p>Sorted by the last time each book was opened.</p></div>
+          <div className="dash-history-mode" role="group" aria-label="History view">
+            <button
+              type="button"
+              className={historyMode === 'grid' ? 'active' : ''}
+              aria-pressed={historyMode === 'grid'}
+              onClick={() => setHistoryMode('grid')}
+            >
+              <Icons.Grid size={15} />
+              Grid
+            </button>
+            <button
+              type="button"
+              className={historyMode === 'list' ? 'active' : ''}
+              aria-pressed={historyMode === 'list'}
+              onClick={() => setHistoryMode('list')}
+            >
+              <Icons.List size={15} />
+              List
+            </button>
+          </div>
+        </div>
+        <AnimatePresence mode="popLayout" initial={false}>
+          <m.div
+            key={historyMode}
+            className="dash-history-mode-content"
+            variants={pageTransition}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            layout
+            transition={spring.layout}
+          >
+            {historyMode === 'list'
+              ? <HistoryList books={historyBooks} onOpen={handleOpen} onDelete={handleDelete} />
+              : <BookGrid books={historyBooks} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="No history yet" emptyCopy="Open a book to create reading history." />}
+          </m.div>
+        </AnimatePresence>
       </section>
     )
   }
 
   return (
-    <m.div
+    <div
       className={`dashboard-home ${motion ? 'motion-enabled' : 'motion-reduced'} ${drag ? 'is-dragging' : ''}`}
       onMouseDown={handleDashboardMouseDown}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      layout
-      transition={spring.layout}
     >
-      <input ref={fileRef} type="file" accept=".epub" onChange={handleFileSelect} style={{ display: 'none' }} />
+      <input ref={fileRef} type="file" accept=".epub,.pdf,application/epub+zip,application/pdf" onChange={handleFileSelect} style={{ display: 'none' }} />
 
-      <m.aside className="dash-sidebar" layout transition={spring.layout}>
+      <aside className="dash-sidebar">
         <m.button type="button" className="dash-brand" onClick={() => setView('home')} aria-label="Folio dashboard" whileTap={buttonTap}>
           <img src={theme === 'light' || theme === 'sepia' ? '/folio-icon.png' : '/folio-monochrome-icon.png'} alt="" draggable={false} />
           <span>Folio</span>
         </m.button>
 
-        <m.button type="button" className="dash-add-btn" onClick={() => fileRef.current?.click()} whileHover={buttonHover} whileTap={buttonTap}>
+        <button type="button" className="dash-add-btn" onClick={() => fileRef.current?.click()} title="Add books" aria-label="Add books">
           <Icons.Upload size={16} />
-          {importing ? 'Opening book' : 'Add books'}
+          <span className="dash-add-label">{importing ? 'Opening book' : 'Add books'}</span>
           <kbd>{OPEN_SHORTCUT}</kbd>
-        </m.button>
+        </button>
         <AnimatePresence>
           {importError && <m.div className="dash-import-error" role="alert" variants={slideUp} initial="initial" animate="animate" exit="exit">{importError}</m.div>}
         </AnimatePresence>
@@ -1154,18 +1344,15 @@ export default memo(function Welcome({
         <nav className="dash-nav" aria-label="Dashboard">
           {NAV_ITEMS.map((item) => {
             const Icon = Icons[item.icon]
-            const count = item.countKey ? dashboard.counts[item.countKey] : undefined
             return (
-              <m.button
+              <button
                 key={item.id}
                 type="button"
                 className={view === item.id ? 'active' : ''}
                 aria-current={view === item.id ? 'page' : undefined}
+                aria-label={item.label}
+                title={item.label}
                 onClick={() => setView(item.id)}
-                layout
-                whileHover={buttonHover}
-                whileTap={buttonTap}
-                transition={spring.quick}
               >
                 {view === item.id && (
                   <m.span
@@ -1177,37 +1364,58 @@ export default memo(function Welcome({
                 )}
                 <Icon size={17} />
                 <span>{item.label}</span>
-                {count !== undefined && <em>{count}</em>}
-              </m.button>
+              </button>
             )
           })}
         </nav>
 
-        <m.section className="dash-goal" layout>
-          <div className="dash-goal-head">
-            <span>Reading goal</span>
-            <strong>{Math.round(clampProgress(dashboard.reading_goal.progress) * 100)}%</strong>
-          </div>
-          <div className="dash-progress-bar"><span style={{ width: `${clampProgress(dashboard.reading_goal.progress) * 100}%` }} /></div>
-          <div className="dash-goal-edit">
-            <input
-              aria-label="Daily reading goal minutes"
-              value={goalDraft}
-              inputMode="numeric"
-              onChange={(event) => setGoalDraft(event.target.value.replace(/[^\d]/g, '').slice(0, 4))}
-              onBlur={() => void commitGoal()}
-              onKeyDown={(event) => { if (event.key === 'Enter') void commitGoal() }}
-            />
-            <span>min/day</span>
-          </div>
-        </m.section>
+        <div className="dash-sidebar-bottom">
+          <button
+            type="button"
+            className="dash-settings-btn"
+            onClick={openSettings}
+            title="Settings"
+            aria-label="Open settings"
+          >
+            <Icons.Settings size={17} />
+            <span>Settings</span>
+          </button>
 
-        <footer className="dash-sidebar-footer">
-          <span>{backendVersion}</span>
-        </footer>
-      </m.aside>
+          <section
+            className="dash-goal"
+            aria-label={`Reading goal ${readingGoalPercent}%`}
+            style={{ '--dash-goal-progress': `${readingGoalPercent * 3.6}deg` } as React.CSSProperties}
+          >
+            <div className="dash-goal-compact" aria-hidden="true">
+              <strong>{readingGoalPercent}</strong>
+            </div>
+            <div className="dash-goal-expanded">
+              <div className="dash-goal-head">
+                <span>Reading goal</span>
+                <strong>{readingGoalPercent}%</strong>
+              </div>
+              <div className="dash-progress-bar"><span style={{ width: `${readingGoalProgress * 100}%` }} /></div>
+              <div className="dash-goal-edit">
+                <input
+                  aria-label="Daily reading goal minutes"
+                  value={goalDraft}
+                  inputMode="numeric"
+                  onChange={(event) => setGoalDraft(event.target.value.replace(/[^\d]/g, '').slice(0, 4))}
+                  onBlur={() => void commitGoal()}
+                  onKeyDown={(event) => { if (event.key === 'Enter') void commitGoal() }}
+                />
+                <span>min/day</span>
+              </div>
+            </div>
+          </section>
 
-      <m.main className="dash-main" layout transition={spring.layout}>
+          <footer className="dash-sidebar-footer">
+            <span>{backendVersion}</span>
+          </footer>
+        </div>
+      </aside>
+
+      <main className="dash-main">
         <header className="dash-topbar">
           <div className="dash-search">
             <Icons.Search size={17} />
@@ -1224,20 +1432,6 @@ export default memo(function Welcome({
                 </m.button>
               )}
             </AnimatePresence>
-          </div>
-          <div className="dash-toolbar">
-            <m.button
-              type="button"
-              onClick={openSettings}
-              onPointerEnter={() => { void loadSettingsModule().catch(() => {}) }}
-              onFocus={() => { void loadSettingsModule().catch(() => {}) }}
-              title="Settings"
-              aria-label="Open settings"
-              whileHover={buttonHover}
-              whileTap={buttonTap}
-            >
-              <Icons.Settings size={16} />
-            </m.button>
           </div>
         </header>
 
@@ -1257,26 +1451,25 @@ export default memo(function Welcome({
             </m.div>
           </AnimatePresence>
         </div>
-      </m.main>
+      </main>
 
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {settingsOpen && (
-            <Suspense key="dashboard-settings" fallback={<SettingsPanelFallback theme={theme} />}>
-              <SettingsPanel
-                theme={theme}
-                setTheme={setTheme}
-                motion={motion}
-                setMotion={setMotion}
-                {...settingsPanelProps}
-                onLibraryFolderChanged={refreshDashboard}
-                onClose={closeSettings}
-              />
-            </Suspense>
+            <SettingsPanel
+              key="dashboard-settings"
+              theme={theme}
+              setTheme={setTheme}
+              motion={motion}
+              setMotion={setMotion}
+              {...settingsPanelProps}
+              onLibraryFolderChanged={refreshDashboard}
+              onClose={closeSettings}
+            />
           )}
         </AnimatePresence>,
         document.body,
       )}
-    </m.div>
+    </div>
   )
 })

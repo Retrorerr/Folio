@@ -11,8 +11,8 @@
   --pill-spring:  cubic-bezier(0.32, 0.72, 0, 1);
   --pill-bounce:  cubic-bezier(0.4, 1.55, 0.4, 1);
   --pill-smooth:  cubic-bezier(0.4, 0, 0.2, 1);
-  --pill-morph:   560ms;
-  --pill-fade:    220ms;
+  --pill-morph:   380ms;
+  --pill-fade:    160ms;
 }
 
 /* ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@
 --------------------------------------------------------------------------- */
 .pill {
   transition:
-    border-radius 320ms var(--pill-smooth),
+    border-radius 220ms var(--pill-smooth),
     box-shadow var(--pill-morph) var(--pill-spring),
     background-color var(--pill-morph) var(--pill-spring);
   /* Soft ambient halo behind the pill, grows during expansion */
@@ -58,6 +58,12 @@
     rgba(0, 0, 0, 0.55) 0%,
     rgba(0, 0, 0, 0.25) 40%,
     transparent 75%);
+}
+.theme-blackleaf .pill::before {
+  background: radial-gradient(ellipse at center,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(0, 0, 0, 0.38) 44%,
+    transparent 76%);
 }
 .pill.expanded::before {
   opacity: 0.85;
@@ -141,9 +147,9 @@
 --------------------------------------------------------------------------- */
 .pill.pill-slowmo {
   transition:
-    border-radius 1120ms var(--pill-smooth),
-    box-shadow 2240ms var(--pill-spring),
-    background-color 2240ms var(--pill-spring) !important;
+    border-radius 880ms var(--pill-smooth),
+    box-shadow 1520ms var(--pill-spring),
+    background-color 1520ms var(--pill-spring) !important;
 }
 /* ---------------------------------------------------------------------------
    Expanded shell — generous proportions, refined surface
@@ -170,6 +176,13 @@
       rgba(162, 226, 211, 0.06) 0%,
       transparent 70%),
     #0b1014;
+}
+.theme-blackleaf .pill.expanded {
+  background:
+    radial-gradient(ellipse 700px 320px at 50% -20%,
+      rgba(255, 255, 255, 0.035) 0%,
+      transparent 68%),
+    #060606;
 }
 
 /* ---------------------------------------------------------------------------
@@ -335,7 +348,8 @@
   from { opacity: 0.4; transform: translateY(4px); }
   to   { opacity: 1; transform: none; }
 }
-.theme-dark .tele-line.tele-now { color: var(--ink); }
+.theme-dark .tele-line.tele-now,
+.theme-blackleaf .tele-line.tele-now { color: var(--ink); }
 
 .tele-line.tele-empty {
   color: var(--ink-3);
@@ -367,14 +381,13 @@
 }
 .wave-bar-lg {
   border-radius: 999px;
-  transition: background var(--dur-fast), height 80ms var(--pill-smooth);
+  transition: opacity 40ms linear, transform 40ms linear;
 }
 .wave-bar-lg.passed {
   background: linear-gradient(180deg, var(--ember-soft) 0%, var(--ember) 100%);
   box-shadow: 0 0 6px -1px color-mix(in srgb, var(--ember) 50%, transparent);
 }
 .wave-bar-lg.future { opacity: 0.32; }
-.pill-wave-lg:hover .wave-bar-lg.future { opacity: 0.5; transition: opacity var(--dur); }
 
 .pill-timeline {
   font-size: 10.5px;
@@ -535,7 +548,8 @@
   color: var(--paper);
   letter-spacing: 0.04em;
 }
-.theme-dark .pill-tile .tile-value { color: var(--ink); }
+.theme-dark .pill-tile .tile-value,
+.theme-blackleaf .pill-tile .tile-value { color: var(--ink); }
 .pill-tile .tile-value.is-ember { color: var(--ember-soft); }
 
 /* Slider component — applies to range inputs inside tiles */
@@ -670,7 +684,8 @@
   color: var(--paper);
   background: rgba(255, 255, 255, 0.06);
 }
-.theme-dark .pill-speed-presets button:hover { color: var(--ink); }
+.theme-dark .pill-speed-presets button:hover,
+.theme-blackleaf .pill-speed-presets button:hover { color: var(--ink); }
 .pill-speed-presets button.is-active {
   color: var(--ember-soft);
   background: color-mix(in srgb, var(--ember) 16%, transparent);
@@ -685,7 +700,8 @@
   color: var(--paper);
   line-height: 1;
 }
-.theme-dark .pill-tile.tile-page .page-display { color: var(--ink); }
+.theme-dark .pill-tile.tile-page .page-display,
+.theme-blackleaf .pill-tile.tile-page .page-display { color: var(--ink); }
 .pill-tile.tile-page .page-display .of {
   font-style: normal;
   font-family: var(--font-mono);

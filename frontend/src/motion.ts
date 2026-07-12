@@ -3,26 +3,26 @@ import type { Variants } from 'motion/react'
 export const motionEase = [0.16, 1, 0.3, 1] as const
 
 export const durations = {
-  xs: 0.12,
-  sm: 0.16,
-  md: 0.22,
-  lg: 0.32,
+  xs: 0.09,
+  sm: 0.14,
+  md: 0.2,
+  lg: 0.28,
 } as const
 
 export const spring = {
-  quick: { type: 'spring', stiffness: 560, damping: 42, mass: 0.7 },
-  layout: { type: 'spring', stiffness: 430, damping: 38, mass: 0.9 },
-  panel: { type: 'spring', stiffness: 380, damping: 36, mass: 0.92 },
-  page: { type: 'spring', stiffness: 300, damping: 34, mass: 0.95 },
-  pillControl: { type: 'spring', stiffness: 260, damping: 32, mass: 0.9 },
+  quick: { type: 'spring', stiffness: 520, damping: 40, mass: 0.72 },
+  layout: { type: 'spring', stiffness: 400, damping: 38, mass: 0.88 },
+  panel: { type: 'spring', stiffness: 360, damping: 34, mass: 0.9 },
+  page: { type: 'spring', stiffness: 300, damping: 32, mass: 0.92 },
+  pillControl: { type: 'spring', stiffness: 280, damping: 32, mass: 0.86 },
 } as const
 
 export const pillMorph = {
-  ms: 560,
+  ms: 380,
   slowScale: 4,
-  contentOut: 0.18,
-  contentIn: 0.26,
-  contentDelay: 0.26,
+  contentOut: 0.14,
+  contentIn: 0.18,
+  contentDelay: 0.05,
 } as const
 
 export const pillShellTransition = {
@@ -84,8 +84,8 @@ export const appViewTransition: Variants = {
 
     return {
       opacity: 0,
-      y: enteringFromStartup ? 18 : enteringReader ? 10 : 8,
-      scale: enteringFromStartup ? 0.988 : 0.994,
+      y: enteringFromStartup ? 6 : enteringReader ? 8 : 6,
+      scale: enteringFromStartup ? 0.997 : 0.995,
     }
   },
   animate: (custom = {}) => {
@@ -97,8 +97,8 @@ export const appViewTransition: Variants = {
       y: 0,
       scale: 1,
       transition: {
-        delay: startupHandoff ? 0.06 : 0,
-        duration: startupHandoff ? 0.42 : durations.lg,
+        delay: 0,
+        duration: startupHandoff ? 0.3 : durations.lg,
         ease: motionEase,
       },
     }
@@ -109,10 +109,10 @@ export const appViewTransition: Variants = {
 
     return {
       opacity: 0,
-      y: leavingStartup ? -14 : -8,
-      scale: leavingStartup ? 1.01 : 0.998,
+      y: leavingStartup ? -4 : -6,
+      scale: leavingStartup ? 1.002 : 0.998,
       transition: {
-        duration: leavingStartup ? 0.38 : durations.lg,
+        duration: leavingStartup ? 0.24 : durations.lg,
         ease: motionEase,
       },
     }
@@ -153,7 +153,7 @@ export const pillContentContinuity: Variants = {
       opacity: state === 'is-arriving' ? 0 : 1,
       y: state === 'is-arriving' ? 6 : 0,
       scale: state === 'is-arriving' ? 0.985 : 1,
-      filter: state === 'is-arriving' ? 'blur(12px)' : 'blur(0px)',
+      filter: state === 'is-arriving' ? 'blur(3px)' : 'blur(0px)',
     }
   },
   animate: (custom = '') => {
@@ -164,7 +164,7 @@ export const pillContentContinuity: Variants = {
         opacity: 0,
         y: -3,
         scale: 0.965,
-        filter: 'blur(14px)',
+        filter: 'blur(3px)',
         transition: { duration: pillMorph.contentOut * timeScale, ease: motionEase },
       }
     }
@@ -197,14 +197,14 @@ export const pillContentContinuity: Variants = {
       opacity: 0,
       y: 3,
       scale: 0.97,
-      filter: 'blur(12px)',
+      filter: 'blur(3px)',
       transition: { duration: pillMorph.contentOut * timeScale, ease: motionEase },
     }
   },
 }
 
 export const pillExpandedItemContinuity: Variants = {
-  initial: { opacity: 0, y: 8, filter: 'blur(8px)' },
+  initial: { opacity: 0, y: 6, filter: 'blur(2px)' },
   animate: {
     opacity: 1,
     y: 0,
@@ -236,7 +236,7 @@ export const listItem: Variants = {
 }
 
 export const buttonHover = { y: -1 }
-export const buttonTap = { scale: 0.985 }
+export const buttonTap = { scale: 0.975 }
 export const pillControlHover = {
   y: -1,
   scale: 1.01,

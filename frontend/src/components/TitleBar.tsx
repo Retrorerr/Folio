@@ -1,4 +1,4 @@
-import { useCallback, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Icons } from './icons'
 
 async function currentWindow() {
@@ -23,11 +23,44 @@ export default function TitleBar({
   followAlong = false,
   onBookmark,
 }: TitleBarProps) {
+  const [isMaximized, setIsMaximized] = useState(false)
+  const [isWindowActive, setIsWindowActive] = useState(true)
+
+  useEffect(() => {
+    let disposed = false
+    const unlisten: Array<() => void> = []
+
+    void (async () => {
+      try {
+        const win = await currentWindow()
+        const syncMaximized = async () => {
+          const maximized = await win.isMaximized()
+          if (!disposed) setIsMaximized(maximized)
+        }
+        await syncMaximized()
+        unlisten.push(await win.onResized(syncMaximized))
+        unlisten.push(await win.onFocusChanged(({ payload }) => {
+          if (!disposed) setIsWindowActive(payload)
+        }))
+      } catch {
+        // The browser preview has no native window events.
+      }
+    })()
+
+    return () => {
+      disposed = true
+      unlisten.forEach((stop) => stop())
+    }
+  }, [])
+
   const runWindowAction = useCallback(async (action: 'minimize' | 'maximize' | 'close') => {
     try {
       const win = await currentWindow()
       if (action === 'minimize') await win.minimize()
-      else if (action === 'maximize') await win.toggleMaximize()
+      else if (action === 'maximize') {
+        await win.toggleMaximize()
+        setIsMaximized(await win.isMaximized())
+      }
       else await win.close()
     } catch {
       // In browser preview we expect these calls to fail harmlessly.
@@ -57,7 +90,10 @@ export default function TitleBar({
   const progressPct = progress ? Math.min(100, Math.max(0, (progressCurrent / progressTotal) * 100)) : 0
 
   return (
-    <header className={`app-titlebar ${hasBook ? 'is-reader' : 'is-library'} ${followAlong ? 'is-following' : ''}`} onMouseDown={handleTitlebarMouseDown}>
+    <header
+      className={`app-titlebar ${hasBook ? 'is-reader' : 'is-library'} ${followAlong ? 'is-following' : ''} ${isWindowActive ? 'is-window-active' : 'is-window-inactive'}`}
+      onMouseDown={handleTitlebarMouseDown}
+    >
       <div className="titlebar-main">
         {hasBook ? (
           <>
@@ -105,17 +141,28 @@ export default function TitleBar({
           title="Minimize"
           onClick={() => runWindowAction('minimize')}
         >
-          <span className="titlebar-minimize" />
+          <svg className="titlebar-caption-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.5 8.5h9" />
+          </svg>
         </button>
         <button
           type="button"
           className="titlebar-control"
-          aria-label="Maximize"
-          title="Maximize"
+          aria-label={isMaximized ? 'Restore' : 'Maximize'}
+          title={isMaximized ? 'Restore' : 'Maximize'}
           onClick={() => runWindowAction('maximize')}
           onDoubleClick={(e) => e.stopPropagation()}
         >
-          <span className="titlebar-maximize" />
+          {isMaximized ? (
+            <svg className="titlebar-caption-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M5.5 4.5h6v6" />
+              <rect x="3.5" y="6.5" width="6" height="6" rx=".5" />
+            </svg>
+          ) : (
+            <svg className="titlebar-caption-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="3.5" y="3.5" width="9" height="9" rx=".6" />
+            </svg>
+          )}
         </button>
         <button
           type="button"
@@ -124,7 +171,9 @@ export default function TitleBar({
           title="Close"
           onClick={() => runWindowAction('close')}
         >
-          <Icons.X size={10} stroke={1.5} />
+          <svg className="titlebar-caption-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="m4 4 8 8M12 4l-8 8" />
+          </svg>
         </button>
       </div>
     </header>

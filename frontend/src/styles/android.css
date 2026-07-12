@@ -1,0 +1,110 @@
+html[data-platform='android'] {
+  color-scheme: dark;
+  background: #08090b;
+}
+
+html[data-platform='android'] body {
+  min-width: 0;
+  min-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+html[data-platform='android'] .app-titlebar,
+html[data-platform='android'] .titlebar-controls,
+html[data-platform='android'] .custom-titlebar {
+  display: none !important;
+}
+
+html[data-platform='android'] .app-shell {
+  min-height: 100dvh;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+}
+
+html[data-platform='android'] .app-main,
+html[data-platform='android'] .app-content,
+html[data-platform='android'] .reader-shell,
+html[data-platform='android'] .welcome-shell {
+  min-width: 0;
+  width: 100%;
+}
+
+html[data-platform='android'] .app-main {
+  padding: 0;
+}
+
+html[data-platform='android'] .welcome-shell {
+  padding: 18px 16px calc(92px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .reader-shell {
+  height: 100dvh;
+  padding: 12px 10px calc(94px + env(safe-area-inset-bottom));
+}
+
+html[data-platform='android'] .reader-stage {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-platform='android'] .reader-page,
+html[data-platform='android'] .reader-page-inner {
+  width: 100%;
+  max-width: none;
+}
+
+html[data-platform='android'] .sidebar {
+  width: min(92vw, 420px);
+  max-width: 100%;
+}
+
+html[data-platform='android'] .playback-pill,
+html[data-platform='android'] .pill-shell {
+  left: 10px;
+  right: 10px;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  width: auto;
+  max-width: none;
+}
+
+html[data-platform='android'] button,
+html[data-platform='android'] input,
+html[data-platform='android'] select,
+html[data-platform='android'] textarea {
+  font-size: 16px;
+}
+
+html[data-platform='android'] .desktop-only,
+html[data-platform='android'] [data-desktop-only='true'] {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  html[data-platform='android'] .welcome-grid,
+  html[data-platform='android'] .library-grid,
+  html[data-platform='android'] .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  html[data-platform='android'] .reader-controls,
+  html[data-platform='android'] .reader-toolbar {
+    gap: 6px;
+  }
+
+  html[data-platform='android'] .settings-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  html[data-platform='android'] .settings-shell {
+    width: 100%;
+    max-height: none;
+    border-radius: 0;
+    padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+  }
+}

@@ -3,7 +3,9 @@ import type React from 'react'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
 import { apiResourceUrl } from '../api'
+import { formatPlaybackTime } from '../hooks/audioPlaybackState'
 import { engineDisplayName, engineShortLabel, speedRangeForEngine, voiceLabel } from '../ttsVoices'
+import type { BookState, ModelInstallInfo, PreloadState, TtsActivity, TtsRuntimeInfo } from '../types'
 import {
   buttonHover,
   buttonTap,
@@ -18,20 +20,73 @@ import {
 } from '../motion'
 
 const BARS = 64
+const COMPACT_WAVE_BARS = 18
 const PILL_MORPH_MS = pillMorph.ms
+
+interface PillBufferState {
+  state: 'idle' | 'warming' | 'prebuffering' | 'playing'
+  ready: number
+  target: number
+  scheduled: number
+  current: { page: number; sentence: number } | null
+  reason: string
+  updatedAt: number
+}
+
+interface PillProps {
+  isPlaying: boolean
+  isGenerating: boolean
+  textLoading: boolean
+  modelLoaded: boolean
+  modelLoading: boolean
+  installState?: ModelInstallInfo | null
+  downloadActive?: boolean
+  downloadBytes?: number
+  downloadTotalBytes?: number
+  engineFallbackReason?: string | null
+  engineLoadError?: string | null
+  engineRuntime?: TtsRuntimeInfo | null
+  ttsActivity?: TtsActivity | null
+  bufferState?: PillBufferState | null
+  generationError?: string | null
+  play: () => void
+  pause: () => void
+  stop: () => void
+  skipSentence: (delta: number) => void | Promise<void>
+  currentPage: number
+  pageCount: number
+  goToPage: (page: number) => unknown
+  goToPreviousPage?: () => void
+  goToNextPage?: () => void
+  canGoPreviousPage?: boolean
+  canGoNextPage?: boolean
+  visualPageCurrent?: number
+  visualPageTotal?: number
+  speed: number
+  setSpeed: (speed: number) => void
+  volume: number
+  setVolume: (volume: number) => void
+  ttsEngine?: string
+  voice: string
+  currentSentence: number
+  sentenceCount: number
+  playRequiresLineSelection?: boolean
+  sleepTimer: number | null
+  setSleepTimer: (minutes: number | null) => void
+  preloadState?: PreloadState
+  preloadChapter: () => void
+  readingPage: number | null
+  followAlongMode?: boolean
+  toggleFollowAlong?: () => void
+  book?: BookState | null
+  subscribeAudioSpectrum?: (subscriber: (levels: Float32Array) => void) => () => void
+}
 
 function isInteractiveShortcutTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false
   return Boolean(target.closest(
     'button, input, select, textarea, a[href], [contenteditable="true"], [role="button"], [role="radio"], [role="switch"]',
   ))
-}
-
-function fmtTime(sec) {
-  sec = Math.max(0, Math.round(sec))
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return `${m}:${String(s).padStart(2, '0')}`
 }
 
 function fmtBytes(bytes) {
@@ -64,6 +119,9 @@ export default memo(function Pill({
   generationError,
   play, pause, stop, skipSentence,
   currentPage, pageCount, goToPage,
+  goToPreviousPage, goToNextPage,
+  canGoPreviousPage, canGoNextPage,
+  visualPageCurrent, visualPageTotal,
   speed, setSpeed, volume, setVolume,
   ttsEngine = 'supertonic',
   voice,
@@ -73,11 +131,11 @@ export default memo(function Pill({
   preloadState,
   preloadChapter,
   readingPage,
-  jumpToReader,
   followAlongMode = false,
   toggleFollowAlong,
   book,
-}: any) {
+  subscribeAudioSpectrum,
+}: PillProps) {
   // Show Follow Along whenever the user has a position to follow — once you've
   // started a book you can re-enter immersive mode at will, even from pause.
   // The button morphs (compact vs prominent) based on isPlaying so the most
@@ -93,9 +151,21 @@ export default memo(function Pill({
   const [controlsHidden, setControlsHidden] = useState(false)
   const [selectionHintVisible, setSelectionHintVisible] = useState(false)
   const pillRef = useRef<HTMLDivElement | null>(null)
+  const compactWaveBarsRef = useRef<Array<HTMLDivElement | null>>([])
+  const expandedWaveBarsRef = useRef<Array<HTMLDivElement | null>>([])
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pillMotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectionHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const previousVisualPage = useCallback(() => {
+    if (goToPreviousPage) goToPreviousPage()
+    else goToPage(currentPage - 1)
+  }, [currentPage, goToPage, goToPreviousPage])
+  const nextVisualPage = useCallback(() => {
+    if (goToNextPage) goToNextPage()
+    else goToPage(currentPage + 1)
+  }, [currentPage, goToNextPage, goToPage])
+  const previousVisualPageAvailable = canGoPreviousPage ?? currentPage > 0
+  const nextVisualPageAvailable = canGoNextPage ?? currentPage < pageCount - 1
 
   const setExpandedWithMotion = useCallback((next) => {
     if (pillMotionTimerRef.current) clearTimeout(pillMotionTimerRef.current)
@@ -171,14 +241,14 @@ export default memo(function Pill({
         break
       case 'PageDown':
         e.preventDefault()
-        goToPage(currentPage + 1)
+        if (nextVisualPageAvailable) nextVisualPage()
         break
       case 'PageUp':
         e.preventDefault()
-        goToPage(currentPage - 1)
+        if (previousVisualPageAvailable) previousVisualPage()
         break
     }
-  }, [togglePlay, skipSentence, goToPage, currentPage])
+  }, [nextVisualPage, nextVisualPageAvailable, previousVisualPage, previousVisualPageAvailable, skipSentence, togglePlay])
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown)
@@ -225,21 +295,35 @@ export default memo(function Pill({
     }
   }, [followAlongMode, isPlaying, revealControls])
 
-  const heights = useMemo(() => (
-    Array.from({ length: BARS }).map((_, i) => {
-      const a = Math.sin(i * 0.4) * 0.5 + 0.5
-      const b = Math.sin(i * 0.19 + 1.2) * 0.3 + 0.5
-      return Math.max(0.08, Math.min(1, a * 0.6 + b * 0.4))
-    })
-  ), [])
+  const applyAudioSpectrum = useCallback((levels: Float32Array) => {
+    const updateBars = (bars: Array<HTMLDivElement | null>) => {
+      const lastLevel = Math.max(0, levels.length - 1)
+      const lastBar = Math.max(1, bars.length - 1)
+      bars.forEach((bar, index) => {
+        if (!bar) return
+        const sourceIndex = Math.round((index / lastBar) * lastLevel)
+        const level = Math.max(0, Math.min(1, levels[sourceIndex] || 0))
+        bar.style.transform = `scaleY(${Math.max(0.07, level).toFixed(3)})`
+        bar.style.opacity = `${Math.max(0.24, Math.min(1, 0.28 + level * 0.82)).toFixed(3)}`
+      })
+    }
+    updateBars(compactWaveBarsRef.current)
+    updateBars(expandedWaveBarsRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (!subscribeAudioSpectrum) return
+    return subscribeAudioSpectrum(applyAudioSpectrum)
+  }, [applyAudioSpectrum, subscribeAudioSpectrum])
 
   // Progress across current page
   const progress = sentenceCount > 0 ? Math.min(1, (currentSentence + 1) / sentenceCount) : 0
-  const currentIndex = Math.floor(progress * BARS)
 
   // Book-wide progress for timeline
-  const bookProgress = pageCount > 0 ? (currentPage + progress) / pageCount : 0
-  const totalMinsEstimate = pageCount * 2
+  const displayPageTotal = Math.max(1, Math.round(Number(visualPageTotal || pageCount || 1)))
+  const displayPageCurrent = Math.max(1, Math.min(displayPageTotal, Math.round(Number(visualPageCurrent || currentPage + 1))))
+  const bookProgress = displayPageTotal > 0 ? displayPageCurrent / displayPageTotal : 0
+  const totalMinsEstimate = displayPageTotal * 2
   const elapsedMins = bookProgress * totalMinsEstimate
 
   const SLEEP_STOPS = [null, 5, 15, 30, 60]
@@ -309,7 +393,7 @@ export default memo(function Pill({
     }
     if (modelLoading) return `Loading ${engineName}…`
     if (!modelLoaded) {
-      return `${engineName} not ready`
+      return `${engineName} ready on demand`
     }
     if (modelLoaded && engineFallbackReason && !isPlaying) {
       return engineFallbackReason
@@ -322,7 +406,7 @@ export default memo(function Pill({
   const status = statusLabel()
 
   // Chapter preload state feeds the reader pill controls and subtitle line.
-  const pl = preloadState || { state: 'idle', ready: 0, total: 0 }
+  const pl = preloadState || { state: 'idle', ready: 0, total: 0, failed: [] }
   const plPct = pl.total > 0 ? Math.round((pl.ready / pl.total) * 100) : 0
   const preloadProgress = pl.total > 0 ? Math.max(0, Math.min(1, pl.ready / pl.total)) : 0
   const plFailed = pl.failed?.length || 0
@@ -356,9 +440,10 @@ export default memo(function Pill({
       ? (installState.downloaded_bytes || 0) / installState.total_bytes
       : Number(installState?.progress || 0)
     const runtimeDownloadProgress = downloadTotalBytes > 0 ? downloadBytes / downloadTotalBytes : 0
+    const playbackPage = readingPage ?? currentPage
     const audioDetail = sentenceCount > 0
-      ? `Sentence ${currentSentence + 1}/${sentenceCount} · page ${currentPage + 1}/${pageCount}`
-      : `Page ${currentPage + 1}/${pageCount}`
+      ? `Sentence ${currentSentence + 1}/${sentenceCount} · chapter ${playbackPage + 1}/${pageCount}`
+      : `Chapter ${playbackPage + 1}/${pageCount}`
     const runningJob = ttsActivity?.running?.[0] || null
     const pendingJob = ttsActivity?.pending?.[0] || null
     const activityJob = runningJob || ttsActivity?.active || pendingJob || null
@@ -366,17 +451,17 @@ export default memo(function Pill({
     const activityMeta = activityJob?.metadata || {}
     const activityPage = finiteNumber(
       activityMeta.page_number,
-      finiteNumber(activityMeta.page, currentPage) + 1,
+      finiteNumber(activityMeta.page, playbackPage) + 1,
     )
     const activitySentence = finiteNumber(
       activityMeta.sentence_number,
       finiteNumber(activityMeta.sentence, currentSentence) + 1,
     )
     const activitySentenceCount = finiteNumber(activityMeta.sentence_count, sentenceCount)
-    const activityTargetLabel = `S${activitySentence}${activitySentenceCount > 0 ? `/${activitySentenceCount}` : ''} · p${activityPage}/${pageCount}`
+    const activityTargetLabel = `S${activitySentence}${activitySentenceCount > 0 ? `/${activitySentenceCount}` : ''} · ch ${activityPage}/${pageCount}`
     const activitySnippet = compactText(activityMeta.text, 132)
     const activityMatchesCurrent = (
-      finiteNumber(activityMeta.page, currentPage) === currentPage
+      finiteNumber(activityMeta.page, playbackPage) === playbackPage
       && finiteNumber(activityMeta.sentence, currentSentence) === currentSentence
     )
     const leadReady = finiteNumber(bufferState?.ready, 0)
@@ -389,7 +474,7 @@ export default memo(function Pill({
       ? `${runningCount} generating · ${pendingCount} queued`
       : 'No backend queue reported'
     const leadSentence = bufferState?.current
-      ? `sentence ${finiteNumber(bufferState.current.sentence, 0) + 1} · page ${finiteNumber(bufferState.current.page, currentPage) + 1}/${pageCount}`
+      ? `sentence ${finiteNumber(bufferState.current.sentence, 0) + 1} · chapter ${finiteNumber(bufferState.current.page, playbackPage) + 1}/${pageCount}`
       : 'next sentence'
     const bufferLabel = leadTarget > 0 ? `${leadReady}/${leadTarget} ready` : 'Idle'
     const bufferDetail = leadTarget > 0
@@ -399,8 +484,8 @@ export default memo(function Pill({
       ? `${leadReady}/${leadTarget} ready${leadScheduled > leadReady ? ` · ${leadScheduled}/${leadTarget} queued` : ''}`
       : null
     const playbackBadge = sentenceCount > 0
-      ? `Reading S${currentSentence + 1}/${sentenceCount} · p${currentPage + 1}/${pageCount}`
-      : `Page ${currentPage + 1}/${pageCount}`
+      ? `Reading S${currentSentence + 1}/${sentenceCount} · ch ${playbackPage + 1}/${pageCount}`
+      : `Chapter ${playbackPage + 1}/${pageCount}`
     const leadDetail = leadTarget > 0
       ? `${bufferState?.reason || 'Preparing lead audio'} while checking ${leadSentence}.`
       : `${bufferState?.reason || 'Preparing lead audio'}.`
@@ -606,6 +691,7 @@ export default memo(function Pill({
     modelLoaded,
     modelLoading,
     pageCount,
+    readingPage,
     bufferState,
     pl.total,
     pl.ready,
@@ -750,20 +836,13 @@ export default memo(function Pill({
                   preload ↔ follow-along never shifts the transport buttons. */}
               <div className={`pill-controls-prep ${isPlaying ? 'state-playing' : 'state-paused'}`}>
                 <div className="pill-waveform" aria-hidden="true">
-                  {heights.slice(0, 28).map((h, i) => {
-                    const passed = (i / 28) < progress
-                    return (
-                      <div
-                        key={i}
-                        className="wave-bar"
-                        style={{
-                          height: `${h * 100}%`,
-                          opacity: passed ? 1 : 0.28,
-                          '--wave-delay': `${i * -42}ms`,
-                        } as React.CSSProperties}
-                      />
-                    )
-                  })}
+                  {Array.from({ length: COMPACT_WAVE_BARS }, (_, i) => (
+                    <div
+                      key={i}
+                      ref={(node) => { compactWaveBarsRef.current[i] = node }}
+                      className="wave-bar"
+                    />
+                  ))}
                 </div>
                 <span className="pill-divider" aria-hidden="true" />
                 <m.button
@@ -790,7 +869,7 @@ export default memo(function Pill({
                     render. */}
                 <m.button
                   className={`pill-btn follow-along-btn ${followAlongMode ? 'active' : ''} ${followAlongMode && isPlaying ? 'is-live' : ''} ${isPlaying ? 'is-prominent' : 'is-compact'} ${!showFollowAlong ? 'is-stub' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); if (!showFollowAlong) return; toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
+                  onClick={(e) => { e.stopPropagation(); if (showFollowAlong) toggleFollowAlong() }}
                   disabled={!showFollowAlong}
                   title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
                   aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
@@ -831,7 +910,7 @@ export default memo(function Pill({
               </div>
               <div className="meta">
                 <div className={`eyebrow ${plActive ? `preload-meta preload-meta-${pl.state}` : ''}`}>
-                  {plActive ? preloadLabel.toUpperCase() : (status ? status.toUpperCase() : `NOW PLAYING · PAGE ${currentPage + 1} OF ${pageCount}`)}
+                  {plActive ? preloadLabel.toUpperCase() : (status ? status.toUpperCase() : `NOW PLAYING · PAGE ${displayPageCurrent} OF ${displayPageTotal}`)}
                 </div>
                 <h2>{book?.title || 'Kokoro Reader'}</h2>
                 <div className="a">{book?.author ? `by ${book.author}` : ''}{voice ? ` · read by ${voice}` : ''}</div>
@@ -888,46 +967,41 @@ export default memo(function Pill({
 
             <div>
               <div className="pill-wave-lg">
-                {heights.map((h, i) => {
-                  const passed = i <= currentIndex
-                  return (
-                    <div
-                      key={i}
-                      className={`wave-bar-lg ${passed ? 'passed' : 'future'}`}
-                      style={{
-                        height: `${h * 100}%`,
-                        '--wave-delay': `${i * -24}ms`,
-                      } as React.CSSProperties}
-                    />
-                  )
-                })}
+                {Array.from({ length: BARS }, (_, i) => (
+                  <div
+                    key={i}
+                    ref={(node) => { expandedWaveBarsRef.current[i] = node }}
+                    className="wave-bar-lg spectrum-bar"
+                  />
+                ))}
               </div>
               <div className="pill-timeline">
-                <span className="current">{fmtTime(elapsedMins * 60)}</span>
+                <span className="current">{formatPlaybackTime(elapsedMins * 60)}</span>
                 <span>Sentence {sentenceCount ? currentSentence + 1 : 0} / {sentenceCount}</span>
-                <span>-{fmtTime((totalMinsEstimate - elapsedMins) * 60)}</span>
+                <span>-{formatPlaybackTime((totalMinsEstimate - elapsedMins) * 60)}</span>
               </div>
             </div>
 
             <m.div className="pill-expanded-controls" layout>
               <div className="pill-expanded-transport">
-                <button className="pill-btn" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 0} title="Previous page">
+                <button className="pill-btn" onClick={previousVisualPage} disabled={!previousVisualPageAvailable} title="Previous page" aria-label="Previous page">
                   <Icons.SkipBack size={18} />
                 </button>
-                <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence">
+                <button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence" aria-label="Previous sentence">
                   <Icons.Rewind size={18} />
                 </button>
                 <button
                   className={`pill-btn play ${isPlaying ? 'is-playing' : ''}`}
                   onClick={primaryClick}
                   title="Play/Pause"
+                  aria-label={isPlaying ? 'Pause narration' : 'Play narration'}
                 >
                   {isPlaying ? <Icons.Pause size={22} /> : <Icons.Play size={22} />}
                 </button>
-                <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence">
+                <button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence" aria-label="Next sentence">
                   <Icons.Forward size={18} />
                 </button>
-                <button className="pill-btn" onClick={() => goToPage(currentPage + 1)} disabled={currentPage >= pageCount - 1} title="Next page">
+                <button className="pill-btn" onClick={nextVisualPage} disabled={!nextVisualPageAvailable} title="Next page" aria-label="Next page">
                   <Icons.SkipForward size={18} />
                 </button>
               </div>
@@ -937,7 +1011,7 @@ export default memo(function Pill({
                   {showFollowAlong && (
                     <m.button
                       className={`pill-btn follow-along-btn is-prominent ${followAlongMode ? 'active' : ''} ${followAlongMode && isPlaying ? 'is-live' : ''}`}
-                      onClick={(e) => { e.stopPropagation(); toggleFollowAlong(); if (!followAlongMode) jumpToReader?.() }}
+                      onClick={(e) => { e.stopPropagation(); toggleFollowAlong() }}
                       title={followAlongMode ? 'Exit Follow Along' : 'Follow Along'}
                       aria-label={followAlongMode ? 'Exit Follow Along' : 'Enter Follow Along'}
                       aria-pressed={followAlongMode}
@@ -957,7 +1031,7 @@ export default memo(function Pill({
                     </m.button>
                   )}
                 </AnimatePresence>
-                <button className="pill-btn" onClick={stop} title="Stop">
+                <button className="pill-btn" onClick={stop} title="Stop" aria-label="Stop narration">
                   <Icons.Stop size={16} />
                 </button>
               </div>
@@ -971,7 +1045,7 @@ export default memo(function Pill({
                   <span className="tile-value">{Math.round(bookProgress * 100)}%</span>
                 </div>
                 <div className="page-display">
-                  {currentPage + 1}<span className="of">of</span>{pageCount}
+                  {displayPageCurrent}<span className="of">of</span>{displayPageTotal}
                 </div>
                 <div
                   className="page-progress"

@@ -21,6 +21,7 @@ class Position(BaseModel):
     page: int
     sentence_idx: int
     content_page: int | None = None
+    visual_page: int | None = None
     pages_per_view: int | None = None
     layout_key: str | None = None
     chunk_progress: float | None = None
@@ -30,6 +31,7 @@ class Bookmark(BaseModel):
     page: int
     sentence_idx: int
     label: str = ""
+    visual_page: int | None = None
 
 class BookState(BaseModel):
     id: str

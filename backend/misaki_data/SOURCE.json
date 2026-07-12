@@ -1,0 +1,21 @@
+{
+  "format": "folio-misaki-lexicon",
+  "formatVersion": 1,
+  "generator": "scripts/generate-misaki-en-assets.py",
+  "license": "Apache-2.0",
+  "outputs": {
+    "gb.lex.gz": {
+      "bytes": 1467990,
+      "entries": 197116,
+      "sha256": "760714acdb23f5eb2a09e4313c4f9c7d688ea4e2a7af3d266a54f8024743ea8b"
+    },
+    "us.lex.gz": {
+      "bytes": 1382567,
+      "entries": 183561,
+      "sha256": "0e59e4085aff821089bd015ed436d07f69716ea914a02960a7511ecec48a67d8"
+    }
+  },
+  "upstream": "https://github.com/hexgrad/misaki",
+  "upstreamRevision": "fba1236595f2d2bf21d414ba6e57d25256afada3",
+  "upstreamVersion": "0.9.4"
+}

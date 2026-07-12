@@ -1,0 +1,4 @@
+Folio includes mechanically compacted English pronunciation dictionaries from Misaki 0.9.4.
+Source: https://github.com/hexgrad/misaki at revision fba1236595f2d2bf21d414ba6e57d25256afada3.
+The generated us.lex.gz and gb.lex.gz files are modified data representations.
+Misaki and these derived dictionary assets are distributed under Apache License 2.0; see LICENSE.

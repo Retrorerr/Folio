@@ -1,0 +1,33 @@
+/*
+ * Gradle init script used only by scripts/build-android.ps1 for release builds.
+ * Secrets stay in the process environment and are never committed or copied
+ * into the generated Tauri Android project.
+ */
+gradle.beforeProject { project ->
+    project.pluginManager.withPlugin("com.android.application") {
+        def required = [
+            "FOLIO_ANDROID_KEYSTORE",
+            "FOLIO_ANDROID_KEYSTORE_PASSWORD",
+            "FOLIO_ANDROID_KEY_ALIAS",
+            "FOLIO_ANDROID_KEY_PASSWORD"
+        ]
+        def missing = required.findAll { !System.getenv(it) }
+        if (!missing.isEmpty()) {
+            throw new GradleException("Missing Folio Android release signing environment variables: " + missing.join(", "))
+        }
+
+        def android = project.extensions.getByName("android")
+        def releaseSigning = android.signingConfigs.maybeCreate("folioRelease")
+        releaseSigning.storeFile = new File(System.getenv("FOLIO_ANDROID_KEYSTORE"))
+        releaseSigning.storePassword = System.getenv("FOLIO_ANDROID_KEYSTORE_PASSWORD")
+        releaseSigning.keyAlias = System.getenv("FOLIO_ANDROID_KEY_ALIAS")
+        releaseSigning.keyPassword = System.getenv("FOLIO_ANDROID_KEY_PASSWORD")
+        if (System.getenv("FOLIO_ANDROID_KEYSTORE_TYPE")) {
+            releaseSigning.storeType = System.getenv("FOLIO_ANDROID_KEYSTORE_TYPE")
+        }
+        releaseSigning.enableV1Signing = true
+        releaseSigning.enableV2Signing = true
+        releaseSigning.enableV3Signing = true
+        android.buildTypes.getByName("release").signingConfig = releaseSigning
+    }
+}

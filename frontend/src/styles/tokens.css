@@ -18,9 +18,9 @@
   /* Motion */
   --ease-out: cubic-bezier(0.2, 0.7, 0.1, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --dur-fast: 180ms;
-  --dur: 320ms;
-  --dur-slow: 560ms;
+  --dur-fast: 140ms;
+  --dur: 220ms;
+  --dur-slow: 360ms;
 }
 
 /* ============ Sepia (default) ============ */
@@ -107,6 +107,27 @@
   color-scheme: dark;
 }
 
+/* ============ Blackleaf (AMOLED monochrome) ============ */
+.theme-blackleaf {
+  --paper:      #000000;
+  --paper-2:    #070707;
+  --paper-3:    #121212;
+  --paper-edge: #000000;
+  --rule:       #252525;
+  --ink:        #f2f2f2;
+  --ink-2:      #b7b7b7;
+  --ink-3:      #777777;
+  --ember:      #dedede;
+  --ember-soft: #ffffff;
+  --ember-wash: rgba(255, 255, 255, 0.09);
+  --gold:       #a8a8a8;
+  --shadow-1:   0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2:   0 10px 30px -14px rgba(0, 0, 0, 0.88);
+  --shadow-3:   0 30px 80px -18px rgba(0, 0, 0, 0.96);
+  --grain-opacity: 0;
+  color-scheme: dark;
+}
+
 /* ============ base ============ */
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root { height: 100%; }
@@ -149,6 +170,9 @@ body {
 .theme-folio.grain::before {
   mix-blend-mode: screen;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' seed='8'/><feColorMatrix values='0 0 0 0 0.82  0 0 0 0 0.61  0 0 0 0 0.27  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+.theme-blackleaf.grain::before {
+  display: none;
 }
 
 button, input, select { font: inherit; color: inherit; }

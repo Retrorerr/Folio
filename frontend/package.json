@@ -15,7 +15,9 @@
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/newsreader": "^5.2.10",
     "@fontsource/instrument-serif": "^5.2.8",
+    "fflate": "^0.8.3",
     "motion": "^12.40.0",
+    "pdfjs-dist": "6.1.200",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

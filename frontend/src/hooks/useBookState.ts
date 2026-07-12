@@ -7,6 +7,7 @@ function mergePosition(previous: Position | null | undefined, next: Position): P
   const merged: Position = { ...next }
   if (previous?.page === next.page) {
     if (merged.content_page == null) merged.content_page = previous.content_page
+    if (merged.visual_page == null) merged.visual_page = previous.visual_page
     if (merged.pages_per_view == null) merged.pages_per_view = previous.pages_per_view
     if (merged.layout_key == null) merged.layout_key = previous.layout_key
   }
@@ -23,6 +24,7 @@ function sameReadablePosition(a: Position | null | undefined, b: Position | null
     a?.page === b?.page &&
     a?.sentence_idx === b?.sentence_idx &&
     a?.content_page === b?.content_page &&
+    a?.visual_page === b?.visual_page &&
     a?.pages_per_view === b?.pages_per_view &&
     a?.layout_key === b?.layout_key &&
     a?.chunk_progress === b?.chunk_progress
@@ -33,11 +35,16 @@ export default function useBookState() {
   const [book, setBook] = useState<BookState | null>(null)
   const [pageData, setPageData] = useState<PageText | null>(null)
   const [currentPage, setCurrentPage] = useState(0)
-  const [loading, setLoading] = useState(false)
+  const [bookLoading, setBookLoading] = useState(false)
+  const [pageLoading, setPageLoading] = useState(false)
   const [textLoading, setTextLoading] = useState(false)
   const [recentBooks, setRecentBooks] = useState<BookState[]>([])
   const [recentLoaded, setRecentLoaded] = useState(false)
   const loadRequestRef = useRef(0)
+  const openRequestRef = useRef(0)
+  const openAbortRef = useRef<AbortController | null>(null)
+  const pageAbortRef = useRef<AbortController | null>(null)
+  const loading = bookLoading || pageLoading
   const activeBookId = book?.id ?? null
   const activeBookPageCount = book?.page_count ?? 0
 
@@ -67,44 +74,59 @@ export default function useBookState() {
     }
   }, [fetchRecent, recentLoaded])
 
-  const openBook = useCallback(async (filepath: string) => {
-    setLoading(true)
+  const runOpenRequest = useCallback(async (request: (signal: AbortSignal) => Promise<BookState>) => {
+    const requestId = ++openRequestRef.current
+    openAbortRef.current?.abort()
+    const controller = new AbortController()
+    openAbortRef.current = controller
+    setBookLoading(true)
     try {
-      const data = await apiJson<BookState>(`/api/book/open?filepath=${encodeURIComponent(filepath)}`, { method: 'POST' })
+      const data = await request(controller.signal)
+      if (openRequestRef.current !== requestId || controller.signal.aborted) return data
+      loadRequestRef.current += 1
+      pageAbortRef.current?.abort()
+      pageAbortRef.current = null
       setBook(data)
       setCurrentPage(data.last_position?.page || 0)
-      fetchRecent()
+      setPageData(null)
+      void fetchRecent()
       return data
+    } catch (error) {
+      if (controller.signal.aborted || openRequestRef.current !== requestId) return undefined
+      throw error
     } finally {
-      setLoading(false)
+      if (openRequestRef.current === requestId) {
+        openAbortRef.current = null
+        setBookLoading(false)
+      }
     }
   }, [fetchRecent])
 
+  const openBook = useCallback((filepath: string) => runOpenRequest((signal) => (
+    apiJson<BookState>(`/api/book/open?filepath=${encodeURIComponent(filepath)}`, { method: 'POST', signal })
+  )), [runOpenRequest])
+
   const uploadBook = useCallback(async (file: File) => {
-    setLoading(true)
-    try {
+    return runOpenRequest((signal) => {
       const form = new FormData()
       form.append('file', file)
-      const data = await apiJson<BookState>('/api/book/open-upload', { method: 'POST', body: form })
-      setBook(data)
-      setCurrentPage(data.last_position?.page || 0)
-      fetchRecent()
-      return data
-    } finally {
-      setLoading(false)
-    }
-  }, [fetchRecent])
+      return apiJson<BookState>('/api/book/open-upload', { method: 'POST', body: form, signal })
+    })
+  }, [runOpenRequest])
 
   const loadPage = useCallback(async (pageNum: number) => {
     if (!activeBookId) return
     const requestId = ++loadRequestRef.current
-    setLoading(true)
+    pageAbortRef.current?.abort()
+    const controller = new AbortController()
+    pageAbortRef.current = controller
+    setPageLoading(true)
     setTextLoading(true)
     setCurrentPage(pageNum)
     setPageData(null)
     let loadedPageData: PageText | null = null
     try {
-      const textRes = await apiFetch(`/api/book/${activeBookId}/page/${pageNum}/text`)
+      const textRes = await apiFetch(`/api/book/${activeBookId}/page/${pageNum}/text`, { signal: controller.signal })
       if (textRes.ok && loadRequestRef.current === requestId) {
         const json = await textRes.json() as PageText
         // Re-check after the JSON parse — if the user navigated away while the
@@ -115,9 +137,15 @@ export default function useBookState() {
           setPageData(loadedPageData)
         }
       }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        // Page navigation remains usable after transient backend failures; the
+        // next navigation retries the request.
+      }
     } finally {
       if (loadRequestRef.current === requestId) {
-        setLoading(false)
+        pageAbortRef.current = null
+        setPageLoading(false)
         setTextLoading(false)
       }
     }
@@ -125,8 +153,15 @@ export default function useBookState() {
   }, [activeBookId])
 
   useEffect(() => {
-    if (activeBookId) loadPage(currentPage)
+    if (activeBookId) void loadPage(currentPage)
   }, [activeBookId, loadPage]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => () => {
+    openRequestRef.current += 1
+    loadRequestRef.current += 1
+    openAbortRef.current?.abort()
+    pageAbortRef.current?.abort()
+  }, [])
 
   const goToPage = useCallback((pageNum: number) => {
     if (!activeBookId || pageNum < 0 || pageNum >= activeBookPageCount) return
@@ -197,17 +232,22 @@ export default function useBookState() {
     })
   }, [activeBookId])
 
-  const addBookmark = useCallback(async (page: number, sentenceIdx: number, label = '') => {
+  const addBookmark = useCallback(async (page: number, sentenceIdx: number, label = '', visualPage?: number) => {
     if (!book) return
     await apiFetch(`/api/book/${book.id}/bookmark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page, sentence_idx: sentenceIdx, label }),
+      body: JSON.stringify({ page, sentence_idx: sentenceIdx, label, visual_page: visualPage }),
     })
     // Update bookmarks locally instead of re-opening book (avoids resetting playback settings)
     setBook(prev => prev ? {
       ...prev,
-      bookmarks: [...prev.bookmarks, { page, sentence_idx: sentenceIdx, label: label || `Page ${page + 1}` }],
+      bookmarks: [...prev.bookmarks, {
+        page,
+        sentence_idx: sentenceIdx,
+        visual_page: visualPage,
+        label: label || (visualPage ? `Page ${visualPage}` : `Chapter ${page + 1}`),
+      }],
     } : prev)
   }, [book])
 
@@ -229,6 +269,14 @@ export default function useBookState() {
     // Bump the request id so any in-flight text fetches can't clobber state
     // after we've cleared it.
     loadRequestRef.current += 1
+    openRequestRef.current += 1
+    openAbortRef.current?.abort()
+    pageAbortRef.current?.abort()
+    openAbortRef.current = null
+    pageAbortRef.current = null
+    setBookLoading(false)
+    setPageLoading(false)
+    setTextLoading(false)
     setBook(null)
     setPageData(null)
     setCurrentPage(0)

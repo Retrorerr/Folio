@@ -50,11 +50,13 @@ class FakeSession:
 
 class FakeKokoro:
     failing_providers: set[str] = set()
+    create_calls: list[tuple[tuple, dict]] = []
 
     def __init__(self, provider: str):
         self.provider = provider
 
-    def create(self, *_args, **_kwargs):
+    def create(self, *args, **kwargs):
+        type(self).create_calls.append((args, kwargs))
         if self.provider in self.failing_providers:
             raise RuntimeError(f"{self.provider} smoke failed")
         return [0.0] * 240, 24000
@@ -111,6 +113,7 @@ class TTSServiceTests(unittest.TestCase):
         tts_service._last_load_error = None
         tts_service._identity_cache.clear()
         FakeKokoro.failing_providers = set()
+        FakeKokoro.create_calls = []
 
     def install_fake_runtime(self, providers, failing_providers=()):
         FakeKokoro.failing_providers = set(failing_providers)
@@ -144,8 +147,27 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertEqual(info["selected_model"], tts_service.QUALITY_MODEL_FILENAME)
         self.assertEqual(info["selected_provider"], "CPUExecutionProvider")
+        self.assertIs(info["model_loaded"], True)
+        self.assertIs(info["model_loading"], False)
         self.assertIs(info["cpu_smoke_passed"], True)
         self.assertIs(info["int8_fallback_used"], False)
+
+    def test_kokoro_receives_misaki_phonemes_with_explicit_phoneme_contract(self):
+        self.install_fake_runtime(["CPUExecutionProvider"])
+        write_asset(self.models_dir / tts_service.QUALITY_MODEL_FILENAME, b"quality-model")
+        write_asset(self.models_dir / tts_service.VOICES_FILENAME, b"voices")
+
+        tts_service.get_kokoro()
+
+        args, kwargs = FakeKokoro.create_calls[-1]
+        expected = tts_service._english_g2p.phonemize("Ready.", british=False).phonemes
+        self.assertEqual(args[0], expected)
+        self.assertNotEqual(args[0], "Ready.")
+        self.assertIs(kwargs["is_phonemes"], True)
+        info = tts_service.get_runtime_info()
+        self.assertEqual(info["phonemizer"], tts_service.MISAKI_G2P_STRATEGY)
+        self.assertEqual(info["g2p_revision"], tts_service.MISAKI_G2P_REVISION)
+        self.assertEqual(info["g2p_fallback_count"], 0)
 
     def test_missing_quality_model_reports_setup_and_uses_int8_fallback(self):
         self.install_fake_runtime(["CPUExecutionProvider"])
@@ -214,10 +236,13 @@ class TTSServiceTests(unittest.TestCase):
 
         with mock.patch.object(tts_service, "CHUNKER_VERSION", "different-existing-version"):
             key_chunker_changed = tts_service._cache_key("Same text.", "af_heart", 0.95)
+        with mock.patch.object(tts_service, "MISAKI_G2P_REVISION", "different-g2p-revision"):
+            key_g2p_changed = tts_service._cache_key("Same text.", "af_heart", 0.95)
 
         self.assertNotEqual(key_cpu, key_cuda)
         self.assertNotEqual(key_cpu, key_model_changed)
         self.assertNotEqual(key_model_changed, key_chunker_changed)
+        self.assertNotEqual(key_model_changed, key_g2p_changed)
 
     def test_cache_key_does_not_load_model_when_runtime_unselected(self):
         write_asset(self.models_dir / tts_service.QUALITY_MODEL_FILENAME, b"quality-model")

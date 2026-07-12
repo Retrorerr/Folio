@@ -23,4 +23,12 @@ if (Test-Path $signingKeyPath) {
 
 & $nodeTools.NodeExe $nodeTools.NpmCli --prefix $root install
 & $nodeTools.NodeExe $nodeTools.NpmCli --prefix (Join-Path $root "frontend") install
-& $nodeTools.NodeExe $nodeTools.NpmCli --prefix $root exec tauri -- build
+$tauriArgs = @("--prefix", $root, "exec", "tauri", "--", "build")
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+  # Local validation builds should still produce usable installers. Release
+  # builds retain updater artifacts automatically when a signing key exists.
+  $tauriArgs += @("--config", (Join-Path $root "src-tauri\tauri.local-build.conf.json"))
+}
+
+& $nodeTools.NodeExe $nodeTools.NpmCli @tauriArgs
+exit $LASTEXITCODE

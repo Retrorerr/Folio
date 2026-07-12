@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -65,16 +66,35 @@ def load_state(engine: str, label: str, approx_bytes: int = 0) -> dict[str, Any]
 
 
 def save_state(state: dict[str, Any]) -> dict[str, Any]:
-    state = dict(state)
     state["updated_at"] = time.time()
+    payload = dict(state)
     path = state_path(str(state["engine"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     with _state_lock:
-        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        temp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
+        try:
+            temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(temp_path, path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return state
 
 
+def _meaningful_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in state.items() if key != "updated_at"}
+
+
+def _save_if_changed(state: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    if _meaningful_state(state) == _meaningful_state(previous):
+        return state
+    return save_state(state)
+
+
 def update_progress(state: dict[str, Any], downloaded: int, total: int | None = None) -> dict[str, Any]:
+    previous = dict(state)
     total_bytes = int(total if total is not None else state.get("total_bytes") or 0)
     downloaded_bytes = max(0, int(downloaded))
     progress = 0.0
@@ -87,7 +107,7 @@ def update_progress(state: dict[str, Any], downloaded: int, total: int | None = 
             "progress": progress,
         }
     )
-    return save_state(state)
+    return _save_if_changed(state, previous)
 
 
 def set_state(
@@ -99,6 +119,7 @@ def set_state(
     downloaded_bytes: int | None = None,
     total_bytes: int | None = None,
 ) -> dict[str, Any]:
+    previous = dict(state)
     state["state"] = next_state
     if ready is not None:
         state["ready"] = bool(ready)
@@ -111,7 +132,7 @@ def set_state(
     total = int(state.get("total_bytes") or 0)
     downloaded = int(state.get("downloaded_bytes") or 0)
     state["progress"] = max(0.0, min(1.0, downloaded / total)) if total > 0 else 0.0
-    return save_state(state)
+    return _save_if_changed(state, previous)
 
 
 def user_install_info(state: dict[str, Any]) -> dict[str, Any]:
