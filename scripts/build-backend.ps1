@@ -34,10 +34,12 @@ if (Test-Path $dist) {
   --clean `
   --noconfirm `
   --name folio-backend `
+  --version-file (Join-Path $backend "windows-version-info.txt") `
   --distpath $dist `
   --workpath (Join-Path $root "build\pyinstaller") `
   --specpath (Join-Path $root "build") `
   --paths $backend `
+  --add-data "$backend\misaki_data;misaki_data" `
   --collect-all kokoro_onnx `
   --collect-submodules supertonic `
   --collect-data supertonic `

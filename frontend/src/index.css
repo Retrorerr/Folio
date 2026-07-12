@@ -54,6 +54,7 @@
 }
 
 .theme-dark,
+.theme-blackleaf,
 .theme-folio {
   --surface: color-mix(in srgb, var(--paper) 96%, #ffffff 4%);
   --surface-raised: color-mix(in srgb, var(--paper-2) 94%, #ffffff 6%);
@@ -298,6 +299,30 @@
 .theme-dark .page-nav:hover {
   background: color-mix(in srgb, #0b1014 86%, var(--ember) 14%);
   color: var(--ink);
+}
+
+.theme-blackleaf .page-nav {
+  background: #080808;
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 18px 42px -20px rgba(0, 0, 0, 0.94),
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.theme-blackleaf .page-nav:hover {
+  background: #151515;
+  color: #ffffff;
+}
+
+.page-nav:disabled,
+.page-nav:disabled:hover {
+  opacity: 0.28 !important;
+  transform: none;
+  filter: saturate(0.35);
+  cursor: default;
+  box-shadow: none;
 }
 
 /* Keep the player and both page arrows inside the minimum supported desktop

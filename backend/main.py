@@ -19,12 +19,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
-try:
-    import orjson  # noqa: F401
-    from fastapi.responses import ORJSONResponse as _DefaultResponse
-except ImportError:
-    _DefaultResponse = None
-
 import reflow_service
 import cover_service
 import supertonic_service
@@ -35,6 +29,7 @@ from models import BookState, Position, Bookmark, PageText, SentenceInfo
 from paths import AUDIO_CACHE_DIR, DATA_DIR, FRONTEND_DIR, MODELS_DIR, UPLOAD_DIR
 from tts_defaults import DEFAULT_TTS_ENGINE, DEFAULT_TTS_SPEED, DEFAULT_TTS_VOICE, KOKORO_ENGINE_ID
 from tts_queue import TTSQueue
+from user_profile import normalize_reader_name, system_reader_name
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = str(DATA_DIR)
@@ -73,7 +68,7 @@ _page_text_epub_cache: dict[str, dict] = {}
 _PAGE_TEXT_EPUB_CACHE_LIMIT = 128
 _hardware_cache: dict | None = None
 _hardware_cache_time: float = 0.0
-_HARDWARE_CACHE_TTL = 3.0
+_HARDWARE_CACHE_TTL = max(3.0, float(os.environ.get("FOLIO_HARDWARE_CACHE_TTL_SECONDS", "15") or "15"))
 _PREVIEW_HEARTBEAT_FILE = os.environ.get("FOLIO_PREVIEW_HEARTBEAT_FILE", "").strip()
 _PREVIEW_DISCONNECT_FILE = os.environ.get("FOLIO_PREVIEW_DISCONNECT_FILE", "").strip()
 _LIBRARY_SCAN_INTERVAL_SECONDS = max(15, int(os.environ.get("FOLIO_LIBRARY_SCAN_INTERVAL_SECONDS", "90") or "90"))
@@ -437,7 +432,6 @@ def _save_state(book_id: str):
     if book_id in BOOKS:
         state = BOOKS[book_id]["state"]
         _write_state(book_id, state)
-    _invalidate_recent_cache()
 
 
 def _write_state(book_id: str, state: BookState):
@@ -627,6 +621,10 @@ def _sanitize_tag_list(values) -> list[str]:
 
 
 def _book_progress_from_state(state: BookState) -> float:
+    if state.visual_page_count and state.last_position and state.last_position.visual_page:
+        total = max(1, int(state.visual_page_count))
+        current = max(1, min(total, int(state.last_position.visual_page)))
+        return min(1.0, max(0.0, (current - 1) / total))
     page_count = max(1, int(state.page_count or 1))
     page = max(0, min(page_count, int(state.last_position.page if state.last_position else 0)))
     return min(1.0, max(0.0, page / page_count))
@@ -640,7 +638,34 @@ def _book_has_reading_progress(state: BookState) -> bool:
         (position.page or 0) > 0
         or (position.sentence_idx or 0) > 0
         or (position.content_page or 0) > 0
+        or (position.visual_page or 0) > 1
     )
+
+
+def _summary_pages_read(book: dict) -> int:
+    """Return the visual page number represented by a dashboard summary.
+
+    Older state files predate ``last_position.visual_page``. Their chapter
+    index is not comparable to a rendered EPUB page count, so migrate them
+    lazily by projecting the existing progress onto the visual total.
+    """
+    if not book.get("has_reading_progress"):
+        return 0
+    total = max(0, int(book.get("visual_page_count") or book.get("page_count") or 0))
+    if total == 0:
+        return 0
+    position = book.get("last_position") or {}
+    visual_page = _nonnegative_int(position.get("visual_page"))
+    if visual_page > 0:
+        return min(total, visual_page)
+    try:
+        progress = float(book.get("progress") or 0)
+    except (TypeError, ValueError, OverflowError):
+        progress = 0.0
+    if not math.isfinite(progress):
+        progress = 0.0
+    progress = min(1.0, max(0.0, progress))
+    return min(total, max(1, math.floor(progress * max(0, total - 1) + 0.5) + 1))
 
 
 def _book_summary_from_state(state: BookState, state_path: Path | None = None) -> dict:
@@ -817,6 +842,7 @@ def _recent_notes_and_highlights(books: list[dict], store: dict) -> list[dict]:
                 "book_title": book["title"],
                 "author": book.get("author") or "",
                 "page": bookmark.get("page", 0),
+                "visual_page": bookmark.get("visual_page"),
                 "sentence_idx": bookmark.get("sentence_idx", 0),
                 "text": label,
                 "note": "",
@@ -844,9 +870,17 @@ def _dashboard_status_summary() -> dict:
     }
 
 
+def _reader_profile() -> dict:
+    configured = normalize_reader_name(_load_global_settings().get("reader_name"))
+    return {"reader_name": configured or system_reader_name()}
+
+
 def _dashboard_payload() -> dict:
-    books = _load_library_books()
-    recent_books = _sort_recent_books(books)
+    # The recent-book snapshot is invalidated by every state/metadata write and
+    # has a short TTL for external file changes. Reusing it here avoids opening
+    # every state file and revalidating every EPUB cover on each dashboard poll.
+    recent_books = _load_recent_books()
+    books = list(recent_books)
     recently_added = _sort_recently_added_books(books)
     continue_book = next((book for book in recent_books if book.get("has_reading_progress")), None)
     if continue_book is None and recently_added:
@@ -865,11 +899,7 @@ def _dashboard_payload() -> dict:
     genres = sorted({tag for book in books for tag in book.get("genres", [])}, key=str.casefold)
     authors = sorted({book.get("author") for book in books if book.get("author")}, key=str.casefold)
     pages_total = sum(int(book.get("visual_page_count") or book.get("page_count") or 0) for book in books)
-    pages_read = sum(
-        min(int(book.get("page_count") or 0), int((book.get("last_position") or {}).get("page") or 0) + 1)
-        for book in books
-        if book.get("has_reading_progress")
-    )
+    pages_read = sum(_summary_pages_read(book) for book in books)
     note_count = sum(1 for item in highlights if item.get("type") == "note")
     return {
         "books": recent_books,
@@ -900,6 +930,7 @@ def _dashboard_payload() -> dict:
         },
         "highlights": highlights[:16],
         "notes": [item for item in highlights if item.get("type") == "note"][:16],
+        "profile": _reader_profile(),
         "backend": _dashboard_status_summary(),
     }
 
@@ -907,9 +938,9 @@ def _dashboard_payload() -> dict:
 def _search_library_books(q: str) -> list[dict]:
     query = _normalize_search_text(q)
     if not query:
-        return _sort_recent_books(_load_library_books())
+        return list(_load_recent_books())
     matches = []
-    for book in _load_library_books():
+    for book in _load_recent_books():
         fields = [
             book.get("title") or "",
             book.get("author") or "",
@@ -1252,10 +1283,7 @@ async def lifespan(app: FastAPI):
         _close_book_entry(book_id)
 
 
-_app_kwargs = {"title": "Kokoro Audiobook Reader", "lifespan": lifespan}
-if _DefaultResponse is not None:
-    _app_kwargs["default_response_class"] = _DefaultResponse
-app = FastAPI(**_app_kwargs)
+app = FastAPI(title="Folio Reader", lifespan=lifespan)
 # Local-only desktop app — restrict CORS to the dev/preview origin and the
 # bundled frontend. Allowing "*" lets any visited webpage in the user's browser
 # hit our local API and read arbitrary files via /api/book/open?filepath=…
@@ -1478,6 +1506,10 @@ def get_global_settings():
 @app.post("/api/settings")
 async def save_global_settings(request: Request):
     data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid settings payload")
+    if "reader_name" in data:
+        data["reader_name"] = normalize_reader_name(data.get("reader_name"))
     _save_global_settings(data)
     return {"ok": True}
 
@@ -2348,6 +2380,8 @@ def save_position(book_id: str, position: Position):
     if previous and previous.page == position.page:
         if "content_page" not in provided_fields:
             position.content_page = previous.content_page
+        if "visual_page" not in provided_fields:
+            position.visual_page = previous.visual_page
         if "pages_per_view" not in provided_fields:
             position.pages_per_view = previous.pages_per_view
         if "layout_key" not in provided_fields:
@@ -2373,6 +2407,7 @@ def save_position(book_id: str, position: Position):
         or previous.page != position.page
         or previous.sentence_idx != position.sentence_idx
         or previous.content_page != position.content_page
+        or previous.visual_page != position.visual_page
         or previous.pages_per_view != position.pages_per_view
         or previous.layout_key != position.layout_key
     )

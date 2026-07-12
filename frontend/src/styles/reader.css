@@ -207,6 +207,7 @@
 /* chapter list */
 .chapter-list { display: flex; flex-direction: column; gap: 2px; }
 .chapter-item {
+  width: 100%;
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 12px;
@@ -214,6 +215,7 @@
   padding: 10px 12px;
   border-radius: 8px;
   cursor: pointer;
+  text-align: left;
   transition: background var(--dur-fast);
   position: relative;
 }
@@ -328,6 +330,10 @@
   border-radius: 10px;
   background: var(--paper);
   color: var(--ink-3);
+}
+.search-box:focus-within {
+  border-color: color-mix(in srgb, var(--ember) 54%, var(--rule));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ember) 16%, transparent);
 }
 .search-box input {
   flex: 1;
@@ -753,7 +759,7 @@
   font-size: 13px;
 }
 .settings-full-body .theme-switch {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .settings-full-body .voice-picker {
   max-height: 316px;
@@ -1036,6 +1042,13 @@
 .theme-option[data-t="folio"] .swatch {
   background:
     linear-gradient(135deg, #090a0c 0 55%, #f2bd53 56% 100%);
+}
+.theme-option[data-t="blackleaf"] {
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+.theme-option[data-t="blackleaf"] .swatch {
+  background: linear-gradient(135deg, #000000 0 64%, #5f5f5f 65% 78%, #f2f2f2 79% 100%);
 }
 .theme-option.active {
   background: var(--ink);
@@ -1419,6 +1432,10 @@
   border-radius: 2px;
   outline: none;
 }
+.slider:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 4px;
+}
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px; height: 14px;
@@ -1636,6 +1653,7 @@
   z-index: 1;
 }
 .theme-dark .spread::before,
+.theme-blackleaf .spread::before,
 .theme-folio .spread::before {
   background:
     linear-gradient(90deg,
@@ -1677,7 +1695,8 @@
   border-radius: 0 3px 3px 0;
   padding-left: 56px;
 }
-.theme-dark .page-sheet {
+.theme-dark .page-sheet,
+.theme-blackleaf .page-sheet {
   box-shadow:
     0 1px 0 rgba(0,0,0,0.3),
     0 20px 40px -12px rgba(0,0,0,0.5),
@@ -1700,8 +1719,10 @@
   left: 0;
   background: linear-gradient(90deg, rgba(62,40,18,0.12), transparent);
 }
-.theme-dark .page-sheet.verso::after { background: linear-gradient(270deg, rgba(0,0,0,0.5), transparent); }
-.theme-dark .page-sheet.recto::after { background: linear-gradient(90deg, rgba(0,0,0,0.5), transparent); }
+.theme-dark .page-sheet.verso::after,
+.theme-blackleaf .page-sheet.verso::after { background: linear-gradient(270deg, rgba(0,0,0,0.5), transparent); }
+.theme-dark .page-sheet.recto::after,
+.theme-blackleaf .page-sheet.recto::after { background: linear-gradient(90deg, rgba(0,0,0,0.5), transparent); }
 
 .page-sheet.turning {
   /* deprecated — replaced by .flipper overlay. Kept empty so any residual
@@ -1768,7 +1789,8 @@
     0 40px 80px -20px rgba(62, 40, 18, 0.15);
   overflow: hidden;
 }
-.theme-dark .flip-face-inner {
+.theme-dark .flip-face-inner,
+.theme-blackleaf .flip-face-inner {
   box-shadow:
     0 1px 0 rgba(0,0,0,0.3),
     0 20px 40px -12px rgba(0,0,0,0.5),
@@ -1808,7 +1830,8 @@
   opacity: 0;
   mix-blend-mode: multiply;
 }
-.theme-dark .flip-shade { mix-blend-mode: normal; opacity: 0; }
+.theme-dark .flip-shade,
+.theme-blackleaf .flip-shade { mix-blend-mode: normal; opacity: 0; }
 
 .flipper-next .flip-shade-front {
   background: linear-gradient(90deg,
@@ -2021,9 +2044,9 @@
 
 .reader-line-cursor[data-cursor-mode="playback"] {
   transition:
-    transform 190ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    height 190ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    opacity 110ms ease-out;
+    transform 140ms cubic-bezier(0.2, 0.76, 0.24, 1),
+    height 140ms cubic-bezier(0.2, 0.76, 0.24, 1),
+    opacity 60ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="selected"] {
@@ -2050,8 +2073,8 @@
 .reader-line-cursor[data-cursor-position="horizontal-snap"] {
   transition:
     transform 0ms linear,
-    height 190ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    opacity 90ms ease-out;
+    height 140ms cubic-bezier(0.2, 0.76, 0.24, 1),
+    opacity 60ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="turn-suppressed"],
@@ -2069,6 +2092,13 @@
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--ink) 30%, transparent),
     0 0 18px color-mix(in srgb, var(--ember-soft) 34%, transparent);
+}
+
+.theme-blackleaf .reader-line-cursor {
+  background: #f4f4f4;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.22),
+    0 0 16px rgba(255, 255, 255, 0.16);
 }
 
 .theme-folio .reader-line-cursor {

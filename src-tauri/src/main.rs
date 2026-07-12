@@ -4,7 +4,7 @@ use std::{
     fmt::Write as _,
     fs::{self, OpenOptions},
     io::{Read, Write},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -15,20 +15,98 @@ use std::{
 use tauri::{path::BaseDirectory, Emitter, Manager};
 
 const BACKEND_PORT: u16 = 8000;
+const BACKEND_PORT_FALLBACK_END: u16 = 8099;
 
 struct BackendProcess(Mutex<Option<Child>>);
+struct BackendJob(Mutex<Option<isize>>);
+struct BackendPort(Mutex<u16>);
 struct PendingOpenFile(Mutex<Option<String>>);
 struct ApiToken(String);
 struct AppShutdown(Mutex<bool>);
 
 fn reap_backend_child(app: &tauri::AppHandle) {
+    let port = *app.state::<BackendPort>().0.lock().unwrap();
     if let Some(mut child) = app.state::<BackendProcess>().0.lock().unwrap().take() {
         let _ = child.try_wait();
-        let _ = wait_for_backend_down(Duration::from_secs(3));
+        let _ = wait_for_backend_down(port, Duration::from_secs(3));
         let _ = child.kill();
         let _ = child.wait();
     }
+    close_backend_job(app);
 }
+
+#[cfg(windows)]
+fn assign_child_to_kill_on_close_job(child: &Child) -> std::io::Result<isize> {
+    use std::{mem::size_of, os::windows::io::AsRawHandle, ptr};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+    };
+
+    unsafe {
+        let job = CreateJobObjectW(ptr::null(), ptr::null());
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) == 0
+        {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(error);
+        }
+
+        let process = child.as_raw_handle() as HANDLE;
+        if AssignProcessToJobObject(job, process) == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(job);
+            return Err(error);
+        }
+
+        Ok(job as isize)
+    }
+}
+
+#[cfg(not(windows))]
+fn assign_child_to_kill_on_close_job(_child: &Child) -> std::io::Result<isize> {
+    Ok(0)
+}
+
+fn close_backend_job(app: &tauri::AppHandle) {
+    let handle = app.state::<BackendJob>().0.lock().unwrap().take();
+    #[cfg(windows)]
+    if let Some(handle) = handle {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(handle as _);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = handle;
+}
+
+#[cfg(windows)]
+fn set_windows_app_identity() {
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    let app_id: Vec<u16> = "com.folio.reader\0".encode_utf16().collect();
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr());
+    }
+}
+
+#[cfg(not(windows))]
+fn set_windows_app_identity() {}
 
 fn backend_exe_resource_path() -> &'static str {
     if cfg!(windows) {
@@ -42,19 +120,47 @@ fn resource_path(app: &tauri::AppHandle, path: &str) -> Option<PathBuf> {
     app.path().resolve(path, BaseDirectory::Resource).ok()
 }
 
-fn is_backend_port_open() -> bool {
-    TcpStream::connect(("127.0.0.1", BACKEND_PORT)).is_ok()
+fn is_backend_port_open(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
-fn wait_for_backend_down(timeout: Duration) -> bool {
+fn wait_for_backend_down(port: u16, timeout: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if !is_backend_port_open() {
+        if !is_backend_port_open(port) {
             return true;
         }
         thread::sleep(Duration::from_millis(250));
     }
     false
+}
+
+fn wait_for_backend_up(port: u16, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if is_backend_port_open(port) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+fn available_backend_port() -> std::io::Result<u16> {
+    for port in (BACKEND_PORT + 1)..=BACKEND_PORT_FALLBACK_END {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            drop(listener);
+            return Ok(port);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AddrNotAvailable,
+        format!(
+            "No free Folio backend port between {} and {}",
+            BACKEND_PORT + 1,
+            BACKEND_PORT_FALLBACK_END
+        ),
+    ))
 }
 
 fn generate_api_token() -> String {
@@ -67,8 +173,8 @@ fn generate_api_token() -> String {
     token
 }
 
-fn shutdown_backend_with_token(api_token: &str) {
-    if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", BACKEND_PORT)) {
+fn shutdown_backend_with_token(port: u16, api_token: &str) {
+    if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
         let timeout = Some(Duration::from_secs(1));
         let _ = stream.set_read_timeout(timeout);
         let _ = stream.set_write_timeout(timeout);
@@ -78,7 +184,7 @@ fn shutdown_backend_with_token(api_token: &str) {
             format!("X-Folio-Api-Token: {api_token}\r\n")
         };
         let request = format!(
-            "POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1:8000\r\n{token_header}Content-Length: 0\r\nConnection: close\r\n\r\n"
+            "POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{token_header}Content-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let _ = stream.write_all(request.as_bytes());
         let mut response = [0_u8; 256];
@@ -86,8 +192,8 @@ fn shutdown_backend_with_token(api_token: &str) {
     }
 }
 
-fn shutdown_backend(api_token: &str) {
-    shutdown_backend_with_token(api_token);
+fn shutdown_backend(port: u16, api_token: &str) {
+    shutdown_backend_with_token(port, api_token);
 }
 
 fn append_log(log_path: &Path, message: &str) {
@@ -121,7 +227,9 @@ fn normalize_epub_arg(arg: &str, cwd: Option<&str>) -> Option<String> {
     } else if let Some(cwd) = cwd {
         PathBuf::from(cwd).join(path)
     } else {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(path)
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
     };
 
     Some(resolved.to_string_lossy().to_string())
@@ -146,7 +254,10 @@ fn dispatch_open_file(app: &tauri::AppHandle, filepath: String) {
     }
 }
 
-fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Option<Child>> {
+fn spawn_backend(
+    app: &tauri::AppHandle,
+    api_token: &str,
+) -> tauri::Result<Option<(Child, u16, Option<isize>)>> {
     let backend_path = match resource_path(app, backend_exe_resource_path()) {
         Some(path) if path.exists() => path,
         _ => return Ok(None),
@@ -161,41 +272,102 @@ fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Optio
     fs::create_dir_all(&audio_cache_dir)?;
     let log_path = app_data.join("backend.log");
     append_log(&log_path, "");
-    append_log(&log_path, "[tauri] ==================== Folio launch ====================");
+    append_log(
+        &log_path,
+        "[tauri] ==================== Folio launch ====================",
+    );
     append_log(&log_path, "[tauri] Starting Folio backend sidecar");
-    append_log(&log_path, &format!("[tauri] app_data={}", app_data.display()));
-    append_log(&log_path, &format!("[tauri] data_dir={}", data_dir.display()));
-    append_log(&log_path, &format!("[tauri] upload_dir={}", upload_dir.display()));
-    append_log(&log_path, &format!("[tauri] audio_cache_dir={}", audio_cache_dir.display()));
-    append_log(&log_path, &format!("[tauri] backend_exe={}", describe_path(&backend_path)));
+    append_log(
+        &log_path,
+        &format!("[tauri] app_data={}", app_data.display()),
+    );
+    append_log(
+        &log_path,
+        &format!("[tauri] data_dir={}", data_dir.display()),
+    );
+    append_log(
+        &log_path,
+        &format!("[tauri] upload_dir={}", upload_dir.display()),
+    );
+    append_log(
+        &log_path,
+        &format!("[tauri] audio_cache_dir={}", audio_cache_dir.display()),
+    );
+    append_log(
+        &log_path,
+        &format!("[tauri] backend_exe={}", describe_path(&backend_path)),
+    );
 
     let models_dir = app_data.join("models");
     fs::create_dir_all(&models_dir)?;
-    append_log(&log_path, &format!("[tauri] models_dir={}", describe_path(&models_dir)));
-    append_log(&log_path, &format!("[tauri] quality_model={}", describe_path(&models_dir.join("kokoro-v1.0.onnx"))));
-    append_log(&log_path, &format!("[tauri] fallback_model={}", describe_path(&models_dir.join("kokoro-v1.0.int8.onnx"))));
-    append_log(&log_path, &format!("[tauri] voices_file={}", describe_path(&models_dir.join("voices-v1.0.bin"))));
+    append_log(
+        &log_path,
+        &format!("[tauri] models_dir={}", describe_path(&models_dir)),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "[tauri] quality_model={}",
+            describe_path(&models_dir.join("kokoro-v1.0.onnx"))
+        ),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "[tauri] fallback_model={}",
+            describe_path(&models_dir.join("kokoro-v1.0.int8.onnx"))
+        ),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "[tauri] voices_file={}",
+            describe_path(&models_dir.join("voices-v1.0.bin"))
+        ),
+    );
     let supertonic_dir = models_dir.join("supertonic-3");
-    append_log(&log_path, &format!("[tauri] supertonic_dir={}", describe_path(&supertonic_dir)));
-    append_log(&log_path, &format!("[tauri] supertonic_vocoder={}", describe_path(&supertonic_dir.join("onnx").join("vocoder.onnx"))));
-    append_log(&log_path, &format!("[tauri] supertonic_voice_styles={}", describe_path(&supertonic_dir.join("voice_styles"))));
+    append_log(
+        &log_path,
+        &format!("[tauri] supertonic_dir={}", describe_path(&supertonic_dir)),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "[tauri] supertonic_vocoder={}",
+            describe_path(&supertonic_dir.join("onnx").join("vocoder.onnx"))
+        ),
+    );
+    append_log(
+        &log_path,
+        &format!(
+            "[tauri] supertonic_voice_styles={}",
+            describe_path(&supertonic_dir.join("voice_styles"))
+        ),
+    );
 
-    if is_backend_port_open() {
+    let mut backend_port = BACKEND_PORT;
+    if is_backend_port_open(backend_port) {
         append_log(
             &log_path,
             "[tauri] Existing backend detected on 127.0.0.1:8000; requesting shutdown before starting bundled backend",
         );
-        shutdown_backend(api_token);
-        let stopped = wait_for_backend_down(Duration::from_secs(4));
-        append_log(&log_path, &format!("[tauri] Existing backend stopped={stopped}"));
+        shutdown_backend(backend_port, api_token);
+        let stopped = wait_for_backend_down(backend_port, Duration::from_secs(1));
+        append_log(
+            &log_path,
+            &format!("[tauri] Existing backend stopped={stopped}"),
+        );
         if !stopped {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                "Port 8000 is still occupied after requesting backend shutdown",
-            )
-            .into());
+            backend_port = available_backend_port()?;
+            append_log(
+                &log_path,
+                &format!(
+                    "[tauri] Port {BACKEND_PORT} belongs to another process; using fallback port {backend_port}"
+                ),
+            );
         }
     }
+    append_log(&log_path, &format!("[tauri] backend_port={backend_port}"));
 
     let stdout = OpenOptions::new()
         .create(true)
@@ -212,12 +384,12 @@ fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Optio
         .env("KOKORO_READER_MODELS_DIR", models_dir)
         .env(
             "KOKORO_CORS_ORIGINS",
-            "tauri://localhost,http://tauri.localhost,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000",
+            format!("tauri://localhost,http://tauri.localhost,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:{backend_port},http://localhost:{backend_port}"),
         )
         .env("FOLIO_API_TOKEN", api_token)
         .env("FOLIO_ALLOWED_HOSTS", "127.0.0.1,localhost,::1")
         .env("FOLIO_BACKEND_HOST", "127.0.0.1")
-        .env("FOLIO_BACKEND_PORT", BACKEND_PORT.to_string())
+        .env("FOLIO_BACKEND_PORT", backend_port.to_string())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
 
@@ -227,17 +399,65 @@ fn spawn_backend(app: &tauri::AppHandle, api_token: &str) -> tauri::Result<Optio
         command.creation_flags(0x08000000);
     }
 
-    let child = command.spawn()?;
-    append_log(&log_path, &format!("[tauri] Backend child spawned pid={}", child.id()));
-    Ok(Some(child))
+    let mut child = command.spawn()?;
+    append_log(
+        &log_path,
+        &format!("[tauri] Backend child spawned pid={}", child.id()),
+    );
+    let backend_job = match assign_child_to_kill_on_close_job(&child) {
+        Ok(handle) if handle != 0 => {
+            append_log(
+                &log_path,
+                "[tauri] Backend attached to a Windows kill-on-close job",
+            );
+            Some(handle)
+        }
+        Ok(_) => None,
+        Err(error) => {
+            append_log(
+                &log_path,
+                &format!("[tauri] Could not attach backend job object: {error}"),
+            );
+            None
+        }
+    };
+    if !wait_for_backend_up(backend_port, Duration::from_secs(12)) {
+        append_log(
+            &log_path,
+            &format!("[tauri] Backend failed to listen on port {backend_port} within 12 seconds"),
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        #[cfg(windows)]
+        if let Some(handle) = backend_job {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(handle as _);
+            }
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("Bundled backend did not become ready on port {backend_port}"),
+        )
+        .into());
+    }
+    append_log(
+        &log_path,
+        &format!("[tauri] Backend ready on 127.0.0.1:{backend_port}"),
+    );
+    Ok(Some((child, backend_port, backend_job)))
 }
 
 #[tauri::command]
-fn start_backend(app: tauri::AppHandle) -> Result<bool, String> {
+fn start_backend(app: tauri::AppHandle) -> Result<u16, String> {
     if cfg!(debug_assertions) {
-        return Ok(is_backend_port_open());
+        return if is_backend_port_open(BACKEND_PORT) {
+            Ok(BACKEND_PORT)
+        } else {
+            Err("Development backend is not listening on port 8000".to_string())
+        };
     }
 
+    let mut exited_backend = false;
     {
         let backend_state = app.state::<BackendProcess>();
         let mut guard = backend_state.0.lock().unwrap();
@@ -245,9 +465,10 @@ fn start_backend(app: tauri::AppHandle) -> Result<bool, String> {
             match child.try_wait() {
                 Ok(Some(_status)) => {
                     *guard = None;
+                    exited_backend = true;
                 }
                 Ok(None) => {
-                    return Ok(true);
+                    return Ok(*app.state::<BackendPort>().0.lock().unwrap());
                 }
                 Err(error) => {
                     *guard = None;
@@ -256,14 +477,19 @@ fn start_backend(app: tauri::AppHandle) -> Result<bool, String> {
             }
         }
     }
+    if exited_backend {
+        close_backend_job(&app);
+    }
 
     let api_token = app.state::<ApiToken>().0.clone();
     match spawn_backend(&app, &api_token) {
-        Ok(Some(child)) => {
+        Ok(Some((child, port, job))) => {
             *app.state::<BackendProcess>().0.lock().unwrap() = Some(child);
-            Ok(true)
+            *app.state::<BackendJob>().0.lock().unwrap() = job;
+            *app.state::<BackendPort>().0.lock().unwrap() = port;
+            Ok(port)
         }
-        Ok(None) => Ok(false),
+        Ok(None) => Err("Bundled backend executable was not found".to_string()),
         Err(error) => Err(format!("Backend startup failed: {error}")),
     }
 }
@@ -271,9 +497,10 @@ fn start_backend(app: tauri::AppHandle) -> Result<bool, String> {
 #[tauri::command]
 fn stop_backend(app: tauri::AppHandle) -> Result<bool, String> {
     let api_token = app.state::<ApiToken>().0.clone();
-    shutdown_backend(&api_token);
+    let port = *app.state::<BackendPort>().0.lock().unwrap();
+    shutdown_backend(port, &api_token);
     reap_backend_child(&app);
-    Ok(!is_backend_port_open())
+    Ok(!is_backend_port_open(port))
 }
 
 #[tauri::command]
@@ -377,7 +604,11 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             });
         }
         let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok(if selected.is_empty() { None } else { Some(selected) });
+        return Ok(if selected.is_empty() {
+            None
+        } else {
+            Some(selected)
+        });
     }
 
     #[allow(unreachable_code)]
@@ -385,6 +616,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 }
 
 fn main() {
+    set_windows_app_identity();
     let initial_open_file = first_epub_arg(std::env::args().skip(1), None);
 
     tauri::Builder::default()
@@ -400,6 +632,8 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(BackendProcess(Mutex::new(None)))
+        .manage(BackendJob(Mutex::new(None)))
+        .manage(BackendPort(Mutex::new(BACKEND_PORT)))
         .manage(PendingOpenFile(Mutex::new(initial_open_file)))
         .manage(ApiToken(generate_api_token()))
         .manage(AppShutdown(Mutex::new(false)))
@@ -432,7 +666,8 @@ fn main() {
                     if should_start_shutdown {
                         thread::spawn(move || {
                             let api_token = app_handle.state::<ApiToken>().0.clone();
-                            shutdown_backend(&api_token);
+                            let port = *app_handle.state::<BackendPort>().0.lock().unwrap();
+                            shutdown_backend(port, &api_token);
                             reap_backend_child(&app_handle);
                             app_handle.exit(0);
                         });

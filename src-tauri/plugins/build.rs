@@ -1,0 +1,21 @@
+const COMMANDS: &[&str] = &[
+    "pick_epub",
+    "pick_folder",
+    "scan_document_tree",
+    "open_document_read",
+    "read_document_chunk",
+    "close_document_read",
+    "install_model_pack",
+    "synthesize",
+    "platform_status",
+    "play_audio",
+    "control_audio",
+    "audio_status",
+];
+
+fn main() {
+    tauri_plugin::Builder::new(COMMANDS)
+        .android_path("android")
+        .ios_path("ios")
+        .build();
+}

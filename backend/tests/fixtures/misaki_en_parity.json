@@ -1,0 +1,1886 @@
+{
+  "oracle": "hexgrad/misaki",
+  "oracleVersion": "0.9.4",
+  "oracleRevision": "fba1236595f2d2bf21d414ba6e57d25256afada3",
+  "englishFallback": "EspeakFallback",
+  "fixtures": [
+    {
+      "id": "pangram",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "dialect": "us",
+      "phonemes": "ðə kwˈɪk bɹˈWn fˈɑks ʤˈʌmps ˈOvəɹ ðə lˈAzi dˈɔɡ.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðə kwˈɪk bɹˈWn fˈɑks ʤˈʌmps ˌOvəɹ ðə lˈAzi dˈɑɡ.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "quick",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "kwˈɪk",
+          "rating": 4
+        },
+        {
+          "text": "brown",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "bɹˈWn",
+          "rating": 4
+        },
+        {
+          "text": "fox",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "fˈɑks",
+          "rating": 4
+        },
+        {
+          "text": "jumps",
+          "tag": "VBZ",
+          "whitespace": " ",
+          "phonemes": "ʤˈʌmps",
+          "rating": 3
+        },
+        {
+          "text": "over",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ˈOvəɹ",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "lazy",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "lˈAzi",
+          "rating": 4
+        },
+        {
+          "text": "dog",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "dˈɔɡ",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "contractions",
+      "text": "I can't believe it's already seven thirty.",
+      "dialect": "us",
+      "phonemes": "ˌI kˈænt bəlˈiv ɪts ˌɔlɹˈɛdi sˈɛvən θˈɜɹTi.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I kˈænt bᵻlˈiv ɪts ɔlɹˌɛdi sˈɛvən θˈɜɹTi.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "can't",
+          "tag": "RB",
+          "whitespace": " ",
+          "phonemes": "kˈænt",
+          "rating": null
+        },
+        {
+          "text": "believe",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "bəlˈiv",
+          "rating": 4
+        },
+        {
+          "text": "it's",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ɪts",
+          "rating": null
+        },
+        {
+          "text": "already",
+          "tag": "RB",
+          "whitespace": " ",
+          "phonemes": "ˌɔlɹˈɛdi",
+          "rating": 4
+        },
+        {
+          "text": "seven",
+          "tag": "CD",
+          "whitespace": " ",
+          "phonemes": "sˈɛvən",
+          "rating": 4
+        },
+        {
+          "text": "thirty",
+          "tag": "CD",
+          "whitespace": "",
+          "phonemes": "θˈɜɹTi",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "number",
+      "text": "In 2026, Folio reads 42 books.",
+      "dialect": "us",
+      "phonemes": "ɪn twˈɛnti twˈɛnti sˈɪks, fˈOliO ɹˈidz fˈɔɹTi tˈu bˈʊks.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ɪn tˈu θˈWzənd twˈɛnti sˈɪks, fˈOlɪˌO ɹˈidz fˈɔɹTi tˈu bˈʊks.",
+      "tokens": [
+        {
+          "text": "In",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ɪn",
+          "rating": 4
+        },
+        {
+          "text": "2026",
+          "tag": "CD",
+          "whitespace": "",
+          "phonemes": "twˈɛnti twˈɛnti sˈɪks",
+          "rating": 4
+        },
+        {
+          "text": ",",
+          "tag": ",",
+          "whitespace": " ",
+          "phonemes": ",",
+          "rating": 4
+        },
+        {
+          "text": "Folio",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "fˈOliO",
+          "rating": 4
+        },
+        {
+          "text": "reads",
+          "tag": "VBZ",
+          "whitespace": " ",
+          "phonemes": "ɹˈidz",
+          "rating": 4
+        },
+        {
+          "text": "42",
+          "tag": "CD",
+          "whitespace": " ",
+          "phonemes": "fˈɔɹTi tˈu",
+          "rating": 4
+        },
+        {
+          "text": "books",
+          "tag": "NNS",
+          "whitespace": "",
+          "phonemes": "bˈʊks",
+          "rating": 3
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "abbreviation",
+      "text": "Dr. Smith moved to the U.S.",
+      "dialect": "us",
+      "phonemes": "dˈɑktəɹ smˈɪθ mˈuvd tə ðə jˌuˈɛs",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "dˈɑktəɹ. smˈɪθ mˈuvd tə ðə jˈu.ˈɛs.",
+      "tokens": [
+        {
+          "text": "Dr.",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "dˈɑktəɹ",
+          "rating": null
+        },
+        {
+          "text": "Smith",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "smˈɪθ",
+          "rating": 4
+        },
+        {
+          "text": "moved",
+          "tag": "VBD",
+          "whitespace": " ",
+          "phonemes": "mˈuvd",
+          "rating": 3
+        },
+        {
+          "text": "to",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "tə",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "U.S.",
+          "tag": "NNP",
+          "whitespace": "",
+          "phonemes": "jˌuˈɛs",
+          "rating": null
+        }
+      ]
+    },
+    {
+      "id": "currency",
+      "text": "The total is $12.50.",
+      "dialect": "us",
+      "phonemes": "ðə tˈOTᵊl ɪz twˈɛlv dˈɑləɹz ænd fˈɪfti sˈɛnts.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðə tˈOTᵊl ɪz dˈɑləɹ twˈɛlv.fˈɪfti.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "total",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "tˈOTᵊl",
+          "rating": 4
+        },
+        {
+          "text": "is",
+          "tag": "VBZ",
+          "whitespace": " ",
+          "phonemes": "ɪz",
+          "rating": 4
+        },
+        {
+          "text": "$",
+          "tag": "$",
+          "whitespace": "",
+          "phonemes": "",
+          "rating": 4
+        },
+        {
+          "text": "12.50",
+          "tag": "CD",
+          "whitespace": "",
+          "phonemes": "twˈɛlv dˈɑləɹz ænd fˈɪfti sˈɛnts",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "punctuation",
+      "text": "Hello, she said—are you ready?",
+      "dialect": "us",
+      "phonemes": "həlˈO, ʃi sˈɛd—ɑɹ ju ɹˈɛdi?",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "həlˈO, ʃi sˈɛd—ɑɹ ju ɹˈɛdi?",
+      "tokens": [
+        {
+          "text": "Hello",
+          "tag": "UH",
+          "whitespace": "",
+          "phonemes": "həlˈO",
+          "rating": 4
+        },
+        {
+          "text": ",",
+          "tag": ",",
+          "whitespace": " ",
+          "phonemes": ",",
+          "rating": 4
+        },
+        {
+          "text": "she",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ʃi",
+          "rating": 4
+        },
+        {
+          "text": "said",
+          "tag": "VBD",
+          "whitespace": "",
+          "phonemes": "sˈɛd",
+          "rating": 4
+        },
+        {
+          "text": "—",
+          "tag": ":",
+          "whitespace": "",
+          "phonemes": "—",
+          "rating": 4
+        },
+        {
+          "text": "are",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɑɹ",
+          "rating": 4
+        },
+        {
+          "text": "you",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ju",
+          "rating": 4
+        },
+        {
+          "text": "ready",
+          "tag": "JJ",
+          "whitespace": "",
+          "phonemes": "ɹˈɛdi",
+          "rating": 4
+        },
+        {
+          "text": "?",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": "?",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "articles",
+      "text": "The apple and the banana are on a table.",
+      "dialect": "us",
+      "phonemes": "ði ˈæpᵊl ænd ðə bənˈænə ɑɹ ˌɔn ɐ tˈAbᵊl.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðɪ ˈæpᵊl ænd ðə bənˈænə ɑɹ ˌɔn ə tˈAbᵊl.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ði",
+          "rating": 4
+        },
+        {
+          "text": "apple",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "ˈæpᵊl",
+          "rating": 4
+        },
+        {
+          "text": "and",
+          "tag": "CC",
+          "whitespace": " ",
+          "phonemes": "ænd",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "banana",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "bənˈænə",
+          "rating": 4
+        },
+        {
+          "text": "are",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɑɹ",
+          "rating": 4
+        },
+        {
+          "text": "on",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ˌɔn",
+          "rating": 4
+        },
+        {
+          "text": "a",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ɐ",
+          "rating": 4
+        },
+        {
+          "text": "table",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "tˈAbᵊl",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "used_to",
+      "text": "I used to read every day.",
+      "dialect": "us",
+      "phonemes": "ˌI jˈust tə ɹˈid ˈɛvəɹi dˈA.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I jˈuzd tə ɹˈid ˈɛvɹi dˈA.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "used",
+          "tag": "VBD",
+          "whitespace": " ",
+          "phonemes": "jˈust",
+          "rating": 4
+        },
+        {
+          "text": "to",
+          "tag": "TO",
+          "whitespace": " ",
+          "phonemes": "tə",
+          "rating": 4
+        },
+        {
+          "text": "read",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "ɹˈid",
+          "rating": 4
+        },
+        {
+          "text": "every",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ˈɛvəɹi",
+          "rating": 4
+        },
+        {
+          "text": "day",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "dˈA",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "record",
+      "text": "I record a record.",
+      "dialect": "us",
+      "phonemes": "ˌI ɹəkˈɔɹd ɐ ɹˈɛkəɹd.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I ɹᵻkˈɔɹd ə ɹˈɛkəɹd.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "record",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɹəkˈɔɹd",
+          "rating": 4
+        },
+        {
+          "text": "a",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ɐ",
+          "rating": 4
+        },
+        {
+          "text": "record",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "ɹˈɛkəɹd",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "wind",
+      "text": "Wind the clock in the wind.",
+      "dialect": "us",
+      "phonemes": "wˈInd ðə klˈɑk ɪn ðə wˈɪnd.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "wˈɪnd ðə klˈɑk ɪnðə wˈɪnd.",
+      "tokens": [
+        {
+          "text": "Wind",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "wˈInd",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "clock",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "klˈɑk",
+          "rating": 4
+        },
+        {
+          "text": "in",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ɪn",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "wind",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "wˈɪnd",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "refuse",
+      "text": "Please refuse the refuse.",
+      "dialect": "us",
+      "phonemes": "plˈiz ɹəfjˈuz ðə ɹˈɛfjˌus.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "plˈiz ɹᵻfjˈuz ðə ɹˈɛfjus.",
+      "tokens": [
+        {
+          "text": "Please",
+          "tag": "UH",
+          "whitespace": " ",
+          "phonemes": "plˈiz",
+          "rating": 4
+        },
+        {
+          "text": "refuse",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "ɹəfjˈuz",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "refuse",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "ɹˈɛfjˌus",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "read_tense",
+      "text": "I read the book yesterday, and I read it every day.",
+      "dialect": "us",
+      "phonemes": "ˌI ɹˈɛd ðə bˈʊk jˈɛstəɹdˌA, ænd ˌI ɹˈɛd ɪt ˈɛvəɹi dˈA.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I ɹˈid ðə bˈʊk jˈɛstəɹdˌA, ænd I ɹˈid ɪT ˈɛvɹi dˈA.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "read",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɹˈɛd",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "book",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "bˈʊk",
+          "rating": 4
+        },
+        {
+          "text": "yesterday",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "jˈɛstəɹdˌA",
+          "rating": 4
+        },
+        {
+          "text": ",",
+          "tag": ",",
+          "whitespace": " ",
+          "phonemes": ",",
+          "rating": 4
+        },
+        {
+          "text": "and",
+          "tag": "CC",
+          "whitespace": " ",
+          "phonemes": "ænd",
+          "rating": 4
+        },
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "read",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɹˈɛd",
+          "rating": 4
+        },
+        {
+          "text": "it",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ɪt",
+          "rating": 4
+        },
+        {
+          "text": "every",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ˈɛvəɹi",
+          "rating": 4
+        },
+        {
+          "text": "day",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "dˈA",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "project",
+      "text": "They project the project.",
+      "dialect": "us",
+      "phonemes": "ðˌA pɹəʤˈɛkt ðə pɹˈɑʤˌɛkt.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðA pɹəʤˈɛkt ðə pɹˈɑʤɛkt.",
+      "tokens": [
+        {
+          "text": "They",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ðˌA",
+          "rating": 4
+        },
+        {
+          "text": "project",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "pɹəʤˈɛkt",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "project",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "pɹˈɑʤˌɛkt",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "dialect",
+      "text": "The mobile schedule was near the garage.",
+      "dialect": "us",
+      "phonemes": "ðə mˈObᵊl skˈɛʤˌul wʌz nˌɪɹ ðə ɡəɹˈɑʒ.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðə mˈObᵊl skˈɛʤul wʌz nˌɪɹ ðə ɡəɹɹˈɑʒ.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "mobile",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "mˈObᵊl",
+          "rating": 4
+        },
+        {
+          "text": "schedule",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "skˈɛʤˌul",
+          "rating": 4
+        },
+        {
+          "text": "was",
+          "tag": "VBD",
+          "whitespace": " ",
+          "phonemes": "wʌz",
+          "rating": 4
+        },
+        {
+          "text": "near",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "nˌɪɹ",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "garage",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "ɡəɹˈɑʒ",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "ood",
+      "text": "Folio zxqvblorfquangles.",
+      "dialect": "us",
+      "phonemes": "fˈOliO zˌiˌɛkskjˌuvˈiblˈɔɹfkwæŋɡᵊlz.",
+      "fallbackWords": [
+        "zxqvblorfquangles"
+      ],
+      "fallbackRaw": {
+        "zxqvblorfquangles": "zˌiːˌɛkskjˌuːvˈiːblˈɔː^ɹfkwæŋɡə^lz"
+      },
+      "wholeSentenceEspeak": "fˈOlɪˌO zˌiˌɛkskjˌuvˈiblˈɔɹfkwæŋɡᵊlz.",
+      "tokens": [
+        {
+          "text": "Folio",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "fˈOliO",
+          "rating": 4
+        },
+        {
+          "text": "zxqvblorfquangles",
+          "tag": "NNS",
+          "whitespace": "",
+          "phonemes": "zˌiˌɛkskjˌuvˈiblˈɔɹfkwæŋɡᵊlz",
+          "rating": 2
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "pangram",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "dialect": "gb",
+      "phonemes": "ðə kwˈɪk bɹˈWn fˈɒks ʤˈʌmps ˈQvə ðə lˈAzi dˈɒɡ.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðə kwˈɪk bɹˈWn fˈɒks ʤˈʌmps ˌQvə ðə lˈAzi dˈɒɡ.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "quick",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "kwˈɪk",
+          "rating": 4
+        },
+        {
+          "text": "brown",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "bɹˈWn",
+          "rating": 4
+        },
+        {
+          "text": "fox",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "fˈɒks",
+          "rating": 4
+        },
+        {
+          "text": "jumps",
+          "tag": "VBZ",
+          "whitespace": " ",
+          "phonemes": "ʤˈʌmps",
+          "rating": 3
+        },
+        {
+          "text": "over",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ˈQvə",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "lazy",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "lˈAzi",
+          "rating": 4
+        },
+        {
+          "text": "dog",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "dˈɒɡ",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "contractions",
+      "text": "I can't believe it's already seven thirty.",
+      "dialect": "gb",
+      "phonemes": "ˌI kˈɑːnt bɪlˈiːv ɪts ɔːlɹˈɛdi sˈɛvᵊn θˈɜːti.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I kˈɑːnt bɪlˈiːv ɪts ɔːlɹˌɛdi sˈɛvən θˈɜːti.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "can't",
+          "tag": "RB",
+          "whitespace": " ",
+          "phonemes": "kˈɑːnt",
+          "rating": null
+        },
+        {
+          "text": "believe",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "bɪlˈiːv",
+          "rating": 4
+        },
+        {
+          "text": "it's",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ɪts",
+          "rating": null
+        },
+        {
+          "text": "already",
+          "tag": "RB",
+          "whitespace": " ",
+          "phonemes": "ɔːlɹˈɛdi",
+          "rating": 4
+        },
+        {
+          "text": "seven",
+          "tag": "CD",
+          "whitespace": " ",
+          "phonemes": "sˈɛvᵊn",
+          "rating": 4
+        },
+        {
+          "text": "thirty",
+          "tag": "CD",
+          "whitespace": "",
+          "phonemes": "θˈɜːti",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "number",
+      "text": "In 2026, Folio reads 42 books.",
+      "dialect": "gb",
+      "phonemes": "ɪn twˈɛnti twˈɛnti sˈɪks, fˈQlɪQ ɹˈiːdz fˈɔːti tˈuː bˈʊks.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ɪn tˈuː θˈWzənd ən twˈɛnti sˈɪks, fˈQlɪˌQ ɹˈiːdz fˈɔːti tˈuː bˈʊks.",
+      "tokens": [
+        {
+          "text": "In",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ɪn",
+          "rating": 4
+        },
+        {
+          "text": "2026",
+          "tag": "CD",
+          "whitespace": "",
+          "phonemes": "twˈɛnti twˈɛnti sˈɪks",
+          "rating": 4
+        },
+        {
+          "text": ",",
+          "tag": ",",
+          "whitespace": " ",
+          "phonemes": ",",
+          "rating": 4
+        },
+        {
+          "text": "Folio",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "fˈQlɪQ",
+          "rating": 4
+        },
+        {
+          "text": "reads",
+          "tag": "VBZ",
+          "whitespace": " ",
+          "phonemes": "ɹˈiːdz",
+          "rating": 4
+        },
+        {
+          "text": "42",
+          "tag": "CD",
+          "whitespace": " ",
+          "phonemes": "fˈɔːti tˈuː",
+          "rating": 4
+        },
+        {
+          "text": "books",
+          "tag": "NNS",
+          "whitespace": "",
+          "phonemes": "bˈʊks",
+          "rating": 3
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "abbreviation",
+      "text": "Dr. Smith moved to the U.S.",
+      "dialect": "gb",
+      "phonemes": "dˈɒktə smˈɪθ mˈuːvd tə ðə jˌuːˈɛs",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "dˈɒktə. smˈɪθ mˈuːvd tə ðə jˈuː.ˈɛs.",
+      "tokens": [
+        {
+          "text": "Dr.",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "dˈɒktə",
+          "rating": null
+        },
+        {
+          "text": "Smith",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "smˈɪθ",
+          "rating": 4
+        },
+        {
+          "text": "moved",
+          "tag": "VBD",
+          "whitespace": " ",
+          "phonemes": "mˈuːvd",
+          "rating": 3
+        },
+        {
+          "text": "to",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "tə",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "U.S.",
+          "tag": "NNP",
+          "whitespace": "",
+          "phonemes": "jˌuːˈɛs",
+          "rating": null
+        }
+      ]
+    },
+    {
+      "id": "currency",
+      "text": "The total is $12.50.",
+      "dialect": "gb",
+      "phonemes": "ðə tˈQtᵊl ɪz twˈɛlv dˈɒləz and fˈɪfti sˈɛnts.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðə tˈQtᵊl ɪz dˈɒlə twˈɛlv.fˈɪfti.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "total",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "tˈQtᵊl",
+          "rating": 4
+        },
+        {
+          "text": "is",
+          "tag": "VBZ",
+          "whitespace": " ",
+          "phonemes": "ɪz",
+          "rating": 4
+        },
+        {
+          "text": "$",
+          "tag": "$",
+          "whitespace": "",
+          "phonemes": "",
+          "rating": 4
+        },
+        {
+          "text": "12.50",
+          "tag": "CD",
+          "whitespace": "",
+          "phonemes": "twˈɛlv dˈɒləz and fˈɪfti sˈɛnts",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "punctuation",
+      "text": "Hello, she said—are you ready?",
+      "dialect": "gb",
+      "phonemes": "həlˈQ, ʃiː sˈɛd—ɑː juː ɹˈɛdi?",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "həlˈQ, ʃiː sˈɛd—ɑː juː ɹˈɛdi?",
+      "tokens": [
+        {
+          "text": "Hello",
+          "tag": "UH",
+          "whitespace": "",
+          "phonemes": "həlˈQ",
+          "rating": 4
+        },
+        {
+          "text": ",",
+          "tag": ",",
+          "whitespace": " ",
+          "phonemes": ",",
+          "rating": 4
+        },
+        {
+          "text": "she",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ʃiː",
+          "rating": 4
+        },
+        {
+          "text": "said",
+          "tag": "VBD",
+          "whitespace": "",
+          "phonemes": "sˈɛd",
+          "rating": 4
+        },
+        {
+          "text": "—",
+          "tag": ":",
+          "whitespace": "",
+          "phonemes": "—",
+          "rating": 4
+        },
+        {
+          "text": "are",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɑː",
+          "rating": 4
+        },
+        {
+          "text": "you",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "juː",
+          "rating": 4
+        },
+        {
+          "text": "ready",
+          "tag": "JJ",
+          "whitespace": "",
+          "phonemes": "ɹˈɛdi",
+          "rating": 4
+        },
+        {
+          "text": "?",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": "?",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "articles",
+      "text": "The apple and the banana are on a table.",
+      "dialect": "gb",
+      "phonemes": "ði ˈapᵊl and ðə bənˈɑːnə ɑː ˌɒn ɐ tˈAbᵊl.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðɪ ˈapᵊl and ðə bənˈɑːnəɹ ɑːɹ ˌɒn ə tˈAbᵊl.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ði",
+          "rating": 4
+        },
+        {
+          "text": "apple",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "ˈapᵊl",
+          "rating": 4
+        },
+        {
+          "text": "and",
+          "tag": "CC",
+          "whitespace": " ",
+          "phonemes": "and",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "banana",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "bənˈɑːnə",
+          "rating": 4
+        },
+        {
+          "text": "are",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɑː",
+          "rating": 4
+        },
+        {
+          "text": "on",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ˌɒn",
+          "rating": 4
+        },
+        {
+          "text": "a",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ɐ",
+          "rating": 4
+        },
+        {
+          "text": "table",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "tˈAbᵊl",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "used_to",
+      "text": "I used to read every day.",
+      "dialect": "gb",
+      "phonemes": "ˌI jˈuːst tə ɹˈiːd ˈɛvəɹi dˈA.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I jˈuːzd tə ɹˈiːd ˈɛvɹɪ dˈA.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "used",
+          "tag": "VBD",
+          "whitespace": " ",
+          "phonemes": "jˈuːst",
+          "rating": 4
+        },
+        {
+          "text": "to",
+          "tag": "TO",
+          "whitespace": " ",
+          "phonemes": "tə",
+          "rating": 4
+        },
+        {
+          "text": "read",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "ɹˈiːd",
+          "rating": 4
+        },
+        {
+          "text": "every",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ˈɛvəɹi",
+          "rating": 4
+        },
+        {
+          "text": "day",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "dˈA",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "record",
+      "text": "I record a record.",
+      "dialect": "gb",
+      "phonemes": "ˌI ɹɪkˈɔːd ɐ ɹˈɛkɔːd.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I ɹɪkˈɔːd ə ɹˈɛkɔːd.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "record",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɹɪkˈɔːd",
+          "rating": 4
+        },
+        {
+          "text": "a",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ɐ",
+          "rating": 4
+        },
+        {
+          "text": "record",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "ɹˈɛkɔːd",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "wind",
+      "text": "Wind the clock in the wind.",
+      "dialect": "gb",
+      "phonemes": "wˈInd ðə klˈɒk ɪn ðə wˈɪnd.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "wˈɪnd ðə klˈɒk ɪnðə wˈɪnd.",
+      "tokens": [
+        {
+          "text": "Wind",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "wˈInd",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "clock",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "klˈɒk",
+          "rating": 4
+        },
+        {
+          "text": "in",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "ɪn",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "wind",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "wˈɪnd",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "refuse",
+      "text": "Please refuse the refuse.",
+      "dialect": "gb",
+      "phonemes": "plˈiːz ɹɪfjˈuːz ðə ɹˈɛfjuːs.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "plˈiːz ɹɪfjˈuːz ðə ɹˈɛfjuːs.",
+      "tokens": [
+        {
+          "text": "Please",
+          "tag": "UH",
+          "whitespace": " ",
+          "phonemes": "plˈiːz",
+          "rating": 4
+        },
+        {
+          "text": "refuse",
+          "tag": "VB",
+          "whitespace": " ",
+          "phonemes": "ɹɪfjˈuːz",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "refuse",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "ɹˈɛfjuːs",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "read_tense",
+      "text": "I read the book yesterday, and I read it every day.",
+      "dialect": "gb",
+      "phonemes": "ˌI ɹˈɛd ðə bˈʊk jˈɛstədA, and ˌI ɹˈɛd ɪt ˈɛvəɹi dˈA.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "I ɹˈiːd ðə bˈʊk jˈɛstədˌA, and I ɹˈiːd ɪt ˈɛvɹɪ dˈA.",
+      "tokens": [
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "read",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɹˈɛd",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "book",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "bˈʊk",
+          "rating": 4
+        },
+        {
+          "text": "yesterday",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "jˈɛstədA",
+          "rating": 4
+        },
+        {
+          "text": ",",
+          "tag": ",",
+          "whitespace": " ",
+          "phonemes": ",",
+          "rating": 4
+        },
+        {
+          "text": "and",
+          "tag": "CC",
+          "whitespace": " ",
+          "phonemes": "and",
+          "rating": 4
+        },
+        {
+          "text": "I",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ˌI",
+          "rating": 4
+        },
+        {
+          "text": "read",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "ɹˈɛd",
+          "rating": 4
+        },
+        {
+          "text": "it",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ɪt",
+          "rating": 4
+        },
+        {
+          "text": "every",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ˈɛvəɹi",
+          "rating": 4
+        },
+        {
+          "text": "day",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "dˈA",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "project",
+      "text": "They project the project.",
+      "dialect": "gb",
+      "phonemes": "ðˌA pɹəʤˈɛkt ðə pɹˈɒʤɛkt.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðA pɹəʤˈɛkt ðə pɹˈɒʤɛkt.",
+      "tokens": [
+        {
+          "text": "They",
+          "tag": "PRP",
+          "whitespace": " ",
+          "phonemes": "ðˌA",
+          "rating": 4
+        },
+        {
+          "text": "project",
+          "tag": "VBP",
+          "whitespace": " ",
+          "phonemes": "pɹəʤˈɛkt",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "project",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "pɹˈɒʤɛkt",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "dialect",
+      "text": "The mobile schedule was near the garage.",
+      "dialect": "gb",
+      "phonemes": "ðə mˈQbIl ʃˈɛdjuːl wɒz nˌɪə ðə ɡˈaɹɑːʤ.",
+      "fallbackWords": [],
+      "fallbackRaw": {},
+      "wholeSentenceEspeak": "ðə mˈQbIl ʃˈɛdjuːl wɒz nˌiə ðə ɡˈaɹɪʤ.",
+      "tokens": [
+        {
+          "text": "The",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "mobile",
+          "tag": "JJ",
+          "whitespace": " ",
+          "phonemes": "mˈQbIl",
+          "rating": 4
+        },
+        {
+          "text": "schedule",
+          "tag": "NN",
+          "whitespace": " ",
+          "phonemes": "ʃˈɛdjuːl",
+          "rating": 4
+        },
+        {
+          "text": "was",
+          "tag": "VBD",
+          "whitespace": " ",
+          "phonemes": "wɒz",
+          "rating": 4
+        },
+        {
+          "text": "near",
+          "tag": "IN",
+          "whitespace": " ",
+          "phonemes": "nˌɪə",
+          "rating": 4
+        },
+        {
+          "text": "the",
+          "tag": "DT",
+          "whitespace": " ",
+          "phonemes": "ðə",
+          "rating": 4
+        },
+        {
+          "text": "garage",
+          "tag": "NN",
+          "whitespace": "",
+          "phonemes": "ɡˈaɹɑːʤ",
+          "rating": 4
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    },
+    {
+      "id": "ood",
+      "text": "Folio zxqvblorfquangles.",
+      "dialect": "gb",
+      "phonemes": "fˈQlɪQ zˌɛdˌɛkskjˌuːvˈiːblˈɔːfkwaŋɡᵊlz.",
+      "fallbackWords": [
+        "zxqvblorfquangles"
+      ],
+      "fallbackRaw": {
+        "zxqvblorfquangles": "zˌɛdˌɛkskjˌuːvˈiːblˈɔːfkwaŋɡə^lz"
+      },
+      "wholeSentenceEspeak": "fˈQlɪˌQ zˌɛdˌɛkskjˌuːvˈiːblˈɔːfkwaŋɡᵊlz.",
+      "tokens": [
+        {
+          "text": "Folio",
+          "tag": "NNP",
+          "whitespace": " ",
+          "phonemes": "fˈQlɪQ",
+          "rating": 4
+        },
+        {
+          "text": "zxqvblorfquangles",
+          "tag": "NNS",
+          "whitespace": "",
+          "phonemes": "zˌɛdˌɛkskjˌuːvˈiːblˈɔːfkwaŋɡᵊlz",
+          "rating": 2
+        },
+        {
+          "text": ".",
+          "tag": ".",
+          "whitespace": "",
+          "phonemes": ".",
+          "rating": 4
+        }
+      ]
+    }
+  ]
+}

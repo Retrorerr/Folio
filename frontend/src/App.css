@@ -25,6 +25,11 @@
     linear-gradient(135deg, var(--paper) 0%, var(--paper-2) 48%, var(--paper-3) 100%);
 }
 
+.app-transition-stage.theme-blackleaf,
+.theme-blackleaf .surface-fallback {
+  background: #000000;
+}
+
 .surface-fallback {
   position: absolute;
   inset: 0;
@@ -194,12 +199,12 @@
 }
 
 .app-motion-loading {
-  z-index: 3;
+  z-index: 2;
 }
 
 .app-motion-library,
 .app-motion-reader {
-  z-index: 2;
+  z-index: 3;
 }
 
 .app-motion-view > .app-shell,
@@ -355,6 +360,21 @@
   border-bottom-color: transparent;
 }
 
+.theme-blackleaf .app-titlebar {
+  background: #000000;
+  border-bottom-color: #202020;
+}
+
+.theme-blackleaf .app-titlebar.is-reader,
+.theme-blackleaf .app-titlebar.is-library {
+  background: transparent;
+  border-bottom-color: transparent;
+}
+
+.theme-blackleaf .app-titlebar.is-reader::before {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.42) 70%, transparent);
+}
+
 .titlebar-brand {
   display: inline-flex;
   align-items: center;
@@ -507,6 +527,7 @@
   display: grid;
   place-items: center;
   color: var(--ink-2);
+  font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
   border-radius: 0;
   transition:
     background-color 80ms linear,
@@ -521,6 +542,7 @@
 
 .titlebar-control:active {
   background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
 }
 
 .titlebar-control:focus-visible {
@@ -538,19 +560,20 @@
   color: #fff;
 }
 
-.titlebar-minimize {
-  width: 12px;
-  height: 1px;
-  background: currentColor;
-  border-radius: 1px;
-  transform: translateY(4px);
+.titlebar-caption-icon {
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
 }
 
-.titlebar-maximize {
-  width: 10px;
-  height: 10px;
-  border: 1px solid currentColor;
-  border-radius: 0;
+.app-titlebar.is-window-inactive .titlebar-control {
+  color: color-mix(in srgb, var(--ink-2) 58%, transparent);
 }
 
 @media (max-width: 760px) {

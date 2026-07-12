@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-close-document-read"
+description = "Enables the close_document_read command without any pre-configured scope."
+commands.allow = ["close_document_read"]
+
+[[permission]]
+identifier = "deny-close-document-read"
+description = "Denies the close_document_read command without any pre-configured scope."
+commands.deny = ["close_document_read"]

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-synthesize"
+description = "Enables the synthesize command without any pre-configured scope."
+commands.allow = ["synthesize"]
+
+[[permission]]
+identifier = "deny-synthesize"
+description = "Denies the synthesize command without any pre-configured scope."
+commands.deny = ["synthesize"]

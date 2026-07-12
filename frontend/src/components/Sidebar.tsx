@@ -3,7 +3,7 @@ import type React from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
-import { apiFetch, apiJson, selectLibraryFolder } from '../api'
+import { apiFetch, apiJson, isAndroidRuntime, selectLibraryFolder } from '../api'
 import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, panelReveal, scaleIn, slideUp, spring } from '../motion'
 import {
   engineDisplayName,
@@ -12,9 +12,51 @@ import {
   normalizeTtsEngine,
   normalizeVoiceForEngine,
 } from '../ttsVoices'
-import type { LibraryFolderStatus, LibraryScanResult } from '../types'
+import type {
+  BookState,
+  LibraryFolderStatus,
+  LibraryScanResult,
+  ModelInstallInfo,
+  ReflowDocument,
+  SearchResponse,
+  SearchResult,
+} from '../types'
+
+type IconComponent = React.ComponentType<{ size?: number | string }>
+
+interface SidebarProps {
+  book: BookState | null
+  reflow: ReflowDocument | null
+  currentPage: number
+  visualPageCurrent: number
+  currentSentence: number
+  goToPage: (page: number) => unknown
+  addBookmark: (page: number, sentence: number, label: string, visualPage?: number) => unknown
+  removeBookmark: (index: number) => unknown
+  voice: string
+  setVoice: (voice: string) => void
+  ttsEngine: string
+  setTtsEngine: (engine: string) => void
+  modelStatus: Record<string, ModelInstallInfo>
+  installPromptEngine?: string | null
+  clearInstallPrompt?: () => void
+  theme: string
+  setTheme: (theme: string) => void
+  motion: boolean
+  setMotion: (enabled: boolean) => void
+  wheelPaging: boolean
+  setWheelPaging: (enabled: boolean) => void
+  tab: string | null
+  setTab: (tab: string | null) => void
+  onNavigateSearchResult?: (result: SearchResult) => unknown
+  onHome: () => void
+  hidden?: boolean
+}
 
 function themeTransitionColors(theme: string) {
+  if (theme === 'blackleaf') {
+    return { paper: 'rgb(0, 0, 0)', wash: 'rgba(0, 0, 0, 0.94)', accent: 'rgba(255, 255, 255, 0.12)' }
+  }
   if (theme === 'dark') {
     return { paper: 'rgb(17, 20, 23)', wash: 'rgba(17, 20, 23, 0.88)', accent: 'rgba(126, 210, 194, 0.28)' }
   }
@@ -85,7 +127,7 @@ function folderLabel(path: string): string {
 function scanSummary(result?: LibraryScanResult | null): string {
   if (!result) return 'No scan yet'
   const imported = result.imported === 1 ? '1 new book' : `${result.imported} new books`
-  const scanned = result.scanned === 1 ? '1 EPUB scanned' : `${result.scanned} EPUBs scanned`
+  const scanned = result.scanned === 1 ? '1 book scanned' : `${result.scanned} books scanned`
   const failed = result.failed ? `, ${result.failed} failed` : ''
   return `${imported} from ${scanned}${failed}`
 }
@@ -96,7 +138,7 @@ function isMethodNotAllowed(error: unknown): boolean {
 }
 
 export default memo(function Sidebar({
-  book, reflow, currentPage, currentSentence, goToPage,
+  book, reflow, currentPage, visualPageCurrent, currentSentence, goToPage,
   addBookmark, removeBookmark,
   voice, setVoice,
   ttsEngine, setTtsEngine,
@@ -110,7 +152,7 @@ export default memo(function Sidebar({
   onNavigateSearchResult,
   onHome,
   hidden = false,
-}: any) {
+}: SidebarProps) {
   const [renderedTab, setRenderedTab] = useState(tab)
   const panelTab = renderedTab === 'settings' ? null : renderedTab
   const panelOpen = Boolean(tab && tab !== 'settings')
@@ -128,7 +170,7 @@ export default memo(function Sidebar({
     return () => clearTimeout(timer)
   }, [tab])
 
-  const railBtn = (key: string, Ico: any, label: string) => (
+  const railBtn = (key: string, Ico: IconComponent, label: string) => (
     <m.button
       key={key}
       className={`rail-btn ${tab === key ? 'active' : ''}`}
@@ -195,6 +237,7 @@ export default memo(function Sidebar({
               <BookmarkPanel
                 book={book}
                 currentPage={currentPage}
+                visualPageCurrent={visualPageCurrent}
                 currentSentence={currentSentence}
                 goToPage={goToPage}
                 addBookmark={addBookmark}
@@ -236,7 +279,17 @@ export default memo(function Sidebar({
   )
 })
 
-function ChapterPanel({ book, reflow, currentPage, goToPage }: any) {
+function ChapterPanel({
+  book,
+  reflow,
+  currentPage,
+  goToPage,
+}: {
+  book: BookState | null
+  reflow: ReflowDocument | null
+  currentPage: number
+  goToPage: (page: number) => unknown
+}) {
   if (!book) return null
   const reflowChapters = reflow?.chapters || []
   const useReflow = reflowChapters.length > 0
@@ -256,7 +309,7 @@ function ChapterPanel({ book, reflow, currentPage, goToPage }: any) {
       <div className="panel-body">
         {toc.length === 0 ? (
           <div style={{ padding: 24, color: 'var(--ink-3)', fontStyle: 'italic', fontSize: 13.5, textAlign: 'center' }}>
-            No table of contents found in this EPUB.
+            No table of contents was found for this book.
           </div>
         ) : (
           <m.div className="chapter-list" variants={listStagger} initial="initial" animate="animate" exit="exit">
@@ -266,18 +319,20 @@ function ChapterPanel({ book, reflow, currentPage, goToPage }: any) {
                 ? currentPage === c.page
                 : (currentPage >= c.page && (!next || currentPage < next.page))
               return (
-                <m.div
+                <m.button
                   key={i}
+                  type="button"
                   className={`chapter-item ${isActive ? 'active' : ''}`}
                   onClick={() => goToPage(c.page)}
+                  aria-current={isActive ? 'location' : undefined}
                   layout
                   variants={listItem}
                 >
                   {isActive && <m.div className="playing-indicator" layoutId="chapter-active-indicator" />}
                   <div className="ch-num">{String(i + 1).padStart(2, '0')}</div>
                   <div className="ch-title">{c.title}</div>
-                  <div className="ch-dur">p.{c.page + 1}</div>
-                </m.div>
+                  <div className="ch-dur">{useReflow ? `ch.${c.page + 1}` : `p.${c.page + 1}`}</div>
+                </m.button>
               )
             })}
           </m.div>
@@ -287,7 +342,23 @@ function ChapterPanel({ book, reflow, currentPage, goToPage }: any) {
   )
 }
 
-function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookmark, removeBookmark }: any) {
+function BookmarkPanel({
+  book,
+  currentPage,
+  visualPageCurrent,
+  currentSentence,
+  goToPage,
+  addBookmark,
+  removeBookmark,
+}: {
+  book: BookState | null
+  currentPage: number
+  visualPageCurrent: number
+  currentSentence: number
+  goToPage: (page: number) => unknown
+  addBookmark: (page: number, sentence: number, label: string, visualPage?: number) => unknown
+  removeBookmark: (index: number) => unknown
+}) {
   if (!book) return null
   const bookmarks = book.bookmarks || []
   return (
@@ -300,7 +371,7 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
       <div className="panel-body">
         <button
           className="add-bookmark"
-          onClick={() => addBookmark(currentPage, currentSentence, `Page ${currentPage + 1}`)}
+          onClick={() => addBookmark(currentPage, currentSentence, `Page ${visualPageCurrent}`, visualPageCurrent)}
         >
           <Icons.Plus size={14} /> Mark current page
         </button>
@@ -311,17 +382,34 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
         ) : (
           <m.div className="bookmark-list" variants={listStagger} initial="initial" animate="animate" exit="exit">
             {bookmarks.map((bm, i) => (
-              <m.div key={i} className="bookmark-item" onClick={() => goToPage(bm.page)} layout variants={listItem}>
+              <m.div
+                key={i}
+                className="bookmark-item"
+                role="button"
+                tabIndex={0}
+                aria-label={`Open ${bm.label || (bm.visual_page ? `bookmark on page ${bm.visual_page}` : `bookmark in chapter ${bm.page + 1}`)}`}
+                onClick={() => goToPage(bm.page)}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    goToPage(bm.page)
+                  }
+                }}
+                layout
+                variants={listItem}
+              >
                 <div className="bm-head">
-                  <span className="bm-page">PAGE {bm.page + 1}</span>
+                  <span className="bm-page">{bm.visual_page ? `PAGE ${bm.visual_page}` : `CHAPTER ${bm.page + 1}`}</span>
                   <span className="bm-rule" />
                   <button
                     onClick={(e) => { e.stopPropagation(); removeBookmark(i) }}
                     style={{ color: 'var(--ink-3)', display: 'flex' }}
                     title="Remove bookmark"
+                    aria-label="Remove bookmark"
                   ><Icons.X size={13} /></button>
                 </div>
-                <div className="bm-snip">{bm.label || `Page ${bm.page + 1}, sentence ${(bm.sentence_idx ?? 0) + 1}`}</div>
+                <div className="bm-snip">{bm.label || `${bm.visual_page ? `Page ${bm.visual_page}` : `Chapter ${bm.page + 1}`}, sentence ${(bm.sentence_idx ?? 0) + 1}`}</div>
               </m.div>
             ))}
           </m.div>
@@ -331,9 +419,17 @@ function BookmarkPanel({ book, currentPage, currentSentence, goToPage, addBookma
   )
 }
 
-function SearchPanel({ book, currentPage, onNavigateSearchResult }: any) {
+function SearchPanel({
+  book,
+  currentPage,
+  onNavigateSearchResult,
+}: {
+  book: BookState | null
+  currentPage: number
+  onNavigateSearchResult?: (result: SearchResult) => unknown
+}) {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState([])
+  const [results, setResults] = useState<SearchResult[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -369,7 +465,7 @@ function SearchPanel({ book, currentPage, onNavigateSearchResult }: any) {
           signal: controller.signal,
         })
         if (!response.ok) throw new Error('Search failed')
-        const data = await response.json()
+        const data = await response.json() as SearchResponse
         setResults(data.results || [])
         setTotal(data.total || 0)
       } catch (err) {
@@ -388,7 +484,7 @@ function SearchPanel({ book, currentPage, onNavigateSearchResult }: any) {
     }
   }, [book, query])
 
-  const handleResultClick = async (result) => {
+  const handleResultClick = async (result: SearchResult) => {
     const key = `${result.page}:${result.sentence_idx}:${result.global_sentence_idx ?? ''}`
     setActiveKey(key)
     await onNavigateSearchResult?.(result)
@@ -420,8 +516,9 @@ function SearchPanel({ book, currentPage, onNavigateSearchResult }: any) {
               <m.button
                 type="button"
                 className="search-clear"
-                onClick={() => setQuery('')}
-                title="Clear search"
+                 onClick={() => setQuery('')}
+                 title="Clear search"
+                 aria-label="Clear search"
                 variants={scaleIn}
                 initial="initial"
                 animate="animate"
@@ -508,12 +605,13 @@ export function SettingsPanel({
   const promptInstall = modelStatus?.[promptEngine] || null
   const activeInstall = modelStatus?.[activeEngine] || null
   const engineReady = !!activeInstall?.ready
+  const androidRuntime = isAndroidRuntime()
   const activeEngineName = engineDisplayName(activeEngine)
   const installingEngineName = engineDisplayName(installingEngine)
 
   const formatInstallSize = (bytes: number | undefined) => {
     const safe = Number(bytes || 0)
-    if (!safe) return 'Local download'
+    if (!safe) return androidRuntime ? 'Local model pack' : 'Local download'
     const gb = safe / (1024 ** 3)
     if (gb >= 1) return `${gb.toFixed(1)} GB`
     return `${(safe / (1024 ** 2)).toFixed(0)} MB`
@@ -521,17 +619,17 @@ export function SettingsPanel({
 
   const installLabel = (engineId: string) => {
     const install = modelStatus?.[engineId]
-    if (!install) return 'Download'
+    if (!install) return androidRuntime ? 'Import' : 'Download'
     if (install.state === 'ready') return 'Installed'
     if (install.state === 'verifying') return 'Verifying'
-    if (install.state === 'failed') return 'Retry'
+    if (install.state === 'failed') return androidRuntime ? 'Import again' : 'Retry'
     if (install.state === 'download_queued' || install.state === 'downloading') {
       const pct = install.total_bytes > 0
         ? Math.round(((install.downloaded_bytes || 0) / install.total_bytes) * 100)
         : Math.round((install.progress || 0) * 100)
       return `Downloading ${Math.max(1, Math.min(99, pct))}%`
     }
-    return 'Download'
+    return androidRuntime ? 'Import' : 'Download'
   }
 
   const installBusy = (install: any) => (
@@ -539,10 +637,10 @@ export function SettingsPanel({
   )
 
   const installActionLabel = (install: any) => {
-    if (install?.state === 'failed') return 'Retry download'
+    if (install?.state === 'failed') return androidRuntime ? 'Choose another pack' : 'Retry download'
     if (install?.state === 'verifying') return 'Verifying...'
     if (install?.state === 'download_queued' || install?.state === 'downloading') return 'Downloading...'
-    return 'Start download'
+    return androidRuntime ? 'Choose model pack' : 'Start download'
   }
 
   const requestEngine = (engineId: string) => {
@@ -564,10 +662,14 @@ export function SettingsPanel({
         ? `/api/models/${engineId}/cancel`
         : `/api/models/${engineId}/download`
     try {
-      await apiFetch(path, { method: 'POST' })
+      const response = await apiFetch(path, { method: 'POST' })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.detail || payload?.error || `Model import failed (${response.status})`)
+      }
       if (mode !== 'cancel') setInstallingEngine(engineId)
-    } catch {
-      setUpdateMessage('Could not update the model install. Please try again.')
+    } catch (error) {
+      setUpdateMessage(error instanceof Error ? error.message : 'Could not update the model install. Please try again.')
     }
   }
 
@@ -812,7 +914,7 @@ export function SettingsPanel({
                 <span>{theme}</span>
               </div>
               <m.div className="theme-switch" layout>
-                {['light', 'sepia', 'dark', 'folio'].map((t) => (
+                {['light', 'sepia', 'dark', 'folio', 'blackleaf'].map((t) => (
                   <m.button
                     key={t}
                     data-t={t}
@@ -871,7 +973,7 @@ export function SettingsPanel({
                   <p>
                     {libraryFolderStatus?.folder
                       ? libraryFolderStatus.folder
-                      : 'Choose a folder and Folio will periodically pick up new EPUB files from it.'}
+                      : 'Choose a folder and Folio will periodically pick up new EPUB and PDF files from it.'}
                   </p>
                 </div>
               </div>
@@ -920,7 +1022,9 @@ export function SettingsPanel({
                     <div className="label">Model install</div>
                     <h4>{activeEngineName} is not installed yet</h4>
                     <p>
-                      Download the voice engine once, store it locally on this machine, and Folio will use it offline after that.
+                      {androidRuntime
+                        ? 'Choose a trusted Folio model pack. Folio verifies every required file before storing it privately on this device.'
+                        : 'Download the voice engine once, store it locally on this machine, and Folio will use it offline after that.'}
                     </p>
                     <div className="model-install-meta">
                       <span>{formatInstallSize(activeInstall?.approx_download_bytes || activeInstall?.total_bytes)}</span>
@@ -937,9 +1041,11 @@ export function SettingsPanel({
                       {installActionLabel(activeInstall)}
                     </button>
                   </div>
-                  <div className="model-install-progress" aria-hidden="true">
-                    <div style={{ width: `${Math.max(6, Math.round(((activeInstall?.progress || 0) * 100)))}%` }} />
-                  </div>
+                  {(!androidRuntime || installBusy(activeInstall)) && (
+                    <div className="model-install-progress" aria-hidden="true">
+                      <div style={{ width: `${Math.max(6, Math.round(((activeInstall?.progress || 0) * 100)))}%` }} />
+                    </div>
+                  )}
                 </m.div>
                 )}
               </AnimatePresence>
@@ -1017,22 +1123,30 @@ export function SettingsPanel({
             <div className="model-install-orbit" aria-hidden="true" />
             <div className="model-install-head">
               <div className="label">Local voice engine</div>
-              <h3>Download {installingEngineName}</h3>
-              <p>Folio keeps models on your device and only downloads them when you choose to install one.</p>
+              <h3>{androidRuntime ? 'Import' : 'Download'} {installingEngineName}</h3>
+              <p>
+                {androidRuntime
+                  ? 'Select a Folio model-pack ZIP from Android storage. The files remain local and are verified before use.'
+                  : 'Folio keeps models on your device and only downloads them when you choose to install one.'}
+              </p>
             </div>
             <div className="model-install-stats">
               <span>{formatInstallSize(promptInstall?.approx_download_bytes || promptInstall?.total_bytes)}</span>
               <span>{installLabel(installingEngine)}</span>
             </div>
-            <div className="model-install-progress hero">
-              <div style={{ width: `${Math.max(8, Math.round(((promptInstall?.progress || 0) * 100)))}%` }} />
-            </div>
+            {(!androidRuntime || installBusy(promptInstall)) && (
+              <div className="model-install-progress hero">
+                <div style={{ width: `${Math.max(8, Math.round(((promptInstall?.progress || 0) * 100)))}%` }} />
+              </div>
+            )}
             <p className="settings-note">
               {promptInstall?.state === 'failed'
                 ? (promptInstall?.error || 'The previous install failed. Retry to continue.')
                 : promptInstall?.state === 'ready'
                   ? 'Installed and ready. Folio will switch to this engine automatically.'
-                  : 'Narration stays unavailable for this engine until the local model finishes downloading and verifying.'}
+                  : androidRuntime
+                    ? 'Narration stays unavailable until a compatible local pack passes size, hash, and ONNX contract validation.'
+                    : 'Narration stays unavailable for this engine until the local model finishes downloading and verifying.'}
             </p>
             <div className="model-install-actions">
               {promptInstall?.state !== 'ready' && (
@@ -1045,7 +1159,7 @@ export function SettingsPanel({
                   {installActionLabel(promptInstall)}
                 </button>
               )}
-              {(promptInstall?.state === 'download_queued' || promptInstall?.state === 'downloading' || promptInstall?.state === 'verifying') && (
+              {!androidRuntime && (promptInstall?.state === 'download_queued' || promptInstall?.state === 'downloading' || promptInstall?.state === 'verifying') && (
                 <button
                   type="button"
                   className="settings-action"

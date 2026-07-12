@@ -1,9 +1,13 @@
 [package]
 name = "folio"
-version = "0.1.11"
+version = "0.1.12"
 description = "Folio desktop reader"
 authors = ["Folio contributors"]
 edition = "2021"
+
+[lib]
+name = "folio"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -11,7 +15,20 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 getrandom = "0.3"
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["rustls-tls"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-window-state = "2"
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-mobile-runtime = { path = "plugins" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+] }

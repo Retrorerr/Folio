@@ -1,9 +1,26 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { AnimatePresence, MotionConfig, motion as m } from 'motion/react'
-import type { GlobalSettings, ModelInstallInfo, Position, SearchResult, TtsRuntimeInfo, TtsStatus } from './types'
+import type {
+  GlobalSettings,
+  ModelInstallInfo,
+  Position,
+  ReaderNavHandle,
+  ReaderSearchTarget,
+  ReflowDocument,
+  ReflowProgress,
+  SearchResult,
+  TtsRuntimeInfo,
+  TtsStatus,
+} from './types'
+import type { ReaderPageNavigationState } from './readerNavigation'
 import useBookState from './hooks/useBookState'
 import useAudioPlayback from './hooks/useAudioPlayback'
 import LoadingScreen from './components/LoadingScreen'
+import Welcome from './components/Welcome'
+import ReflowViewer from './components/ReflowViewer'
+import PdfViewer from './components/PdfViewer'
+import Pill from './components/Pill'
+import Sidebar from './components/Sidebar'
 import { Icons } from './components/icons'
 import {
   apiFetch,
@@ -20,9 +37,9 @@ import {
 import CursorHalo from './components/CursorHalo'
 import TitleBar from './components/TitleBar'
 import { appViewTransition, fadeIn, spring } from './motion'
+import { isFolioTheme, resolveInitialTheme } from './systemTheme'
 import './App.css'
 
-const THEMES = ['sepia', 'light', 'dark', 'folio']
 const PAGE_TOTAL_DEBOUNCE_MS = 500
 const PAGE_TOTAL_STABILITY_MS = 6000
 const STATUS_POLL_FAST_MS = 1000
@@ -31,28 +48,8 @@ const ACTIVE_MODEL_STATES = new Set(['download_queued', 'downloading', 'verifyin
 const APP_HEARTBEAT_ACTIVE_WORK_MS = 30_000
 const APP_HEARTBEAT_THROTTLE_MS = 5_000
 const BACKEND_RESTART_THROTTLE_MS = 5_000
-const loadWelcome = () => import('./components/Welcome')
-const loadReflowViewer = () => import('./components/ReflowViewer')
-const loadPill = () => import('./components/Pill')
-const loadSidebar = () => import('./components/Sidebar')
-const Welcome = lazy(loadWelcome)
-const ReflowViewer = lazy(loadReflowViewer)
-const Pill = lazy(loadPill)
-const Sidebar = lazy(loadSidebar)
-
-function SurfaceFallback({ theme, label, detail }: { theme: string; label: string; detail: string }) {
-  const logoSrc = theme === 'light' || theme === 'sepia' ? '/folio-icon.png' : '/folio-monochrome-icon.png'
-  return (
-    <div className="surface-fallback" role="status" aria-live="polite">
-      <img src={logoSrc} alt="" />
-      <div>
-        <strong>{label}</strong>
-        <span>{detail}</span>
-      </div>
-      <div className="surface-fallback-progress" aria-hidden="true"><span /></div>
-    </div>
-  )
-}
+const STARTUP_MINIMUM_MS = 480
+const STARTUP_ASSET_TIMEOUT_MS = 2200
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseFloat(String(value))
@@ -77,9 +74,11 @@ function statusHasActiveWork(status: TtsStatus | null): boolean {
 
 export default function App() {
   const [theme, setTheme] = useState(() => {
-    const t = localStorage.getItem('theme')
-    if (THEMES.includes(t)) return t
-    return localStorage.getItem('darkMode') === 'true' ? 'dark' : 'sepia'
+    return resolveInitialTheme(
+      localStorage.getItem('theme'),
+      localStorage.getItem('darkMode'),
+      window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false,
+    )
   })
   const [motion, setMotion] = useState(() => localStorage.getItem('motion') !== 'false')
   const [wheelPaging, setWheelPaging] = useState(() => localStorage.getItem('wheelPaging') === 'true')
@@ -87,7 +86,7 @@ export default function App() {
     const t = localStorage.getItem('sidebarTab')
     return t === 'null' || t === '' ? null : (t || null)
   })
-  const [searchTarget, setSearchTarget] = useState<any>(null)
+  const [searchTarget, setSearchTarget] = useState<ReaderSearchTarget | null>(null)
   const [followAlongMode, setFollowAlongMode] = useState(false)
   const [hasSelectedReaderLine, setHasSelectedReaderLine] = useState(false)
   const [pageNavHidden, setPageNavHidden] = useState(false)
@@ -106,12 +105,40 @@ export default function App() {
   const [backendLaunchSettled, setBackendLaunchSettled] = useState(false)
   const [backendStartCommandFailed, setBackendStartCommandFailed] = useState(false)
   const [backendLogPath, setBackendLogPath] = useState<string | null>(null)
+  const [interfaceReady, setInterfaceReady] = useState(false)
   const [pendingOpenFile, setPendingOpenFile] = useState<string | null>(null)
   const settingsHydrated = useRef(false)
+  const setThemeFromUi = useCallback((nextTheme: string) => {
+    if (isFolioTheme(nextTheme)) setTheme(nextTheme)
+  }, [])
 
   useEffect(() => {
-    const preloadTimer = window.setTimeout(() => { void loadWelcome().catch(() => {}) }, 40)
-    return () => window.clearTimeout(preloadTimer)
+    let cancelled = false
+    const startedAt = performance.now()
+    const loadImage = (src: string) => new Promise<void>((resolve) => {
+      const image = new Image()
+      image.onload = () => resolve()
+      image.onerror = () => resolve()
+      image.src = src
+      if (image.complete) resolve()
+    })
+    const assetWork = Promise.allSettled([
+      document.fonts?.ready ?? Promise.resolve(),
+      loadImage('/folio-icon.png'),
+      loadImage('/folio-monochrome-icon.png'),
+    ])
+    const timeout = new Promise<void>((resolve) => {
+      window.setTimeout(resolve, STARTUP_ASSET_TIMEOUT_MS)
+    })
+
+    void Promise.race([assetWork, timeout]).then(() => {
+      const remaining = Math.max(0, STARTUP_MINIMUM_MS - (performance.now() - startedAt))
+      window.setTimeout(() => {
+        if (!cancelled) setInterfaceReady(true)
+      }, remaining)
+    })
+
+    return () => { cancelled = true }
   }, [])
 
   const saveSetting = useCallback((key: string, value: unknown) => {
@@ -137,6 +164,7 @@ export default function App() {
       let nextPollDelay = STATUS_POLL_FAST_MS
       try {
         const r = await apiFetch('/api/status')
+        if (!r.ok) throw new Error(`Backend status failed (${r.status})`)
         const d = await r.json() as TtsStatus
         if (cancelled) return
         nextPollDelay = statusHasActiveWork(d) ? STATUS_POLL_FAST_MS : STATUS_POLL_IDLE_MS
@@ -233,9 +261,13 @@ export default function App() {
     }
   }, [])
 
-  const [reflow, setReflow] = useState<any>(null)
-  const [reflowProgress, setReflowProgress] = useState<any>(null) // {current, total}
-  const reflowNavRef = useRef<any>({})
+  const [reflow, setReflow] = useState<ReflowDocument | null>(null)
+  const [reflowProgress, setReflowProgress] = useState<ReflowProgress | null>(null)
+  const reflowNavRef = useRef<ReaderNavHandle>({})
+  const [pageNavigation, setPageNavigation] = useState<ReaderPageNavigationState>({
+    canGoPrevious: false,
+    canGoNext: false,
+  })
   const latestVisualPositionRef = useRef<Position | null>(null)
   const visualPageCountPersistRef = useRef<Record<string, number>>({})
   const visualPageCountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -250,6 +282,7 @@ export default function App() {
 
   useEffect(() => {
     setHasSelectedReaderLine(false)
+    setPageNavigation({ canGoPrevious: false, canGoNext: false })
   }, [activeBookId])
 
   useEffect(() => {
@@ -257,7 +290,7 @@ export default function App() {
     const filepath = pendingOpenFile
     setPendingOpenFile(null)
     openBook(filepath).catch((error) => {
-      const message = error instanceof Error ? error.message : 'Could not open that EPUB.'
+      const message = error instanceof Error ? error.message : 'Could not open that book.'
       window.alert(message)
     })
   }, [backendReachable, openBook, pendingOpenFile])
@@ -273,7 +306,7 @@ export default function App() {
     : (String(activeTtsStatus?.selected_provider || '').toLowerCase().includes('cuda') || gpuEnabled)
   const activeRuntime = activeTtsStatus || ttsStatus?.tts_runtime || null
   const activeInstall = modelStatus?.[audio.ttsEngine] || null
-  const startupReady = backendReachable && (recentLoaded || startupTimedOut)
+  const startupReady = interfaceReady && backendReachable && (recentLoaded || startupTimedOut)
   const appLifecycleRef = useRef({
     backendReachable: false,
     busy: true,
@@ -369,19 +402,23 @@ export default function App() {
       setReflowProgress(null)
       return
     }
-    let cancelled = false
+    const controller = new AbortController()
     setReflow(null)
     setReflowProgress(null)
-    apiFetch(`/api/book/${activeBookId}/reflow`)
+    apiFetch(`/api/book/${activeBookId}/reflow`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (!cancelled) setReflow(d) })
-      .catch(() => { if (!cancelled) setReflow(null) })
-    return () => { cancelled = true }
+      .then((data: ReflowDocument | null) => { if (!controller.signal.aborted) setReflow(data) })
+      .catch((error) => {
+        if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
+          setReflow(null)
+        }
+      })
+    return () => controller.abort()
   }, [activeBookId])
 
   useEffect(() => {
     latestVisualPositionRef.current = book?.last_position || null
-  }, [activeBookId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [book?.last_position])
 
   const handleVisualPositionChange = useCallback((position: Position) => {
     latestVisualPositionRef.current = position
@@ -433,6 +470,24 @@ export default function App() {
     setFollowAlongMode(false)
   }, [])
 
+  const handlePageNavigationState = useCallback((next: ReaderPageNavigationState) => {
+    setPageNavigation((prev) => (
+      prev.canGoPrevious === next.canGoPrevious && prev.canGoNext === next.canGoNext
+        ? prev
+        : next
+    ))
+  }, [])
+
+  const goToPreviousVisualPage = useCallback(() => {
+    exitFollowAlong()
+    reflowNavRef.current.goPrev?.()
+  }, [exitFollowAlong])
+
+  const goToNextVisualPage = useCallback(() => {
+    exitFollowAlong()
+    reflowNavRef.current.goNext?.()
+  }, [exitFollowAlong])
+
   const toggleFollowAlong = useCallback(() => {
     if (followAlongMode) {
       setFollowAlongMode(false)
@@ -464,7 +519,7 @@ export default function App() {
     return result
   }, [flushCurrentVisualPosition, followAlongMode, goToPage, savePosition])
 
-  const seekToSentenceFromUser = useCallback((page: number, sentence: number, options: any = {}) => {
+  const seekToSentenceFromUser = useCallback((page: number, sentence: number, options: { progress?: number } = {}) => {
     flushCurrentVisualPosition()
     setHasSelectedReaderLine(true)
     seekToSentence(page, sentence, options)
@@ -477,10 +532,10 @@ export default function App() {
 
   useEffect(() => {
     if (!followAlongMode) return
-    if (!audio.isPlaying) {
+    if (audio.readingPage == null) {
       setFollowAlongMode(false)
     }
-  }, [followAlongMode, audio.isPlaying])
+  }, [followAlongMode, audio.readingPage])
 
   useEffect(() => {
     if (!followAlongMode) return
@@ -541,7 +596,7 @@ export default function App() {
     apiFetch('/api/settings')
       .then(r => r.ok ? r.json() : {})
       .then((s: GlobalSettings) => {
-        if (typeof s.theme === 'string' && THEMES.includes(s.theme)) { setTheme(s.theme); localStorage.setItem('theme', s.theme) }
+        if (isFolioTheme(s.theme)) { setTheme(s.theme); localStorage.setItem('theme', s.theme) }
         else if (s.darkMode !== undefined) { const t = s.darkMode ? 'dark' : 'sepia'; setTheme(t); localStorage.setItem('theme', t) }
         if (s.motion !== undefined) { setMotion(!!s.motion); localStorage.setItem('motion', String(!!s.motion)) }
         if (s.wheelPaging !== undefined) { setWheelPaging(!!s.wheelPaging); localStorage.setItem('wheelPaging', String(!!s.wheelPaging)) }
@@ -592,8 +647,8 @@ export default function App() {
     })
   }, [])
 
-  const handleReflowProgress = useCallback((next: { current: number; total: number; stable?: boolean; allChaptersMeasured?: boolean }) => {
-    setReflowProgress((prev: any) => (
+  const handleReflowProgress = useCallback((next: ReflowProgress) => {
+    setReflowProgress((prev) => (
       prev?.current === next.current && prev?.total === next.total ? prev : next
     ))
     const visualPageCount = Math.max(1, Math.round(Number(next?.total || 0)))
@@ -626,14 +681,6 @@ export default function App() {
     previousAppViewRef.current = appView
   }, [appView])
 
-  useEffect(() => {
-    if (appView !== 'library') return
-    const preloadTimer = window.setTimeout(() => {
-      void Promise.allSettled([loadSidebar(), loadReflowViewer(), loadPill()])
-    }, 900)
-    return () => window.clearTimeout(preloadTimer)
-  }, [appView])
-
   const renderReader = () => {
     if (!book) return null
     const progressCurrent = reflowProgress?.current ?? currentPage + 1
@@ -660,7 +707,7 @@ export default function App() {
             progress={{ current: progressCurrent, total: progressTotal }}
             gpuEnabled={activeGpuEnabled}
             followAlong={followAlongMode}
-            onBookmark={() => addBookmark(currentPage, audio.currentSentence, `Page ${currentPage + 1}`)}
+            onBookmark={() => addBookmark(currentPage, audio.currentSentence, `Page ${progressCurrent}`, progressCurrent)}
           />
           <CursorHalo motion={motion} disabled={followAlongMode} />
           <AnimatePresence>
@@ -669,12 +716,12 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <Suspense fallback={<SurfaceFallback theme={theme} label="Preparing your book" detail="Laying out pages and playback controls…" />}>
-            <m.div className="reader-shell" layout transition={spring.layout}>
+          <m.div className="reader-shell" layout transition={spring.layout}>
               <Sidebar
                 book={book}
                 reflow={reflow}
                 currentPage={currentPage}
+                visualPageCurrent={progressCurrent}
                 currentSentence={audio.currentSentence}
                 goToPage={goToPageFromUser}
                 addBookmark={addBookmark}
@@ -686,9 +733,8 @@ export default function App() {
                 modelStatus={modelStatus}
                 installPromptEngine={installPromptEngine}
                 clearInstallPrompt={() => setInstallPromptEngine(null)}
-                speed={audio.speed}
                 theme={theme}
-                setTheme={setTheme}
+                setTheme={setThemeFromUi}
                 motion={motion}
                 setMotion={setMotion}
                 wheelPaging={wheelPaging}
@@ -701,27 +747,47 @@ export default function App() {
               />
 
               <m.main className={`reader-main ${followAlongMode ? 'follow-along' : ''}`} layout transition={spring.layout}>
-                <ReflowViewer
-                  bookId={book.id}
-                  reflow={reflow}
-                  chapterIdx={currentPage}
-                  setChapterIdx={goToPageFromViewer}
-                  runningHead={book.title}
-                  currentSentence={audio.currentSentence}
-                  activeChapterIdx={audio.readingPage ?? currentPage}
-                  chunkProgress={audio.chunkProgress}
-                  isPlaying={audio.isPlaying}
-                  onProgress={handleReflowProgress}
-                  navRef={reflowNavRef}
-                  motion={motion}
-                  wheelPaging={followAlongMode ? false : wheelPaging}
-                  searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-                  followAlongMode={followAlongMode}
-                  onSentenceSelect={seekToSentenceFromUser}
-                  theme={theme}
-                  resumePosition={book.last_position}
-                  onVisualPositionChange={handleVisualPositionChange}
-                />
+                {book.format === 'pdf' ? (
+                  <PdfViewer
+                    bookId={book.id}
+                    pageIdx={currentPage}
+                    pageCount={book.page_count}
+                    setPageIdx={goToPageFromViewer}
+                    pageText={pageData}
+                    currentSentence={audio.currentSentence}
+                    activePageIdx={audio.readingPage ?? currentPage}
+                    isPlaying={audio.isPlaying}
+                    onProgress={handleReflowProgress}
+                    onNavigationState={handlePageNavigationState}
+                    navRef={reflowNavRef}
+                    searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+                    onSentenceSelect={seekToSentenceFromUser}
+                    onVisualPositionChange={handleVisualPositionChange}
+                  />
+                ) : (
+                  <ReflowViewer
+                    bookId={book.id}
+                    reflow={reflow}
+                    chapterIdx={currentPage}
+                    setChapterIdx={goToPageFromViewer}
+                    runningHead={book.title}
+                    currentSentence={audio.currentSentence}
+                    activeChapterIdx={audio.readingPage ?? currentPage}
+                    chunkProgress={audio.chunkProgress}
+                    isPlaying={audio.isPlaying}
+                    onProgress={handleReflowProgress}
+                    onNavigationState={handlePageNavigationState}
+                    navRef={reflowNavRef}
+                    motion={motion}
+                    wheelPaging={followAlongMode ? false : wheelPaging}
+                    searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+                    followAlongMode={followAlongMode}
+                    onSentenceSelect={seekToSentenceFromUser}
+                    theme={theme}
+                    resumePosition={book.last_position}
+                    onVisualPositionChange={handleVisualPositionChange}
+                  />
+                )}
 
                 <div
                   className={`page-nav-reveal-zone ${followAlongMode && pageNavHidden ? 'active' : ''}`}
@@ -741,7 +807,8 @@ export default function App() {
                   onFocus={revealPageNav}
                   aria-label="Previous page"
                   title="Previous page"
-                  onClick={() => { exitFollowAlong(); reflowNavRef.current.goPrev?.() }}
+                  disabled={!pageNavigation.canGoPrevious}
+                  onClick={goToPreviousVisualPage}
                 >
                   <Icons.ChevronLeft size={18} />
                 </m.button>
@@ -758,12 +825,13 @@ export default function App() {
                   onFocus={revealPageNav}
                   aria-label="Next page"
                   title="Next page"
-                  onClick={() => { exitFollowAlong(); reflowNavRef.current.goNext?.() }}
+                  disabled={!pageNavigation.canGoNext}
+                  onClick={goToNextVisualPage}
                 >
                   <Icons.ChevronRight size={18} />
                 </m.button>
               </m.main>
-            </m.div>
+          </m.div>
 
             <Pill
               isPlaying={audio.isPlaying}
@@ -788,6 +856,12 @@ export default function App() {
               currentPage={currentPage}
               pageCount={book.page_count}
               goToPage={goToPageFromUser}
+              goToPreviousPage={goToPreviousVisualPage}
+              goToNextPage={goToNextVisualPage}
+              canGoPreviousPage={pageNavigation.canGoPrevious}
+              canGoNextPage={pageNavigation.canGoNext}
+              visualPageCurrent={progressCurrent}
+              visualPageTotal={progressTotal}
               speed={audio.speed}
               setSpeed={audio.setSpeed}
               volume={audio.volume}
@@ -795,20 +869,18 @@ export default function App() {
               ttsEngine={audio.ttsEngine}
               voice={audio.voice}
               currentSentence={audio.currentSentence}
-              sentenceCount={pageData?.sentences?.length || 0}
-              pageData={pageData}
+              sentenceCount={audio.readingSentenceCount || pageData?.sentences?.length || 0}
+              subscribeAudioSpectrum={audio.subscribeAudioSpectrum}
               playRequiresLineSelection={!audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
               sleepTimer={audio.sleepTimer}
               setSleepTimer={audio.setSleepTimer}
               preloadState={audio.preloadState}
               preloadChapter={audio.preloadChapter}
               readingPage={audio.readingPage}
-              jumpToReader={jumpToReader}
               followAlongMode={followAlongMode}
               toggleFollowAlong={toggleFollowAlong}
               book={book}
             />
-          </Suspense>
         </div>
       </m.div>
     )
@@ -827,12 +899,12 @@ export default function App() {
       <LoadingScreen
         theme={theme}
         motion={motion}
-        status={ttsStatus}
         backendLaunchStarted={backendLaunchStarted}
         backendLaunchSettled={backendLaunchSettled}
         backendReachable={backendReachable}
         recentLoaded={recentLoaded}
         recentBooks={recentBooks}
+        interfaceReady={interfaceReady}
         activeRuntime={activeRuntime}
         activeModelLoaded={activeModelLoaded}
         activeModelLoading={activeModelLoading}
@@ -855,10 +927,9 @@ export default function App() {
       <div className={`app-shell app-enter theme-${theme} grain`}>
         <TitleBar />
         <CursorHalo motion={motion} />
-        <Suspense fallback={<SurfaceFallback theme={theme} label="Opening your library" detail="Restoring your shelf and reading history…" />}>
-          <Welcome
+        <Welcome
             theme={theme}
-            setTheme={setTheme}
+            setTheme={setThemeFromUi}
             motion={motion}
             setMotion={setMotion}
             onUpload={uploadBook}
@@ -876,8 +947,7 @@ export default function App() {
               installPromptEngine,
               clearInstallPrompt: () => setInstallPromptEngine(null),
             }}
-          />
-        </Suspense>
+        />
       </div>
     </m.div>
   ) : renderReader()

@@ -1,21 +1,28 @@
 /* eslint-disable react-refresh/only-export-components */
 import type React from 'react'
 
-type IconProps = any
+export type IconProps = Omit<React.SVGProps<SVGSVGElement>, 'stroke'> & {
+  d?: string
+  size?: number
+  stroke?: number | string
+}
 
-const Icon = ({ d, size = 18, stroke = 1.5, fill = 'none', style, children }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
-       strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" style={style}>
+const Icon = ({ d, size = 18, stroke = 1.5, fill = 'none', style, children, ...props }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke={typeof stroke === 'string' ? stroke : 'currentColor'}
+       strokeWidth={typeof stroke === 'number' ? stroke : 1.5} strokeLinecap="round" strokeLinejoin="round" style={style}
+       aria-hidden={props['aria-label'] ? undefined : true} focusable="false" {...props}>
     {d ? <path d={d} /> : children}
   </svg>
 )
 
-type IconComponent = (props: any) => React.ReactElement
+type IconComponent = (props: IconProps) => React.ReactElement
 
-export const Icons: Record<string, IconComponent> = {
+export const Icons = {
   Home: (p) => <Icon {...p}><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></Icon>,
   Book: (p) => <Icon {...p}><path d="M4 4v16a2 2 0 0 1 2-2h14V4"/><path d="M4 4a2 2 0 0 1 2 2v14"/><path d="M20 4H6a2 2 0 0 0-2 2"/></Icon>,
   Library: (p) => <Icon {...p}><path d="M6 3v18"/><path d="M10 3v18"/><path d="M14 3h6v18h-6z"/><path d="M14 9h6"/></Icon>,
+  Grid: (p) => <Icon {...p}><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></Icon>,
+  List: (p) => <Icon {...p}><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></Icon>,
   Folder: (p) => <Icon {...p}><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4H10l2 2h6.5A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"/></Icon>,
   Chapters: (p) => <Icon {...p}><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h12"/></Icon>,
   Bookmark: (p) => <Icon {...p}><path d="M6 3h12v18l-6-4-6 4z"/></Icon>,
@@ -53,6 +60,6 @@ export const Icons: Record<string, IconComponent> = {
   Dots: (p) => <Icon {...p}><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></Icon>,
   Stop: (p) => <Icon fill="currentColor" stroke="none" {...p}><path d="M6 6h12v12H6z"/></Icon>,
   Locate: (p) => <Icon {...p}><circle cx="12" cy="12" r="3"/><path d="M12 2v3"/><path d="M12 19v3"/><path d="M2 12h3"/><path d="M19 12h3"/></Icon>,
-}
+} satisfies Record<string, IconComponent>
 
 export default Icons

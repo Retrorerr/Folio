@@ -3,20 +3,83 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/folio-icon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#08090b" />
     <meta name="color-scheme" content="dark light" />
     <title>Folio — A reader for listening</title>
+    <script>
+      try {
+        const savedTheme = localStorage.getItem('theme')
+        const theme = ['sepia', 'light', 'dark', 'folio', 'blackleaf'].includes(savedTheme)
+          ? savedTheme
+          : localStorage.getItem('darkMode') === 'true'
+            ? 'dark'
+            : localStorage.getItem('darkMode') === 'false'
+              ? 'sepia'
+              : window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'blackleaf' : 'sepia'
+        document.documentElement.dataset.folioTheme = theme
+      } catch (_) {
+        document.documentElement.dataset.folioTheme = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'blackleaf' : 'sepia'
+      }
+    </script>
     <style>
       html, body, #root {
         margin: 0;
         min-height: 100%;
-        background: #08090b;
+        background: var(--boot-bg, #08090b);
       }
+      html[data-folio-theme="sepia"] { --boot-bg: #ede0c4; --boot-card: #f3e7cf; --boot-ink: #2a1d10; --boot-muted: #786142; --boot-line: #c9b58b; --boot-accent: #b5471a; }
+      html[data-folio-theme="light"] { --boot-bg: #edf0f2; --boot-card: #fafbfc; --boot-ink: #1d252c; --boot-muted: #68737c; --boot-line: #ccd2d7; --boot-accent: #a74823; }
+      html[data-folio-theme="dark"] { --boot-bg: #10171d; --boot-card: #162027; --boot-ink: #e6edf3; --boot-muted: #9aabb7; --boot-line: #34434d; --boot-accent: #a2e2d3; }
+      html[data-folio-theme="folio"] { --boot-bg: #0c0d0f; --boot-card: #15130f; --boot-ink: #f6f0e3; --boot-muted: #9b907e; --boot-line: #373126; --boot-accent: #f2bd53; }
+      html[data-folio-theme="blackleaf"] { --boot-bg: #030303; --boot-card: #090909; --boot-ink: #f2f2f2; --boot-muted: #8a8a8a; --boot-line: #262626; --boot-accent: #dedede; }
+      #folio-bootstrap {
+        box-sizing: border-box;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: var(--boot-ink);
+        background: radial-gradient(circle at 50% -18%, color-mix(in srgb, var(--boot-accent) 14%, transparent), transparent 38%), var(--boot-bg);
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      .folio-bootstrap-card {
+        box-sizing: border-box;
+        width: min(680px, 100%);
+        padding: 46px 50px;
+        border: 1px solid var(--boot-line);
+        border-radius: 22px;
+        background: color-mix(in srgb, var(--boot-card) 88%, transparent);
+        box-shadow: 0 34px 100px -54px rgba(0, 0, 0, 0.55);
+      }
+      .folio-bootstrap-brand { display: flex; align-items: center; gap: 17px; margin-bottom: 34px; }
+      .folio-bootstrap-mark {
+        width: 56px; height: 56px; display: grid; place-items: center; border-radius: 13px;
+        color: var(--boot-bg); background: var(--boot-accent); font: 600 30px Georgia, serif;
+      }
+      .folio-bootstrap-brand strong { display: block; font: 600 41px/1 Georgia, serif; letter-spacing: -0.02em; }
+      .folio-bootstrap-brand span { display: block; margin-bottom: 6px; color: var(--boot-accent); font-size: 9px; letter-spacing: 0.25em; text-transform: uppercase; }
+      .folio-bootstrap-card h1 { margin: 0; font: 500 34px/1.1 Georgia, serif; }
+      .folio-bootstrap-card p { margin: 10px 0 28px; color: var(--boot-muted); font-size: 15px; line-height: 1.5; }
+      .folio-bootstrap-progress { height: 5px; overflow: hidden; border-radius: 999px; background: var(--boot-line); }
+      .folio-bootstrap-progress::before { content: ""; display: block; width: 16%; height: 100%; border-radius: inherit; background: var(--boot-accent); }
+      @media (max-width: 680px) { .folio-bootstrap-card { padding: 30px 24px; } }
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main id="folio-bootstrap" aria-label="Starting Folio">
+        <section class="folio-bootstrap-card">
+          <div class="folio-bootstrap-brand">
+            <span class="folio-bootstrap-mark" aria-hidden="true">F</span>
+            <div><span>Your reading room</span><strong>Folio</strong></div>
+          </div>
+          <h1>Starting Folio</h1>
+          <p>Opening your private, local reading library.</p>
+          <div class="folio-bootstrap-progress" role="progressbar" aria-label="Starting Folio" aria-valuemin="0" aria-valuemax="100" aria-valuenow="14"></div>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

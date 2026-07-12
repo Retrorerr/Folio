@@ -1,4 +1,4 @@
-export type BookFormat = 'epub'
+export type BookFormat = 'epub' | 'pdf'
 export type TtsEngine = 'supertonic' | 'kokoro'
 export type PreloadStatus = 'idle' | 'verifying' | 'current-ready' | 'preloading' | 'ready' | 'error'
 
@@ -6,6 +6,7 @@ export interface Position {
   page: number
   sentence_idx: number
   content_page?: number | null
+  visual_page?: number | null
   pages_per_view?: number | null
   layout_key?: string | null
   chunk_progress?: number | null
@@ -73,6 +74,63 @@ export interface PageText {
   render_height: number
 }
 
+export interface ReflowSentence {
+  text: string
+  idx?: number
+  source_sentences?: number[]
+  kind?: string
+}
+
+export type ReflowBlock =
+  | { type: 'paragraph'; sentences: ReflowSentence[]; role?: string; kind?: string; [key: string]: unknown }
+  | { type: 'heading'; text: string; level?: number; [key: string]: unknown }
+  | { type: 'dinkus'; [key: string]: unknown }
+  | { type: string; [key: string]: unknown }
+
+export interface ReflowChapter {
+  id?: string | number
+  title?: string
+  number?: string | number | null
+  blocks: ReflowBlock[]
+}
+
+export interface ReflowDocument {
+  format?: string
+  version?: number
+  chunker_version?: string
+  metadata?: {
+    title?: string
+    author?: string
+    running_head?: string
+  }
+  chapters: ReflowChapter[]
+  sentence_count?: number
+  source?: string
+}
+
+export interface ReflowProgress {
+  current: number
+  total: number
+  stable?: boolean
+  allChaptersMeasured?: boolean
+}
+
+export interface ReaderSearchTarget {
+  bookId?: string
+  page: number
+  sentenceIdx: number | null
+  globalSentenceIdx: number | null
+  nonce: string
+}
+
+export interface ReaderNavHandle {
+  goNext?: () => void
+  goPrev?: () => void
+  goToSentence?: (chapter: number, sentence: number, indexType?: string) => void
+  goToReadingPosition?: (chapter: number, sentence: number, progress?: number, indexType?: string) => void
+  getVisualPosition?: () => Position | null
+}
+
 export interface Voice {
   id: string
   name: string
@@ -85,6 +143,7 @@ export interface TtsRuntimeInfo {
   model_loading?: boolean
   gpu?: boolean
   provider?: string
+  selected_provider?: string
   selected_device?: string
   download_active?: boolean
   download_bytes?: number
@@ -234,6 +293,7 @@ export interface DashboardHighlight {
   book_title: string
   author?: string
   page: number
+  visual_page?: number | null
   sentence_idx?: number
   text: string
   note?: string
@@ -277,6 +337,9 @@ export interface DashboardPayload {
   }
   highlights: DashboardHighlight[]
   notes: DashboardHighlight[]
+  profile?: {
+    reader_name?: string
+  }
   backend?: {
     reachable?: boolean
     active_tts_engine?: string

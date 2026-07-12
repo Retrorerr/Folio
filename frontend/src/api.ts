@@ -1,15 +1,7 @@
-function isTauriRuntime(): boolean {
-  if (typeof window === 'undefined') return false
-  return Boolean(
-    window.__TAURI_INTERNALS__ ||
-    window.__TAURI__ ||
-    window.location.protocol === 'tauri:' ||
-    window.location.hostname === 'tauri.localhost',
-  )
-}
+import { isAndroidRuntime, isTauriRuntime } from './platform'
 
-const runtimeBase = isTauriRuntime() ? 'http://127.0.0.1:8000' : ''
-const baseUrl = (import.meta.env.VITE_API_BASE || runtimeBase).replace(/\/$/, '')
+const runtimeBase = isTauriRuntime() && !isAndroidRuntime() ? 'http://127.0.0.1:8000' : ''
+let baseUrl = (import.meta.env.VITE_API_BASE || runtimeBase).replace(/\/$/, '')
 const previewWatchdogEnabled = import.meta.env.VITE_PREVIEW_WATCHDOG === '1'
 const envApiToken = String(import.meta.env.VITE_FOLIO_API_TOKEN || '').trim()
 const apiTokenHeader = 'X-Folio-Api-Token'
@@ -17,7 +9,7 @@ const apiTokenQuery = 'folio_token'
 let cachedApiToken: string | null = envApiToken || null
 let apiTokenPromise: Promise<string | null> | null = null
 
-export { isTauriRuntime }
+export { isAndroidRuntime, isTauriRuntime } from './platform'
 
 async function resolveApiToken(): Promise<string | null> {
   if (cachedApiToken) return cachedApiToken
@@ -59,11 +51,16 @@ function apiUrlWithToken(path: string): string {
 
 export async function startBackend(): Promise<boolean> {
   if (!isTauriRuntime()) return false
+  if (isAndroidRuntime()) return true
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    const started = await invoke<boolean>('start_backend')
+    const port = await invoke<number>('start_backend')
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Folio returned an invalid backend port: ${port}`)
+    }
+    baseUrl = `http://127.0.0.1:${port}`
     await resolveApiToken()
-    return started
+    return true
   } catch (error) {
     console.warn('Folio backend start command failed', error)
     return false
@@ -72,6 +69,7 @@ export async function startBackend(): Promise<boolean> {
 
 export async function stopBackend(): Promise<boolean> {
   if (!isTauriRuntime()) return false
+  if (isAndroidRuntime()) return true
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     return await invoke<boolean>('stop_backend')
@@ -83,6 +81,7 @@ export async function stopBackend(): Promise<boolean> {
 
 export async function takePendingOpenFile(): Promise<string | null> {
   if (!isTauriRuntime()) return null
+  if (isAndroidRuntime()) return null
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     return await invoke<string | null>('take_pending_open_file')
@@ -94,6 +93,7 @@ export async function takePendingOpenFile(): Promise<string | null> {
 
 export async function listenForOpenFile(handler: (filepath: string) => void): Promise<() => void> {
   if (!isTauriRuntime()) return () => {}
+  if (isAndroidRuntime()) return () => {}
   try {
     const { listen } = await import('@tauri-apps/api/event')
     return await listen<string>('folio-open-file', (event) => {
@@ -109,6 +109,7 @@ export async function listenForOpenFile(handler: (filepath: string) => void): Pr
 
 export async function getBackendLogPath(): Promise<string | null> {
   if (!isTauriRuntime()) return null
+  if (isAndroidRuntime()) return null
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     return await invoke<string>('backend_log_path')
@@ -119,6 +120,7 @@ export async function getBackendLogPath(): Promise<string | null> {
 
 export async function openBackendLog(): Promise<boolean> {
   if (!isTauriRuntime()) return false
+  if (isAndroidRuntime()) return false
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     return await invoke<boolean>('open_backend_log')
@@ -130,6 +132,19 @@ export async function openBackendLog(): Promise<boolean> {
 
 export async function selectLibraryFolder(initialDir?: string | null): Promise<string | null> {
   if (!isTauriRuntime()) return null
+  if (isAndroidRuntime()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const selected = await invoke<{ uri?: string; persisted?: boolean }>('plugin:mobile-runtime|pick_folder', { payload: { initialUri: initialDir || null } })
+      if (selected?.uri && selected.persisted === false) {
+        throw new Error('That provider did not grant persistent folder access. Choose a different location.')
+      }
+      return selected?.uri || null
+    } catch (error) {
+      console.warn('Folio Android folder picker failed', error)
+      throw error instanceof Error ? error : new Error('The Android folder picker failed.')
+    }
+  }
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     const selected = await invoke<string | null>('select_library_folder', { initialDir: initialDir || null })
@@ -151,6 +166,7 @@ export function sendPreviewHeartbeat(): Promise<Response> | null {
 
 export function sendAppHeartbeat(): Promise<Response> | null {
   if (typeof window === 'undefined') return null
+  if (isAndroidRuntime()) return null
   return apiFetch('/api/app/heartbeat', { method: 'POST', keepalive: true })
 }
 
@@ -165,10 +181,22 @@ export function apiUrl(path: string): string {
 }
 
 export function apiResourceUrl(path: string): string {
+  if (isAndroidRuntime()) {
+    // Android resources are kept in the local adapter. Audio URLs are cached
+    // synchronously after generation, while EPUB covers are data URLs.
+    const mobilePath = path
+    if (mobilePath.startsWith('data:') || mobilePath.startsWith('blob:')) return mobilePath
+    const cached = (globalThis as { __folioMobileResourceUrl?: (value: string) => string }).__folioMobileResourceUrl
+    return cached ? cached(mobilePath) : mobilePath
+  }
   return apiUrlWithToken(path)
 }
 
 export async function apiFetch(path: string, options?: RequestInit): Promise<Response> {
+  if (isAndroidRuntime()) {
+    const { mobileApiFetch } = await import('./mobileApi')
+    return mobileApiFetch(path, options)
+  }
   const token = await resolveApiToken()
   return fetch(apiUrl(path), withApiToken(options, token))
 }

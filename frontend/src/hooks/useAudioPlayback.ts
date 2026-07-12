@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
-import { apiFetch, apiResourceUrl } from '../api'
+import { apiFetch, apiResourceUrl, isAndroidRuntime } from '../api'
+import { mobileAudioStatus, mobileControlAudio, mobileStartAudio } from '../mobileApi'
 import {
   clampSpeedForEngine,
   defaultSpeed,
@@ -10,6 +11,7 @@ import {
   normalizeVoiceForEngine,
 } from '../ttsVoices'
 import type { AudioInfo, BookState, PageText, Position, PreloadState, TtsGenerateResponse } from '../types'
+import { classifyNativeQueueProgress, fillSpectrumLevels, findAdjacentReadablePosition, rememberBoundedSetEntry, setBoundedMapEntry } from './audioPlaybackState'
 
 function dispatchModelRequired(engine, install) {
   if (typeof window === 'undefined') return
@@ -27,8 +29,16 @@ const UNDERRUN_WAIT_MS = 350
 const DEFAULT_SPEED = defaultSpeed
 const CHUNK_PROGRESS_MIN_DELTA = 0.008
 const CHUNK_PROGRESS_MAX_INTERVAL_MS = 50
+const AUDIO_INFO_CACHE_LIMIT = 160
+const PAGE_TEXT_CACHE_LIMIT = 24
+const READ_AHEAD_KEY_LIMIT = 256
+const AUDIO_SPECTRUM_BARS = 64
+const AUDIO_SPECTRUM_INTERVAL_MS = 40
 
 type LeadPosition = { page: number; sentence: number }
+type AudioPlaybackResult = 'done' | 'error' | 'paused' | 'cancelled'
+type SeekOptions = { progress?: number; preserveView?: boolean; pageData?: PageText | null }
+export type AudioSpectrumSubscriber = (levels: Float32Array) => void
 type BufferState = {
   state: 'idle' | 'warming' | 'prebuffering' | 'playing'
   ready: number
@@ -120,6 +130,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const [sleepTimer, setSleepTimer] = useState<number | null>(null)
   const [preloadState, setPreloadState] = useState<PreloadState>({ state: 'idle', ready: 0, total: 0, failed: [] })
   const [readingPage, setReadingPage] = useState<number | null>(null)
+  const [readingSentenceCount, setReadingSentenceCount] = useState(0)
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationError, setGenerationError] = useState('')
   const [bufferState, setBufferState] = useState<BufferState>(() => idleBufferState())
@@ -129,6 +140,22 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const [chunkProgress, setChunkProgress] = useState(0)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioGraphRef = useRef<{
+    context: AudioContext | null
+    analyser: AnalyserNode | null
+    sources: WeakMap<HTMLAudioElement, MediaElementAudioSourceNode>
+    bins: Uint8Array<ArrayBuffer> | null
+    levels: Float32Array
+    lastSampleAt: number
+  }>({
+    context: null,
+    analyser: null,
+    sources: new WeakMap(),
+    bins: null,
+    levels: new Float32Array(AUDIO_SPECTRUM_BARS),
+    lastSampleAt: 0,
+  })
+  const audioSpectrumSubscribersRef = useRef(new Set<AudioSpectrumSubscriber>())
   const progressRafRef = useRef<number | null>(null)
   const sleepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const currentPageRef = useRef(currentPage)
@@ -141,6 +168,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const settingsHydratedRef = useRef(false)
   const settingsHydratedKeyRef = useRef<string | null>(null)
   const audioCacheRef = useRef<Map<string, AudioInfo | Promise<AudioInfo | null>>>(new Map())
+  const pageTextCacheRef = useRef<Map<number, PageText>>(new Map())
   const readAheadRef = useRef<Set<string>>(new Set())
   const readAheadAbortRef = useRef<AbortController | null>(null)
   const lastAudioSettingsRef = useRef<{
@@ -154,6 +182,91 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const chunkProgressPublishRef = useRef({ value: 0, at: 0 })
   const pendingStartProgressRef = useRef(0)
   const playingListenerCleanupRef = useRef<null | (() => void)>(null)
+  const metadataListenerCleanupRef = useRef<null | (() => void)>(null)
+  const audioCompletionRef = useRef<null | {
+    sessionId: number
+    settle: (result: AudioPlaybackResult) => void
+  }>(null)
+  const activeBookIdRef = useRef(bookId)
+  const nativeQueueByPositionRef = useRef(new Map<string, number>())
+  const nativePositionBySessionRef = useRef(new Map<number, LeadPosition>())
+
+  const resetNativeQueueTracking = useCallback(() => {
+    nativeQueueByPositionRef.current.clear()
+    nativePositionBySessionRef.current.clear()
+  }, [])
+
+  const notifyAudioSpectrum = useCallback(() => {
+    const levels = audioGraphRef.current.levels
+    audioSpectrumSubscribersRef.current.forEach((subscriber) => subscriber(levels))
+  }, [])
+
+  const resetAudioSpectrum = useCallback(() => {
+    audioGraphRef.current.levels.fill(0)
+    audioGraphRef.current.lastSampleAt = 0
+    notifyAudioSpectrum()
+  }, [notifyAudioSpectrum])
+
+  const subscribeAudioSpectrum = useCallback((subscriber: AudioSpectrumSubscriber) => {
+    audioSpectrumSubscribersRef.current.add(subscriber)
+    subscriber(audioGraphRef.current.levels)
+    return () => { audioSpectrumSubscribersRef.current.delete(subscriber) }
+  }, [])
+
+  const activateAudioAnalysis = useCallback(() => {
+    if (typeof window === 'undefined') return null
+    const graph = audioGraphRef.current
+    if (!graph.context) {
+      const AudioContextConstructor = window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioContextConstructor) return null
+      try {
+        graph.context = new AudioContextConstructor()
+        graph.analyser = graph.context.createAnalyser()
+        graph.analyser.fftSize = 1024
+        graph.analyser.smoothingTimeConstant = 0.68
+        graph.analyser.minDecibels = -82
+        graph.analyser.maxDecibels = -18
+        graph.analyser.connect(graph.context.destination)
+        graph.bins = new Uint8Array(graph.analyser.frequencyBinCount)
+      } catch {
+        graph.context = null
+        graph.analyser = null
+        graph.bins = null
+        return null
+      }
+    }
+    if (graph.context.state === 'suspended') void graph.context.resume().catch(() => {})
+    return graph
+  }, [])
+
+  const attachAudioAnalysis = useCallback(async (audio: HTMLAudioElement) => {
+    const graph = activateAudioAnalysis()
+    if (!graph?.context || !graph.analyser) return
+    if (graph.context.state === 'suspended') await graph.context.resume().catch(() => {})
+    if (graph.context.state !== 'running' || graph.sources.has(audio)) return
+    try {
+      const source = graph.context.createMediaElementSource(audio)
+      source.connect(graph.analyser)
+      graph.sources.set(audio, source)
+    } catch {
+      // Playback remains usable if this WebView cannot expose media analysis.
+    }
+  }, [activateAudioAnalysis])
+
+  const sampleAudioSpectrum = useCallback(() => {
+    const graph = audioGraphRef.current
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    if (!graph.analyser || !graph.bins || now - graph.lastSampleAt < AUDIO_SPECTRUM_INTERVAL_MS) return
+    graph.lastSampleAt = now
+    graph.analyser.getByteFrequencyData(graph.bins)
+    fillSpectrumLevels(graph.bins, graph.levels, 0.42, {
+      sampleRate: graph.context?.sampleRate,
+      fftSize: graph.analyser.fftSize,
+      minFrequency: 80,
+      maxFrequency: 8_000,
+    })
+    notifyAudioSpectrum()
+  }, [notifyAudioSpectrum])
 
   const publishChunkProgress = useCallback((next, force = false) => {
     const value = Math.max(0, Math.min(1, next))
@@ -170,6 +283,41 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       setChunkProgress(value)
     }
   }, [])
+
+  useEffect(() => {
+    if (activeBookIdRef.current === bookId) return
+    activeBookIdRef.current = bookId
+    playbackSessionRef.current += 1
+    audioCompletionRef.current?.settle('cancelled')
+    metadataListenerCleanupRef.current?.()
+    playingListenerCleanupRef.current?.()
+    metadataListenerCleanupRef.current = null
+    playingListenerCleanupRef.current = null
+    if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.onpause = null
+      audioRef.current.pause()
+      audioRef.current.src = ''
+      audioRef.current = null
+    }
+    stopProgressLoop(progressRafRef)
+    isPlayingRef.current = false
+    readingPageRef.current = null
+    currentSentenceRef.current = 0
+    setIsPlaying(false)
+    setIsGenerating(false)
+    setReadingPage(null)
+    setReadingSentenceCount(0)
+    setBufferState(idleBufferState())
+    pageTextCacheRef.current.clear()
+    publishChunkProgress(0, true)
+    resetAudioSpectrum()
+    if (isAndroidRuntime()) {
+      resetNativeQueueTracking()
+      void mobileControlAudio('stop').catch(() => {})
+    }
+  }, [bookId, publishChunkProgress, resetAudioSpectrum, resetNativeQueueTracking])
 
   const setTtsEngine = useCallback((nextEngine) => {
     const normalized = normalizeTtsEngine(nextEngine)
@@ -286,8 +434,12 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         method: 'POST',
         cache: 'no-store',
       }).catch(() => {})
+      if (isAndroidRuntime()) {
+        resetNativeQueueTracking()
+        void mobileControlAudio('stop').catch(() => {})
+      }
     }
-  }, [book?.id, ttsEngine, voice, speed])
+  }, [book?.id, ttsEngine, voice, speed, resetNativeQueueTracking])
 
   useEffect(() => {
     if (!bookId || !settingsHydratedRef.current || !settingsReady) return
@@ -358,7 +510,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     if (!book) return null
     const key = getCacheKey(page, sentence)
     const cached = audioCacheRef.current.get(key)
-    if (cached) return cached instanceof Promise ? cached : Promise.resolve(cached)
+    if (cached) {
+      setBoundedMapEntry(audioCacheRef.current, key, cached, AUDIO_INFO_CACHE_LIMIT)
+      return cached instanceof Promise ? cached : Promise.resolve(cached)
+    }
 
     const qs = `book_id=${encodeURIComponent(book.id)}&page=${page}&sentence=${sentence}&engine=${encodeURIComponent(ttsEngine)}&voice=${encodeURIComponent(voice)}&speed=${speed}`
 
@@ -386,7 +541,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         }
         const data = await res.json() as TtsGenerateResponse
         const info = { url: apiResourceUrl(`/api/audio/${data.filename}`), duration_ms: data.duration_ms }
-        audioCacheRef.current.set(key, info)
+        setBoundedMapEntry(audioCacheRef.current, key, info, AUDIO_INFO_CACHE_LIMIT)
         if (!options.background) setGenerationError('')
         return info
       })
@@ -396,7 +551,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         return null
       })
 
-    audioCacheRef.current.set(key, promise)
+    setBoundedMapEntry(audioCacheRef.current, key, promise, AUDIO_INFO_CACHE_LIMIT)
     return promise
   }, [book, getCacheKey, ttsEngine, voice, speed])
 
@@ -427,7 +582,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     readAheadAbortRef.current?.abort()
     const controller = new AbortController()
     readAheadAbortRef.current = controller
-    readAheadRef.current.add(key)
+    rememberBoundedSetEntry(readAheadRef.current, key, READ_AHEAD_KEY_LIMIT)
 
     const params = new URLSearchParams({
       book_id: book.id,
@@ -605,10 +760,19 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   // is owned by App.jsx's Follow Along effect and must not happen here.
   const fetchPageText = useCallback(async (page) => {
     if (!book) return null
+    const cached = pageTextCacheRef.current.get(page)
+    if (cached) {
+      setBoundedMapEntry(pageTextCacheRef.current, page, cached, PAGE_TEXT_CACHE_LIMIT)
+      return cached
+    }
+    const requestBookId = book.id
     try {
       const r = await apiFetch(`/api/book/${book.id}/page/${page}/text`)
       if (!r.ok) return null
-      return await r.json()
+      const data = await r.json() as PageText
+      if (activeBookIdRef.current !== requestBookId) return null
+      setBoundedMapEntry(pageTextCacheRef.current, page, data, PAGE_TEXT_CACHE_LIMIT)
+      return data
     } catch {
       return null
     }
@@ -787,19 +951,164 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     return summarizeLead(targets)
   }, [fetchSentenceAudio, isAudioReady, publishBufferState, summarizeLead])
 
-  const playAudio = useCallback((audioInfo, sessionId, startProgress = 0) => {
-    return new Promise((resolve) => {
+  const prepareNativeQueue = useCallback(async (
+    audioInfo: AudioInfo,
+    position: LeadPosition,
+    leadPositions: LeadPosition[],
+    sessionId: number,
+    startProgress: number,
+  ): Promise<number> => {
+    const positionKey = getCacheKey(position.page, position.sentence)
+    let status = await mobileAudioStatus().catch(() => null)
+    let nativeSessionId = nativeQueueByPositionRef.current.get(positionKey) || 0
+    const activeIds = new Set(status?.queueSessionIds || [])
+    const reusable = nativeSessionId > 0 && activeIds.has(nativeSessionId)
+
+    if (!reusable) {
+      resetNativeQueueTracking()
+      status = await mobileStartAudio(
+        audioInfo,
+        { title: book?.title || 'Folio narration', artist: book?.author || 'Folio', album: 'Folio' },
+        Number(audioInfo.duration_ms || 0) * clampProgress(startProgress),
+        'replace',
+      )
+      if (playbackSessionRef.current !== sessionId || !isPlayingRef.current) {
+        void mobileControlAudio('stop').catch(() => {})
+        throw new Error('Narration start was cancelled')
+      }
+      nativeSessionId = Number(status.enqueuedSessionId || status.sessionId || 0)
+      if (!nativeSessionId) throw new Error('Android did not return a narration session')
+      nativeQueueByPositionRef.current.set(positionKey, nativeSessionId)
+      nativePositionBySessionRef.current.set(nativeSessionId, position)
+    } else if (status?.state === 'paused' && status.sessionId === nativeSessionId) {
+      status = await mobileControlAudio('resume')
+    }
+
+    const queuedIds = new Set(status?.queueSessionIds || [])
+    const targets = leadPositions.slice(0, LEAD_PREFETCH_SENTENCES)
+    for (const target of targets) {
+      if (playbackSessionRef.current !== sessionId || !isPlayingRef.current) break
+      const key = getCacheKey(target.page, target.sentence)
+      const knownSession = nativeQueueByPositionRef.current.get(key)
+      if (knownSession && queuedIds.has(knownSession)) continue
+      const cached = audioCacheRef.current.get(key)
+      if (!cached || cached instanceof Promise) continue
+      try {
+        const queued = await mobileStartAudio(
+          cached,
+          { title: book?.title || 'Folio narration', artist: book?.author || 'Folio', album: 'Folio' },
+          0,
+          'append',
+        )
+        const queuedSessionId = Number(queued.enqueuedSessionId || 0)
+        if (!queuedSessionId) continue
+        nativeQueueByPositionRef.current.set(key, queuedSessionId)
+        nativePositionBySessionRef.current.set(queuedSessionId, target)
+        queuedIds.add(queuedSessionId)
+      } catch (error) {
+        // The current chunk remains playable if the bounded native lead queue
+        // fills or a prefetched append fails. The next loop can refill it.
+        console.warn('Could not append Android narration lead audio', error)
+        break
+      }
+    }
+    return nativeSessionId
+  }, [book, getCacheKey, resetNativeQueueTracking])
+
+  const playNativeAudio = useCallback((
+    audioInfo: AudioInfo,
+    sessionId: number,
+    startProgress: number,
+    position: LeadPosition,
+    leadPositions: LeadPosition[],
+  ) => {
+    return new Promise<AudioPlaybackResult>((resolve) => {
+      let settled = false
+      let pollTimer: ReturnType<typeof setTimeout> | null = null
+      let nativeSessionId = 0
+
+      const finish = (result: AudioPlaybackResult) => {
+        if (settled) return
+        settled = true
+        if (pollTimer) clearTimeout(pollTimer)
+        if (audioCompletionRef.current?.sessionId === sessionId) audioCompletionRef.current = null
+        resolve(result)
+      }
+
+      const settle = (result: AudioPlaybackResult) => {
+        void mobileControlAudio(result === 'paused' ? 'pause' : 'stop').catch(() => {})
+        if (result !== 'paused') resetNativeQueueTracking()
+        finish(result)
+      }
+      audioCompletionRef.current = { sessionId, settle }
+
+      const poll = async () => {
+        if (settled) return
+        if (playbackSessionRef.current !== sessionId || !isPlayingRef.current) {
+          settle('cancelled')
+          return
+        }
+        try {
+          const status = await mobileAudioStatus()
+          const transition = classifyNativeQueueProgress(status.state, Number(status.sessionId || 0), nativeSessionId)
+          if (transition === 'current') {
+            const duration = Number(status.durationMs || audioInfo.duration_ms || 0)
+            const progress = duration > 0
+              ? clampProgress(Number(status.positionMs || 0) / duration)
+              : startProgress
+            publishChunkProgress(progress)
+          }
+          if (transition === 'advanced' || transition === 'finished') {
+            publishChunkProgress(1, true)
+            finish('done')
+            return
+          }
+          if (transition === 'error') {
+            setGenerationError(status.error || 'Android audio playback failed.')
+            finish('error')
+            return
+          }
+          if (transition === 'paused' || transition === 'stopped') {
+            finish(transition === 'paused' ? 'paused' : 'cancelled')
+            return
+          }
+          pollTimer = setTimeout(() => { void poll() }, 50)
+        } catch (error) {
+          setGenerationError(error?.message || 'Android audio playback failed.')
+          finish('error')
+        }
+      }
+
+      void prepareNativeQueue(audioInfo, position, leadPositions, sessionId, startProgress).then((preparedSessionId) => {
+        if (settled) return
+        nativeSessionId = preparedSessionId
+        publishChunkProgress(startProgress, true)
+        pollTimer = setTimeout(() => { void poll() }, 20)
+      }).catch((error) => {
+        setGenerationError(error?.message || 'Android audio playback failed.')
+        finish('error')
+      })
+    })
+  }, [prepareNativeQueue, publishChunkProgress, resetNativeQueueTracking])
+
+  const playAudio = useCallback((audioInfo: AudioInfo, sessionId: number, startProgress = 0) => {
+    return new Promise<AudioPlaybackResult>((resolve) => {
+      audioCompletionRef.current?.settle('cancelled')
+      metadataListenerCleanupRef.current?.()
+      playingListenerCleanupRef.current?.()
+      metadataListenerCleanupRef.current = null
+      playingListenerCleanupRef.current = null
+
       if (audioRef.current) {
-        audioRef.current.pause()
         audioRef.current.onended = null
         audioRef.current.onerror = null
         audioRef.current.onpause = null
+        audioRef.current.pause()
       }
       stopProgressLoop(progressRafRef)
-      playingListenerCleanupRef.current?.()
-      playingListenerCleanupRef.current = null
 
       const audio = audioRef.current || new Audio()
+      if (!audioRef.current) audio.crossOrigin = 'anonymous'
       audio.src = audioInfo.url
       audio.preload = 'auto'
       audioRef.current = audio
@@ -809,6 +1118,22 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       const debug = debugFlag('FOLIO_DEBUG_PROGRESS', 'folioDebugProgress')
       const debugTrace = debug ? [] : null
       const debugStart = debug ? performance.now() : 0
+      let cleanupPlayingListener = () => {}
+      let cleanupMetadataListener = () => {}
+      let settled = false
+      const finish = (result: AudioPlaybackResult) => {
+        if (settled) return
+        settled = true
+        cleanupPlayingListener()
+        cleanupMetadataListener()
+        resetAudioSpectrum()
+        if (audioCompletionRef.current?.settle === finish) audioCompletionRef.current = null
+        audio.onended = null
+        audio.onerror = null
+        audio.onpause = null
+        resolve(result)
+      }
+      audioCompletionRef.current = { sessionId, settle: finish }
       const reportProgress = (state, extra = {}) => {
         if (typeof window === 'undefined') return
         const entry = {
@@ -843,13 +1168,17 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       // animation frame.
       const tick = () => {
         progressRafRef.current = null
-        if (playbackSessionRef.current !== sessionId) return
+        if (playbackSessionRef.current !== sessionId) {
+          finish('cancelled')
+          return
+        }
         const a = audioRef.current
         if (!a) return
         const dur = a.duration
         if (Number.isFinite(dur) && dur > 0) {
           const p = Math.max(0, Math.min(1, a.currentTime / dur))
           publishChunkProgress(p)
+          sampleAudioSpectrum()
           if (typeof window !== 'undefined') {
             window.__folioProgressDebug = {
               state: 'tick',
@@ -874,6 +1203,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         progressRafRef.current = requestAnimationFrame(tick)
       }
       const startTicking = () => {
+        if (playbackSessionRef.current !== sessionId) {
+          finish('cancelled')
+          return
+        }
         if (progressRafRef.current) {
           reportProgress('playing-skip-raf-already-active')
           return
@@ -882,7 +1215,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         progressRafRef.current = requestAnimationFrame(tick)
       }
       audio.addEventListener('playing', startTicking, { once: true })
-      const cleanupPlayingListener = () => {
+      cleanupPlayingListener = () => {
         audio.removeEventListener('playing', startTicking)
         if (playingListenerCleanupRef.current === cleanupPlayingListener) {
           playingListenerCleanupRef.current = null
@@ -891,8 +1224,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       playingListenerCleanupRef.current = cleanupPlayingListener
 
       audio.onended = () => {
-        cleanupPlayingListener()
-        if (playbackSessionRef.current !== sessionId) return
+        if (playbackSessionRef.current !== sessionId) {
+          finish('cancelled')
+          return
+        }
         stopProgressLoop(progressRafRef)
         // The 'ended' event fires when currentTime stops advancing (typically
         // ~30ms before duration). Snap progress to 1 so any downstream
@@ -907,30 +1242,50 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
             lastSample: debugTrace[debugTrace.length - 1],
           })
         }
-        resolve('done')
+        finish('done')
       }
       audio.onerror = () => {
-        cleanupPlayingListener()
-        if (playbackSessionRef.current !== sessionId) return
+        if (playbackSessionRef.current !== sessionId) {
+          finish('cancelled')
+          return
+        }
         stopProgressLoop(progressRafRef)
         reportProgress('error')
-        resolve('error')
+        finish('error')
       }
       audio.onpause = () => {
-        cleanupPlayingListener()
+        if (playbackSessionRef.current !== sessionId) {
+          finish('cancelled')
+          return
+        }
         if (isPlayingRef.current) return
         stopProgressLoop(progressRafRef)
         reportProgress('paused')
-        resolve('paused')
+        finish('paused')
       }
       const beginPlay = () => {
+        if (playbackSessionRef.current !== sessionId || audioRef.current !== audio) {
+          finish('cancelled')
+          return
+        }
+        void attachAudioAnalysis(audio)
         audio.play().catch((error) => {
-          cleanupPlayingListener()
+          if (playbackSessionRef.current !== sessionId) {
+            finish('cancelled')
+            return
+          }
           reportProgress('play-rejected', { error: String(error?.message || error) })
-          resolve('error')
+          setGenerationError(error?.name === 'NotAllowedError'
+            ? 'Playback was blocked. Press play again to continue.'
+            : 'Audio playback failed. Press play to retry.')
+          finish('error')
         })
       }
       const seekThenPlay = () => {
+        if (playbackSessionRef.current !== sessionId || audioRef.current !== audio) {
+          finish('cancelled')
+          return
+        }
         if (initialProgress > 0) {
           const duration = Number.isFinite(audio.duration) && audio.duration > 0
             ? audio.duration
@@ -949,21 +1304,28 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       }
       if (initialProgress > 0 && audio.readyState < 1) {
         const onLoaded = () => {
-          audio.removeEventListener('loadedmetadata', onLoaded)
+          cleanupMetadataListener()
           seekThenPlay()
         }
         audio.addEventListener('loadedmetadata', onLoaded)
+        cleanupMetadataListener = () => {
+          audio.removeEventListener('loadedmetadata', onLoaded)
+          if (metadataListenerCleanupRef.current === cleanupMetadataListener) {
+            metadataListenerCleanupRef.current = null
+          }
+        }
+        metadataListenerCleanupRef.current = cleanupMetadataListener
         try {
           audio.load()
         } catch {
-          audio.removeEventListener('loadedmetadata', onLoaded)
+          cleanupMetadataListener()
           seekThenPlay()
         }
       } else {
         seekThenPlay()
       }
     })
-  }, [publishChunkProgress])
+  }, [attachAudioAnalysis, publishChunkProgress, resetAudioSpectrum, sampleAudioSpectrum])
 
   const startPlayback = useCallback(async (startPage, startSentence, startProgress = 0) => {
     if (!book) return
@@ -1009,6 +1371,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       currentSentenceRef.current = sentence
       setReadingPage(page)
       readingPageRef.current = page
+      setReadingSentenceCount(data.sentences.length)
       // Reset chunkProgress *before* the audio load so the cursor / page-turn
       // effects don't see the previous sentence's terminal value (which would
       // place the cursor at end-of-chunk and over-advance Follow Along).
@@ -1055,13 +1418,14 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
       primeLeadBuffer(leadPositions, sessionId)
       needsLeadBeforePlay = false
-      const result = await playAudio(audioInfo, sessionId, firstChunkProgress)
+      const result = isAndroidRuntime()
+        ? await playNativeAudio(audioInfo, sessionId, firstChunkProgress, { page, sentence }, leadPositions)
+        : await playAudio(audioInfo, sessionId, firstChunkProgress)
+      if (playbackSessionRef.current !== sessionId) return
       firstChunkProgress = 0
       if (result !== 'done') {
-        if (result === 'error') {
-          setIsPlaying(false)
-          isPlayingRef.current = false
-        }
+        setIsPlaying(false)
+        isPlayingRef.current = false
         setBufferState(idleBufferState())
         return
       }
@@ -1087,6 +1451,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     collectReadablePositions,
     findNextReadablePosition,
     playAudio,
+    playNativeAudio,
     fetchSentenceAudio,
     queueReadAhead,
     savePosition,
@@ -1094,6 +1459,25 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     primeLeadBuffer,
     waitForLeadBuffer,
   ])
+
+  const runPlayback = useCallback((startPage, startSentence, startProgress = 0) => {
+    // startPlayback intentionally owns the session lifecycle, but a browser or
+    // decoder exception must not leave the imperative ref saying "playing"
+    // while React has already rendered the paused controls. Besides making the
+    // play button appear unresponsive, that stale ref used to block every
+    // subsequent attempt until the book was reopened.
+    const expectedSession = playbackSessionRef.current + 1
+    void startPlayback(startPage, startSentence, startProgress).catch((error) => {
+      if (playbackSessionRef.current !== expectedSession) return
+      playbackSessionRef.current += 1
+      isPlayingRef.current = false
+      setIsPlaying(false)
+      setIsGenerating(false)
+      setBufferState(idleBufferState())
+      setGenerationError('Narration could not start. Please try again.')
+      console.error('Narration playback failed', error)
+    })
+  }, [startPlayback])
 
   useEffect(() => {
     if (!bookId || !settingsHydratedRef.current) return
@@ -1112,29 +1496,45 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
     playbackSessionRef.current += 1
     isPlayingRef.current = false
+    audioCompletionRef.current?.settle('cancelled')
+    metadataListenerCleanupRef.current?.()
+    metadataListenerCleanupRef.current = null
     setIsPlaying(false)
     setIsGenerating(false)
     setBufferState(idleBufferState())
     if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.onpause = null
       audioRef.current.pause()
+      audioRef.current.src = ''
       audioRef.current = null
     }
 
     const restartTimer = setTimeout(() => {
-      startPlayback(resumePage, resumeSentence)
+      if (isAndroidRuntime()) {
+        resetNativeQueueTracking()
+        void mobileControlAudio('stop').catch(() => {}).finally(() => {
+          runPlayback(resumePage, resumeSentence)
+        })
+      } else {
+        runPlayback(resumePage, resumeSentence)
+      }
     }, 0)
 
     return () => clearTimeout(restartTimer)
-  }, [bookId, ttsEngine, voice, speed, readingPage, startPlayback])
+  }, [bookId, ttsEngine, voice, speed, readingPage, runPlayback, resetNativeQueueTracking])
 
   const play = useCallback(() => {
     if (isPlayingRef.current) return
+    activateAudioAnalysis()
     const startProgress = pendingStartProgressRef.current || chunkProgressPublishRef.current.value || 0
     pendingStartProgressRef.current = 0
-    startPlayback(currentPageRef.current, currentSentenceRef.current, startProgress)
-  }, [startPlayback])
+    const startPage = readingPageRef.current ?? currentPageRef.current
+    runPlayback(startPage, currentSentenceRef.current, startProgress)
+  }, [activateAudioAnalysis, runPlayback])
 
-  const seekToSentence = useCallback(async (page, sentence, options: any = {}) => {
+  const seekToSentence = useCallback(async (page: number, sentence: number, options: SeekOptions = {}) => {
     if (!book || page == null || sentence == null || sentence < 0) return
     const shouldResume = isPlayingRef.current
     const startProgress = clampProgress(options?.progress)
@@ -1142,14 +1542,28 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     cancelReadAhead(page, sentence)
     playbackSessionRef.current += 1
     isPlayingRef.current = false
+    audioCompletionRef.current?.settle('cancelled')
+    if (isAndroidRuntime()) {
+      resetNativeQueueTracking()
+      await mobileControlAudio('stop').catch(() => {})
+    }
+    metadataListenerCleanupRef.current?.()
+    metadataListenerCleanupRef.current = null
     setIsPlaying(false)
     setIsGenerating(false)
     setBufferState(idleBufferState())
-    if (audioRef.current) audioRef.current.pause()
+    if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.onpause = null
+      audioRef.current.pause()
+    }
 
-    if (page !== currentPageRef.current) {
+    if (page !== currentPageRef.current && !options.preserveView) {
       await goToPage(page)
     }
+
+    const targetPageData = options.pageData || await getPageData(page)
 
     currentSentenceRef.current = sentence
     setCurrentSentence(sentence)
@@ -1157,23 +1571,32 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     publishChunkProgress(startProgress, true)
     setReadingPage(page)
     readingPageRef.current = page
+    setReadingSentenceCount(targetPageData?.sentences?.length || 0)
 
     await savePosition(page, sentence, { chunk_progress: startProgress })
 
     if (shouldResume) {
-      startPlayback(page, sentence, startProgress)
+      runPlayback(page, sentence, startProgress)
     } else {
       queueReadAhead(page, sentence)
     }
-  }, [book, goToPage, savePosition, startPlayback, publishChunkProgress, cancelReadAhead, queueReadAhead])
+  }, [book, getPageData, goToPage, savePosition, runPlayback, publishChunkProgress, cancelReadAhead, queueReadAhead, resetNativeQueueTracking])
 
   const pause = useCallback(() => {
     playbackSessionRef.current += 1
+    isPlayingRef.current = false
+    audioCompletionRef.current?.settle('paused')
+    metadataListenerCleanupRef.current?.()
+    metadataListenerCleanupRef.current = null
     setIsPlaying(false)
     setIsGenerating(false)
     setBufferState(idleBufferState())
-    isPlayingRef.current = false
-    if (audioRef.current) audioRef.current.pause()
+    if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.onpause = null
+      audioRef.current.pause()
+    }
     pendingStartProgressRef.current = chunkProgressPublishRef.current.value || 0
     stopProgressLoop(progressRafRef)
     if (book) savePosition(readingPageRef.current ?? currentPageRef.current, currentSentenceRef.current, { chunk_progress: pendingStartProgressRef.current })
@@ -1185,36 +1608,52 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
 
   const stop = useCallback(() => {
     pause()
+    if (isAndroidRuntime()) {
+      resetNativeQueueTracking()
+      void mobileControlAudio('stop').catch(() => {})
+    }
     currentSentenceRef.current = 0
     setCurrentSentence(0)
     pendingStartProgressRef.current = 0
     publishChunkProgress(0, true)
-  }, [pause, publishChunkProgress])
+  }, [pause, publishChunkProgress, resetNativeQueueTracking])
 
-  const skipSentence = useCallback((delta) => {
-    const sentenceCount = pageDataRef.current?.sentences?.length || 0
-    const nextSentence = Math.max(0, Math.min(currentSentenceRef.current + delta, Math.max(sentenceCount - 1, 0)))
-    cancelReadAhead(currentPageRef.current, nextSentence)
-    currentSentenceRef.current = nextSentence
-    setCurrentSentence(nextSentence)
-    pendingStartProgressRef.current = 0
-    publishChunkProgress(0, true)
-
-    if (isPlayingRef.current) {
-      pause()
-      startPlayback(currentPageRef.current, nextSentence)
-    } else {
-      queueReadAhead(currentPageRef.current, nextSentence)
-    }
-  }, [pause, startPlayback, publishChunkProgress, cancelReadAhead, queueReadAhead])
+  const skipSentence = useCallback(async (delta: number) => {
+    if (!book || delta === 0) return
+    const direction: -1 | 1 = delta < 0 ? -1 : 1
+    const anchorPage = readingPageRef.current ?? currentPageRef.current
+    const target = await findAdjacentReadablePosition(
+      getPageData,
+      anchorPage,
+      currentSentenceRef.current,
+      direction,
+      book.page_count,
+    )
+    if (!target) return
+    await seekToSentence(target.page, target.sentence, {
+      progress: 0,
+      preserveView: true,
+      pageData: target.pageData,
+    })
+  }, [book, getPageData, seekToSentence])
 
   useEffect(() => {
     const audioCache = audioCacheRef.current
+    const pageTextCache = pageTextCacheRef.current
     const readAhead = readAheadRef.current
+    const spectrumSubscribers = audioSpectrumSubscribersRef.current
+    const audioGraph = audioGraphRef.current
     // Read refs *inside* the cleanup so unmount sees the live audio element /
     // timers, not the (null) values captured at mount.
     return () => {
+      playbackSessionRef.current += 1
+      audioCompletionRef.current?.settle('cancelled')
+      metadataListenerCleanupRef.current?.()
+      metadataListenerCleanupRef.current = null
       if (audioRef.current) {
+        audioRef.current.onended = null
+        audioRef.current.onerror = null
+        audioRef.current.onpause = null
         audioRef.current.pause()
         audioRef.current.src = ''
         audioRef.current = null
@@ -1226,9 +1665,39 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       if (preloadAbortRef.current) preloadAbortRef.current.abort()
       if (readAheadAbortRef.current) readAheadAbortRef.current.abort()
       audioCache.clear()
+      pageTextCache.clear()
       readAhead.clear()
+      resetAudioSpectrum()
+      spectrumSubscribers.clear()
+      void audioGraph.context?.close().catch(() => {})
     }
-  }, [])
+  }, [resetAudioSpectrum])
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || document.documentElement.dataset.platform !== 'android') return
+    const mediaSession = navigator.mediaSession
+    if (!mediaSession || !book) return
+    try {
+      mediaSession.metadata = new MediaMetadata({ title: book.title, artist: book.author || 'Folio', album: 'Folio' })
+      mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
+      const actions: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
+        ['play', play],
+        ['pause', pause],
+        ['previoustrack', () => { void skipSentence(-1) }],
+        ['nexttrack', () => { void skipSentence(1) }],
+      ]
+      actions.forEach(([action, handler]) => {
+        try { mediaSession.setActionHandler(action, handler) } catch { /* Android WebView may omit an action. */ }
+      })
+      return () => {
+        actions.forEach(([action]) => {
+          try { mediaSession.setActionHandler(action, null) } catch { /* Ignore unsupported actions. */ }
+        })
+      }
+    } catch {
+      // Media Session is optional on Android WebView versions.
+    }
+  }, [book, isPlaying, pause, play, skipSentence])
 
   return {
     isPlaying,
@@ -1249,7 +1718,9 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     preloadState,
     preloadChapter,
     readingPage,
+    readingSentenceCount,
     chunkProgress,
+    subscribeAudioSpectrum,
     play,
     pause,
     stop,

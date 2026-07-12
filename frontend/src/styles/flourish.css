@@ -42,6 +42,18 @@
                    rgba(162, 226, 211, 0.10) 50%,
                    transparent 62%);
 }
+.theme-blackleaf {
+  --halo:        0 0 24px -4px rgba(255, 255, 255, 0.12);
+  --halo-strong: 0 0 34px -6px rgba(255, 255, 255, 0.2);
+  --vignette:    radial-gradient(ellipse at center,
+                   transparent 58%,
+                   rgba(0, 0, 0, 0.22) 82%,
+                   rgba(0, 0, 0, 0.52) 100%);
+  --paper-sheen: linear-gradient(115deg,
+                   transparent 40%,
+                   rgba(255, 255, 255, 0.05) 50%,
+                   transparent 60%);
+}
 
 /* Smoother theme crossfade at the root — colors morph instead of snapping. */
 .app-shell {
@@ -62,6 +74,7 @@
   mix-blend-mode: multiply;
 }
 .theme-dark.app-shell::after { mix-blend-mode: normal; opacity: 0.6; }
+.theme-blackleaf.app-shell::after { mix-blend-mode: normal; opacity: 0.48; }
 
 /* ============================================================================
    AMBIENT — animated ink wash behind welcome hero
@@ -485,6 +498,9 @@
 .theme-dark .reader-topbar::after {
   background: linear-gradient(180deg, rgba(0,0,0,0.45), transparent);
 }
+.theme-blackleaf .reader-topbar::after {
+  background: linear-gradient(180deg, rgba(0,0,0,0.7), transparent);
+}
 
 .topbar-title {
   animation: hero-p-in 700ms var(--ease-paper) 160ms both;
@@ -636,22 +652,18 @@
   50%      { opacity: 0.65; height: 22px; }
 }
 
-/* Stagger rail buttons on first mount */
+/* The rail and panel are Motion-managed. Keeping their old CSS entrances here
+   made a panel wait for a second animation after it was already interactive. */
 .icon-rail .rail-btn {
-  animation: rail-btn-in 620ms var(--ease-paper) both;
+  animation: none;
 }
-.icon-rail .rail-btn:nth-of-type(1) { animation-delay: 120ms; }
-.icon-rail .rail-btn:nth-of-type(2) { animation-delay: 200ms; }
-.icon-rail .rail-btn:nth-of-type(3) { animation-delay: 280ms; }
-.icon-rail .rail-btn:nth-of-type(4) { animation-delay: 360ms; }
-.icon-rail .rail-btn:nth-of-type(5) { animation-delay: 440ms; }
 @keyframes rail-btn-in {
   from { opacity: 0; transform: translateX(-8px); }
   to   { opacity: 1; transform: none; }
 }
 
 /* ============================================================================
-   SIDEBAR PANEL — staggered content cascade when opening
+   SIDEBAR PANEL — Motion owns the panel and list cascade
 ============================================================================ */
 .sidebar-panel.is-open .panel-head,
 .sidebar-panel.is-open .panel-body > *,
@@ -660,26 +672,8 @@
 .sidebar-panel.is-open .bookmark-list .bookmark-item,
 .sidebar-panel.is-open .search-results .search-result,
 .sidebar-panel.is-open .settings-group {
-  animation: panel-item-in 460ms var(--ease-paper) both;
+  animation: none;
 }
-.sidebar-panel.is-open .panel-head { animation-delay: 80ms; }
-.sidebar-panel.is-open .panel-body { animation-delay: 140ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(1)  { animation-delay: 180ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(2)  { animation-delay: 220ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(3)  { animation-delay: 260ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(4)  { animation-delay: 300ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(5)  { animation-delay: 340ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(6)  { animation-delay: 380ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(7)  { animation-delay: 420ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(8)  { animation-delay: 460ms; }
-.sidebar-panel.is-open .chapter-list .chapter-item:nth-child(n+9) { animation-delay: 500ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(1) { animation-delay: 200ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(2) { animation-delay: 260ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(3) { animation-delay: 320ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(4) { animation-delay: 380ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(5) { animation-delay: 440ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(6) { animation-delay: 500ms; }
-.sidebar-panel.is-open .settings-group:nth-of-type(n+7) { animation-delay: 560ms; }
 
 @keyframes panel-item-in {
   from { opacity: 0; transform: translateX(-8px); }
@@ -753,9 +747,7 @@
 /* ============================================================================
    PAGE SHEET — refined entrance + ambient lift
 ============================================================================ */
-.spread {
-  animation: spread-settle 880ms var(--ease-paper) both;
-}
+.spread { animation: none; }
 @keyframes spread-settle {
   from {
     opacity: 0;
@@ -787,17 +779,11 @@
    (Pure CSS using the existing markup — character-level via @scope is not
    available here, so we animate as a whole with a refined sequence.)
 ============================================================================ */
-.chapter-opener {
-  animation: opener-rise 1100ms var(--ease-paper) both;
-}
-.chapter-opener .label {
-  animation: opener-label-in 720ms var(--ease-paper) 220ms both;
-}
-.chapter-opener h1 {
-  animation: opener-title-in 1200ms var(--ease-paper) 320ms both;
-}
+.chapter-opener { animation: none; }
+.chapter-opener .label { animation: none; }
+.chapter-opener h1 { animation: none; }
 .chapter-opener .fleuron {
-  animation: opener-fleuron-in 900ms var(--ease-paper) 720ms both;
+  animation: none;
   display: inline-block;
 }
 @keyframes opener-rise {
@@ -830,9 +816,7 @@
 }
 
 /* Drop cap settles in with a tiny bloom */
-.drop-cap {
-  animation: drop-cap-bloom 1100ms var(--ease-paper) 480ms both;
-}
+.drop-cap { animation: none; }
 @keyframes drop-cap-bloom {
   from {
     opacity: 0;
@@ -988,18 +972,10 @@
   transition-duration: 80ms;
 }
 
-/* Search results ladder */
+/* Search result entrance is handled by the shared Motion list variants. */
 .search-results .search-result {
-  animation: panel-item-in 460ms var(--ease-paper) both;
+  animation: none;
 }
-.search-results .search-result:nth-child(1) { animation-delay: 60ms; }
-.search-results .search-result:nth-child(2) { animation-delay: 100ms; }
-.search-results .search-result:nth-child(3) { animation-delay: 140ms; }
-.search-results .search-result:nth-child(4) { animation-delay: 180ms; }
-.search-results .search-result:nth-child(5) { animation-delay: 220ms; }
-.search-results .search-result:nth-child(6) { animation-delay: 260ms; }
-.search-results .search-result:nth-child(7) { animation-delay: 300ms; }
-.search-results .search-result:nth-child(n+8) { animation-delay: 340ms; }
 
 /* ============================================================================
    FOLLOW-ALONG MODE — refined immersive treatment

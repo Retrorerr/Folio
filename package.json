@@ -1,12 +1,19 @@
 {
   "name": "folio-desktop",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.12",
   "scripts": {
     "backend:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-backend.ps1",
     "frontend:test": "npm --prefix frontend test",
     "preview:codex": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-codex-preview.ps1",
     "preview:codex:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-codex-preview.ps1 -Restart",
+    "tauri": "tauri",
+    "android:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\check-android.ps1",
+    "android:init": "npx tauri android init",
+    "android:dev": "npx tauri android dev",
+    "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-android.ps1",
+    "android:build:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-android.ps1 -Debug",
+    "android:build:all": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-android.ps1 -Targets aarch64,armv7,i686,x86_64",
     "tauri:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\run-tauri-dev.ps1",
     "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-tauri.ps1"
   },

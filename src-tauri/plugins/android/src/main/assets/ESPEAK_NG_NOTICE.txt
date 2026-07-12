@@ -1,0 +1,20 @@
+Folio Android includes eSpeak NG for per-token out-of-dictionary fallback in
+Kokoro's English G2P pipeline and for languages that explicitly require it.
+It is not the primary English phonemizer.
+
+Project: https://github.com/espeak-ng/espeak-ng
+Pinned release: 1.52.0 (4870adfa25b1a32b4361592f1be8a40337c58d6c)
+License: GNU General Public License, version 3 or later.
+
+The complete license and bundled third-party license texts are packaged under
+assets/notices in the APK/AAB. The unmodified eSpeak NG source is available at
+the project URL and pinned revision above. Folio's JNI glue and reproducible
+build instructions are provided in the Folio source distribution at
+https://github.com/Retrorerr/Folio under:
+
+  src-tauri/plugins/android/src/main/cpp/
+  scripts/build-espeak-android.ps1
+
+These source locations are provided without charge. A downstream distributor
+must preserve them or provide another GPLv3 section 6-compliant Corresponding
+Source method for as long as its distribution method requires.

@@ -11,7 +11,8 @@
   --pt-sheen-mid: rgba(255, 245, 225, 0.45);
   --pt-edge-light: rgba(255, 240, 210, 0.7);
   --pt-edge-dark: rgba(120, 80, 40, 0.4);
-  --pt-duration: 640ms;
+  --pt-duration: 560ms;
+  --pt-single-duration: 280ms;
   --pt-easing: cubic-bezier(0.22, 0.64, 0.24, 1);
   perspective: 2300px;
   perspective-origin: 50% 50%;
@@ -31,6 +32,20 @@
   --pt-sheen-mid: rgba(162, 226, 211, 0.22);
   --pt-edge-light: rgba(192, 232, 224, 0.36);
   --pt-edge-dark: rgba(37, 54, 66, 0.5);
+}
+
+.theme-blackleaf .pt-spread {
+  --pt-paper: var(--paper-2);
+  --pt-shadow-strong: rgba(0, 0, 0, 0.72);
+  --pt-shadow-mid: rgba(0, 0, 0, 0.38);
+  --pt-shadow-soft: rgba(0, 0, 0, 0.14);
+  --pt-cast-strong: rgba(0, 0, 0, 0.7);
+  --pt-cast-mid: rgba(0, 0, 0, 0.36);
+  --pt-cast-soft: rgba(0, 0, 0, 0.12);
+  --pt-sheen-strong: rgba(255, 255, 255, 0.16);
+  --pt-sheen-mid: rgba(255, 255, 255, 0.1);
+  --pt-edge-light: rgba(255, 255, 255, 0.22);
+  --pt-edge-dark: rgba(30, 30, 30, 0.66);
 }
 
 .pt-page {
@@ -207,7 +222,8 @@
 .pt-page-text .reflow-flow {
   pointer-events: none;
 }
-.theme-dark .pt-face {
+.theme-dark .pt-face,
+.theme-blackleaf .pt-face {
   box-shadow:
     0 1px 0 rgba(0, 0, 0, 0.3),
     0 20px 40px -12px rgba(0, 0, 0, 0.5),
@@ -403,13 +419,13 @@
 /* Single-page mode: no flipper. A subtle fade + horizontal nudge masks the
    instant content swap when the user navigates between sub-pages. */
 .sp-turning .reflow-viewport {
-  animation: sp-fade 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  animation: sp-fade var(--pt-single-duration) cubic-bezier(0.4, 0, 0.2, 1);
 }
 .sp-turning-next .pt-page {
-  animation: sp-shift-next 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  animation: sp-shift-next var(--pt-single-duration) cubic-bezier(0.4, 0, 0.2, 1);
 }
 .sp-turning-prev .pt-page {
-  animation: sp-shift-prev 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  animation: sp-shift-prev var(--pt-single-duration) cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @keyframes sp-fade {

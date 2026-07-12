@@ -1,5 +1,14 @@
 import { memo, useEffect, useRef, useState, useLayoutEffect, useCallback, useMemo } from 'react'
 import type React from 'react'
+import { clampReaderViewTarget, readerPageNavigationState } from '../readerNavigation'
+import type { ReaderPageNavigationState } from '../readerNavigation'
+import type {
+  Position,
+  ReaderNavHandle,
+  ReaderSearchTarget,
+  ReflowDocument,
+  ReflowProgress,
+} from '../types'
 
 const PAGE_WIDTH = 680
 const PAGE_HEIGHT = 936
@@ -11,11 +20,12 @@ const TEXT_WIDTH = PAGE_WIDTH - PAGE_PAD_X * 2
 const TEXT_HEIGHT = PAGE_HEIGHT - CONTENT_TOP - CONTENT_BOTTOM
 const TWO_PAGE_WIDTH = PAGE_WIDTH * 2
 const TWO_PAGE_MARGIN = 24
-const PAGE_TURN_MS = 640
+const PAGE_TURN_MS = 560
 const PAGE_TURN_CLEAR_MS = PAGE_TURN_MS + 80
+const SINGLE_PAGE_TURN_MS = 280
 const LINE_SWITCH_HYSTERESIS = 0.018
 type TurnDirection = 'next' | 'prev'
-type DoubleTurnState = 'started' | 'busy' | 'skipped'
+type TurnState = 'started' | 'busy' | 'skipped'
 type DoubleTurn = {
   key: string
   direction: TurnDirection
@@ -773,6 +783,29 @@ function textOffsetInElement(root: Element, node: Node, offset: number) {
   return total
 }
 
+interface ReflowViewerProps {
+  bookId: string
+  reflow: ReflowDocument | null
+  chapterIdx?: number
+  setChapterIdx?: (chapter: number) => Promise<unknown> | undefined
+  runningHead?: string
+  currentSentence?: number
+  activeChapterIdx?: number
+  chunkProgress?: number
+  isPlaying?: boolean
+  onProgress?: (progress: ReflowProgress) => void
+  onNavigationState?: (state: ReaderPageNavigationState) => void
+  navRef?: React.MutableRefObject<ReaderNavHandle>
+  motion?: boolean
+  wheelPaging?: boolean
+  searchTarget?: ReaderSearchTarget | null
+  followAlongMode?: boolean
+  onSentenceSelect?: (chapter: number, sentence: number, options?: { progress?: number }) => void
+  theme?: string
+  resumePosition?: Position | null
+  onVisualPositionChange?: (position: Position) => void
+}
+
 function ReflowViewer({
   bookId,
   reflow,
@@ -784,6 +817,7 @@ function ReflowViewer({
   chunkProgress = 0,
   isPlaying = false,
   onProgress,
+  onNavigationState,
   navRef,
   motion = true,
   wheelPaging = false,
@@ -793,7 +827,7 @@ function ReflowViewer({
   theme = 'default',
   resumePosition = null,
   onVisualPositionChange,
-}: any) {
+}: ReflowViewerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const chapterMeasureRef = useRef<HTMLDivElement | null>(null)
@@ -1007,19 +1041,48 @@ function ReflowViewer({
   const singleTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [doubleTurn, setDoubleTurn] = useState<DoubleTurn | null>(null)
   const doubleTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [cursorRefreshTick, setCursorRefreshTick] = useState(0)
+  const cursorRefreshFrameRef = useRef<number | null>(null)
+  const refreshCursorAfterTurn = useCallback(() => {
+    if (cursorRefreshFrameRef.current != null) cancelAnimationFrame(cursorRefreshFrameRef.current)
+    cursorRefreshFrameRef.current = requestAnimationFrame(() => {
+      cursorRefreshFrameRef.current = null
+      setCursorRefreshTick((tick) => (tick + 1) % 1000000)
+    })
+  }, [])
   const isPageTurning = Boolean(singleTurn || doubleTurn)
-  const triggerSingleTurn = useCallback((direction: TurnDirection) => {
-    if (!motion) return
+  const pageNavigation = readerPageNavigationState(
+    viewPage,
+    viewCount,
+    chapterIdx,
+    chapterCount,
+    isPageTurning,
+  )
+
+  useEffect(() => {
+    onNavigationState?.({
+      canGoNext: pageNavigation.canGoNext,
+      canGoPrevious: pageNavigation.canGoPrevious,
+    })
+  }, [onNavigationState, pageNavigation.canGoNext, pageNavigation.canGoPrevious])
+
+  const triggerSingleTurn = useCallback((direction: TurnDirection): TurnState => {
+    if (!motion) return 'skipped'
+    if (singleTurnTimeoutRef.current) return 'busy'
     setSingleTurn(direction)
-    if (singleTurnTimeoutRef.current) clearTimeout(singleTurnTimeoutRef.current)
-    singleTurnTimeoutRef.current = setTimeout(() => setSingleTurn(null), 320)
-  }, [motion])
+    singleTurnTimeoutRef.current = setTimeout(() => {
+      setSingleTurn(null)
+      singleTurnTimeoutRef.current = null
+      refreshCursorAfterTurn()
+    }, SINGLE_PAGE_TURN_MS)
+    return 'started'
+  }, [motion, refreshCursorAfterTurn])
   const triggerDoubleTurn = useCallback((
     direction: TurnDirection,
     fromView: number,
     toView: number,
     ppv: number,
-  ): DoubleTurnState => {
+  ): TurnState => {
     if (!motion || ppv !== 2) return 'skipped'
     if (doubleTurnTimeoutRef.current) return 'busy'
 
@@ -1053,9 +1116,10 @@ function ReflowViewer({
     doubleTurnTimeoutRef.current = setTimeout(() => {
       setDoubleTurn(null)
       doubleTurnTimeoutRef.current = null
+      refreshCursorAfterTurn()
     }, PAGE_TURN_CLEAR_MS)
     return 'started'
-  }, [chapterLabel, chapterPageOffset, contentEls, contentPageCount, motion, runHeadText])
+  }, [chapterLabel, chapterPageOffset, contentEls, contentPageCount, motion, refreshCursorAfterTurn, runHeadText])
 
   // Reading/selection cursor — a single minimal line. It uses the same
   // weighted-word estimate as follow-along page turns, but renders beside the
@@ -1485,12 +1549,13 @@ function ReflowViewer({
       regionRect: debugRect(region.rect),
       viewportRect: debugRect(viewportRect),
     })
-  }, [chunkProgress, currentSentence, activeChapterIdx, chapterIdx, cursorPlacementForRegion, doubleTurn, hideLineCursor, isPageTurning, isPlaying, pagesPerView, singleTurn, viewPage, readingViewForPosition, findLiveSentence, selectedLineMatchesCurrentView, showLineCursor])
+  }, [chunkProgress, currentSentence, activeChapterIdx, chapterIdx, cursorPlacementForRegion, cursorRefreshTick, doubleTurn, hideLineCursor, isPageTurning, isPlaying, pagesPerView, singleTurn, viewPage, readingViewForPosition, findLiveSentence, selectedLineMatchesCurrentView, showLineCursor])
 
   const turnToView = useCallback((targetView: number, animate = true) => {
     const { viewPage: currentView, viewCount: currentViewCount, pagesPerView: ppv } = stateRef.current
     if (!Number.isFinite(targetView) || currentViewCount <= 0) return false
-    const nextView = Math.min(currentViewCount - 1, Math.max(0, Math.floor(targetView)))
+    const nextView = clampReaderViewTarget(targetView, currentViewCount)
+    if (nextView == null) return false
     if (nextView === currentView) {
       followTurnKeyRef.current = ''
       return false
@@ -1505,7 +1570,7 @@ function ReflowViewer({
       setViewPage(nextView)
       return true
     }
-    if (animate && adjacent) triggerSingleTurn(direction)
+    if (animate && adjacent && triggerSingleTurn(direction) === 'busy') return false
     setViewPage(nextView)
     return true
   }, [hideLineCursor, triggerDoubleTurn, triggerSingleTurn])
@@ -1514,6 +1579,7 @@ function ReflowViewer({
     if (singleTurnTimeoutRef.current) clearTimeout(singleTurnTimeoutRef.current)
     if (doubleTurnTimeoutRef.current) clearTimeout(doubleTurnTimeoutRef.current)
     if (followRetryTimeoutRef.current) clearTimeout(followRetryTimeoutRef.current)
+    if (cursorRefreshFrameRef.current != null) cancelAnimationFrame(cursorRefreshFrameRef.current)
   }, [])
 
   const updateMode = useCallback(() => {
@@ -1710,11 +1776,12 @@ function ReflowViewer({
       page: state.chapterIdx,
       sentence_idx: sentenceForContentPage(contentPage),
       content_page: contentPage,
+      visual_page: chapterPageOffset + contentPage + 1,
       pages_per_view: state.pagesPerView,
       layout_key: paginationKey,
       saved_at: Date.now(),
     }
-  }, [bookId, reflow, paginationKey, sentenceForContentPage])
+  }, [bookId, reflow, chapterPageOffset, paginationKey, sentenceForContentPage])
 
   useEffect(() => {
     if (!bookId || !reflow?.chapters?.length) return
@@ -1735,17 +1802,15 @@ function ReflowViewer({
         const turnState = triggerDoubleTurn('next', vp, vp + 1, ppv)
         if (turnState !== 'busy') setViewPage(vp + 1)
       } else {
-        triggerSingleTurn('next')
-        setViewPage(vp + 1)
+        const turnState = triggerSingleTurn('next')
+        if (turnState !== 'busy') setViewPage(vp + 1)
       }
     } else if (ci < nChapters - 1) {
-      if (ppv === 2) {
-        const turnState = triggerDoubleTurn('next', vp, vc, ppv)
-        if (turnState !== 'busy') setChapterIdx?.(ci + 1)
-      } else {
-        triggerSingleTurn('next')
-        setChapterIdx?.(ci + 1)
-      }
+      // The destination chapter is not mounted yet, so a two-sided sheet turn
+      // would expose a blank reverse face. Use the whole-spread transition at
+      // chapter boundaries and reserve the physical flipper for in-chapter pages.
+      const turnState = triggerSingleTurn('next')
+      if (turnState !== 'busy') setChapterIdx?.(ci + 1)
     }
   }, [reflow, setChapterIdx, triggerDoubleTurn, triggerSingleTurn])
 
@@ -1757,40 +1822,35 @@ function ReflowViewer({
         const turnState = triggerDoubleTurn('prev', vp, vp - 1, ppv)
         if (turnState !== 'busy') setViewPage(vp - 1)
       } else {
-        triggerSingleTurn('prev')
-        setViewPage(vp - 1)
+        const turnState = triggerSingleTurn('prev')
+        if (turnState !== 'busy') setViewPage(vp - 1)
       }
     } else if (ci > 0) {
-      pendingLanding.current = 'last'
-      if (ppv === 2) {
-        const turnState = triggerDoubleTurn('prev', vp, -1, ppv)
-        if (turnState !== 'busy') setChapterIdx?.(ci - 1)
-      } else {
-        triggerSingleTurn('prev')
+      const turnState = triggerSingleTurn('prev')
+      if (turnState !== 'busy') {
+        pendingLanding.current = 'last'
         setChapterIdx?.(ci - 1)
       }
     }
   }, [reflow, setChapterIdx, triggerDoubleTurn, triggerSingleTurn])
 
-  const goToReadingPosition = useCallback((targetChapter, sentenceIdx, progress = 0, indexType = 'local') => {
+  const goToReadingPosition = useCallback((targetChapter, sentenceIdx, progress = 0, indexType = 'local', animate = true) => {
     if (sentenceIdx == null || sentenceIdx < 0) return
     const safeProgress = clamp(progress, 0, 0.98)
     if (targetChapter != null && targetChapter !== chapterIdx) {
       pendingScrollSentence.current = { idx: sentenceIdx, indexType, progress: safeProgress }
-      const direction = targetChapter > chapterIdx ? 'next' : 'prev'
-      const { viewPage: currentView, viewCount: currentViewCount, pagesPerView: ppv } = stateRef.current
-      if (ppv === 2) {
-        const turnState = triggerDoubleTurn(direction, currentView, direction === 'next' ? currentViewCount : -1, ppv)
-        if (turnState !== 'busy') setChapterIdx?.(targetChapter)
-      } else {
-        triggerSingleTurn(direction)
+      if (!animate) {
         setChapterIdx?.(targetChapter)
+      } else {
+        const direction = targetChapter > chapterIdx ? 'next' : 'prev'
+        const turnState = triggerSingleTurn(direction)
+        if (turnState !== 'busy') setChapterIdx?.(targetChapter)
       }
       return
     }
     const targetView = viewForReadingPosition(sentenceIdx, safeProgress, indexType)
-    if (targetView != null) turnToView(targetView)
-  }, [chapterIdx, setChapterIdx, triggerDoubleTurn, triggerSingleTurn, turnToView, viewForReadingPosition])
+    if (targetView != null) turnToView(targetView, animate)
+  }, [chapterIdx, setChapterIdx, triggerSingleTurn, turnToView, viewForReadingPosition])
 
   // Follow Along owns continuous page/sub-page synchronization. App only
   // enters/exits the mode; this effect keeps retrying until the active audio
@@ -1832,30 +1892,32 @@ function ReflowViewer({
     }
 
     if (target.chapterIdx !== chapterIdx) {
-      goToReadingPosition(target.chapterIdx, target.sentenceIdx, target.progress, 'local')
+      goToReadingPosition(target.chapterIdx, target.sentenceIdx, target.progress, 'local', false)
       queueFollowRetry()
       return log('requested chapter sync', { from: chapterIdx, target })
     }
 
-    const targetView = viewForReadingPosition(target.sentenceIdx, target.progress, 'local')
-    if (targetView == null) {
+    const measuredTargetView = viewForReadingPosition(target.sentenceIdx, target.progress, 'local')
+    if (measuredTargetView == null) {
       queueFollowRetry()
       return log('pending: no target view', target)
     }
 
     const { viewPage: vp, viewCount: vc } = stateRef.current
+    const targetView = clampReaderViewTarget(measuredTargetView, vc)
+    if (targetView == null) {
+      queueFollowRetry()
+      return log('pending: invalid view count', { measuredTargetView, viewCount: vc })
+    }
     log('checked', {
       currentSentence,
       chunkProgress: +target.progress.toFixed(3),
       targetView,
+      measuredTargetView,
       currentView: vp,
       viewCount: vc,
     })
 
-    if (targetView >= vc) {
-      queueFollowRetry()
-      return log('pending: target view out of range', { targetView, viewCount: vc })
-    }
     if (targetView === vp) {
       pendingFollowTargetRef.current = null
       followTurnKeyRef.current = ''
@@ -1863,7 +1925,10 @@ function ReflowViewer({
       return log('in sync', { targetView, currentView: vp })
     }
 
-    const moved = turnToView(targetView)
+    // Follow Along favors synchronization over a decorative physical turn.
+    // A full page animation can outlast a short spoken line and leave the
+    // cursor one view behind; the manual controls still use the page turn.
+    const moved = turnToView(targetView, false)
     if (moved) {
       followTurnKeyRef.current = `${chapterIdx}:${targetView}`
       return log('TURN', { from: vp, to: targetView })

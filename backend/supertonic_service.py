@@ -10,13 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import soundfile as sf
+from lazy_import import LazyModule
+
+np = LazyModule("numpy")
+sf = LazyModule("soundfile")
 
 from model_manager import (
     ModelInstallRequired,
     load_state,
-    save_state,
     set_state,
     update_progress,
     user_install_info,
@@ -84,7 +85,7 @@ _inflight_errors: dict[str, Exception] = {}
 _cache_lock = threading.Lock()
 _identity_cache: dict[tuple[str, int, int], dict] = {}
 _installed_bytes_cache: tuple[str, float, int] | None = None
-_INSTALLED_BYTES_CACHE_TTL = 2.0
+_INSTALLED_BYTES_CACHE_TTL = 15.0
 _install_state = load_state(ENGINE_ID, ENGINE_LABEL, EXPECTED_INSTALL_BYTES)
 
 
@@ -182,9 +183,7 @@ def _sync_install_state() -> dict:
             total_bytes=EXPECTED_INSTALL_BYTES,
         )
     else:
-        _install_state["downloaded_bytes"] = installed
-        _install_state["total_bytes"] = EXPECTED_INSTALL_BYTES
-        save_state(_install_state)
+        _install_state = update_progress(_install_state, installed, EXPECTED_INSTALL_BYTES)
     return _install_state
 
 

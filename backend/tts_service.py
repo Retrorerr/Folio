@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import glob
 import gc
 import hashlib
@@ -7,11 +9,14 @@ import re
 import sys
 import threading
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
-import numpy as np
-import soundfile as sf
+from lazy_import import LazyAttribute, LazyModule
+
+np = LazyModule("numpy")
+sf = LazyModule("soundfile")
 
 # Add NVIDIA CUDA DLL directories to PATH before importing onnxruntime.
 _site_packages = os.path.join(
@@ -48,19 +53,19 @@ for _candidate in _site_package_candidates:
         _add_runtime_path(_nvidia_bin)
     _add_runtime_path(os.path.join(_candidate, "torch", "lib"))
 
-import onnxruntime as ort
-from kokoro_onnx import Kokoro
+ort = LazyModule("onnxruntime")
+Kokoro = LazyAttribute("kokoro_onnx", "Kokoro")
 
 from model_manager import (
     ModelInstallRequired,
     default_state,
     load_state,
-    save_state,
     set_state,
     update_progress,
     user_install_info,
 )
 from paths import AUDIO_CACHE_DIR, MODELS_DIR
+from misaki_g2p import MisakiEnglishG2P, REVISION as MISAKI_G2P_REVISION, STRATEGY as MISAKI_G2P_STRATEGY
 from tts_defaults import DEFAULT_KOKORO_VOICE, DEFAULT_TTS_SPEED, KOKORO_ENGINE_ID
 
 try:
@@ -75,7 +80,7 @@ DEFAULT_VOICE = DEFAULT_KOKORO_VOICE
 DEFAULT_SPEED = DEFAULT_TTS_SPEED
 MIN_SPEED = 0.75
 MAX_SPEED = 1.35
-CACHE_FORMAT_VERSION = "kokoro-v2"
+CACHE_FORMAT_VERSION = "kokoro-v3"
 KOKORO_VOICES = [
     "af_heart",
     "af_bella",
@@ -143,7 +148,11 @@ _inflight: dict[str, threading.Event] = {}
 _inflight_errors: dict[str, Exception] = {}
 _cache_lock = threading.Lock()
 _identity_cache: dict[tuple[str, int, int], dict] = {}
+_installed_bytes_cache: tuple[float, int] | None = None
+_available_voices_cache: tuple[str, int, int, list[str]] | None = None
+_INSTALL_METADATA_CACHE_TTL = 15.0
 _install_state = load_state(ENGINE_ID, ENGINE_LABEL, EXPECTED_INSTALL_BYTES)
+_english_g2p = MisakiEnglishG2P()
 
 
 def _install_kokoro_espeak_compat() -> None:
@@ -371,7 +380,17 @@ def _asset_manifest() -> list[dict]:
 
 
 def _installed_bytes() -> int:
-    return sum(_asset_size(item["path"]) for item in _asset_manifest())
+    global _installed_bytes_cache
+    now = time.monotonic()
+    if (
+        not _download_active
+        and _installed_bytes_cache is not None
+        and now - _installed_bytes_cache[0] < _INSTALL_METADATA_CACHE_TTL
+    ):
+        return _installed_bytes_cache[1]
+    installed = sum(_asset_size(item["path"]) for item in _asset_manifest())
+    _installed_bytes_cache = (now, installed)
+    return installed
 
 
 def _assets_ready() -> bool:
@@ -407,9 +426,7 @@ def _sync_install_state() -> dict:
             total_bytes=EXPECTED_INSTALL_BYTES,
         )
     else:
-        _install_state["downloaded_bytes"] = _installed_bytes()
-        _install_state["total_bytes"] = EXPECTED_INSTALL_BYTES
-        save_state(_install_state)
+        _install_state = update_progress(_install_state, _installed_bytes(), EXPECTED_INSTALL_BYTES)
     return _install_state
 
 
@@ -696,15 +713,28 @@ def _make_session(model_path: str, provider: str, cuda_mem_limit_mb: int | None 
 
 def _smoke_inference(kokoro: Kokoro) -> tuple[int, int]:
     text = (WARMUP_TEXT or "Ready.").strip() or "Ready."
-    samples, sample_rate = kokoro.create(
+    samples, sample_rate = _create_with_misaki(
+        kokoro,
         text,
         voice=DEFAULT_VOICE,
         speed=DEFAULT_SPEED,
-        lang=lang_for_voice(DEFAULT_VOICE),
     )
     if sample_rate <= 0 or len(samples) == 0:
         raise RuntimeError("Kokoro smoke inference produced no audio")
     return len(samples), sample_rate
+
+
+def _create_with_misaki(kokoro: Kokoro, text: str, *, voice: str, speed: float):
+    """Synthesize precomputed Misaki phonemes; never let kokoro-onnx re-G2P English."""
+    language = lang_for_voice(voice)
+    g2p = _english_g2p.phonemize(text, british=language == "en-gb")
+    return kokoro.create(
+        g2p.phonemes,
+        voice=voice,
+        speed=speed,
+        lang=language,
+        is_phonemes=True,
+    )
 
 
 def _load_with_provider(model_path: str, provider: str, cuda_mem_limit_mb: int | None = None) -> Kokoro:
@@ -767,9 +797,8 @@ def _log_selected_runtime() -> None:
 
 
 def log_runtime_environment() -> None:
-    providers = ort.get_available_providers()
     setup_error = _quality_setup_error()
-    print(f"Kokoro ONNX available providers: {providers}")
+    print("Kokoro ONNX provider discovery deferred until narration starts")
     print(f"Kokoro provider request: {_requested_provider()}")
     print(f"Kokoro expected quality model: {quality_model_path()}")
     print(f"Kokoro voices file: {voices_path()}")
@@ -783,8 +812,13 @@ def get_runtime_info() -> dict:
     identity = _selected_model_identity
     if identity is None and _selected_model_path and os.path.exists(_selected_model_path):
         identity = model_file_identity(_selected_model_path)
+    g2p = _english_g2p.last_telemetry
     return {
-        "available_providers": ort.get_available_providers(),
+        "model_loaded": is_model_loaded(),
+        "model_loading": is_model_loading(),
+        # Provider discovery imports ONNX Runtime and its native libraries.
+        # Keep startup/status lightweight until narration actually needs it.
+        "available_providers": ort.get_available_providers() if (_kokoro is not None or _model_loading) else [],
         "requested_provider": _requested_provider(),
         "selected_provider": _selected_provider,
         "selected_cuda_mem_limit_mb": _selected_cuda_mem_limit_mb,
@@ -819,6 +853,11 @@ def get_runtime_info() -> dict:
         "speed_min": MIN_SPEED,
         "speed_max": MAX_SPEED,
         "chunker_version": CHUNKER_VERSION,
+        "phonemizer": MISAKI_G2P_STRATEGY,
+        "g2p_revision": MISAKI_G2P_REVISION,
+        "g2p_dialect": g2p.dialect,
+        "g2p_fallback_count": g2p.fallback_count,
+        "g2p_fallback_words": list(g2p.fallback_words),
     }
 
 
@@ -1019,15 +1058,26 @@ def unload_model() -> bool:
 
 
 def get_available_voices() -> list[str]:
+    global _available_voices_cache
     if _kokoro is not None:
         available = set(_kokoro.get_voices())
         return [voice for voice in KOKORO_VOICES if voice in available]
     path = voices_path()
     if not os.path.exists(path):
         return KOKORO_VOICES
+    try:
+        stat = os.stat(path)
+        cache_key = (path, stat.st_mtime_ns, stat.st_size)
+        if _available_voices_cache and _available_voices_cache[:3] == cache_key:
+            return list(_available_voices_cache[3])
+    except OSError:
+        cache_key = None
     with np.load(path) as f:
         available = set(f.files)
-    return [voice for voice in KOKORO_VOICES if voice in available]
+    voices = [voice for voice in KOKORO_VOICES if voice in available]
+    if cache_key is not None:
+        _available_voices_cache = (*cache_key, voices)
+    return voices
 
 
 def normalize_voice(voice: str | None) -> str:
@@ -1080,6 +1130,7 @@ def _cache_key(text: str, voice: str, speed: float) -> str:
             str(size_bytes),
             sha256_partial,
             provider,
+            MISAKI_G2P_REVISION,
         ]
     )
     return hashlib.md5(raw.encode()).hexdigest()
@@ -1174,7 +1225,7 @@ def generate_sentence_audio(
                 if duration_ms is not None:
                     return filename, duration_ms
                 try:
-                    samples, sr = kokoro.create(text, voice=voice, speed=speed, lang=lang_for_voice(voice))
+                    samples, sr = _create_with_misaki(kokoro, text, voice=voice, speed=speed)
                 except Exception as exc:
                     if _selected_provider != "CUDAExecutionProvider":
                         raise
@@ -1185,7 +1236,7 @@ def generate_sentence_audio(
                     if duration_ms is not None:
                         result = (filename, duration_ms)
                         return result
-                    samples, sr = kokoro.create(text, voice=voice, speed=speed, lang=lang_for_voice(voice))
+                    samples, sr = _create_with_misaki(kokoro, text, voice=voice, speed=speed)
                 if sr != SAMPLE_RATE:
                     print(f"Kokoro TTS sample rate differs from expected {SAMPLE_RATE}: {sr}")
                 _write_wav_atomic(filepath, samples, sr)

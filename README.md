@@ -55,6 +55,12 @@ That folder contains uploaded books, reading state, generated audio cache, model
 - Local FastAPI backend protected by an app-scoped token in preview and packaged builds.
 - Tauri Windows installer with bundled resources and sidecar startup/shutdown handling.
 
+## Android
+
+Folio also has a native Android target built on the same React reader UI. Android does not start the Windows FastAPI/PyInstaller sidecar: EPUB and PDF files are parsed locally, library state and reflow data are kept in app-private IndexedDB storage, and file access uses Android's Storage Access Framework. The mobile Tauri plugin owns persistent document-tree permissions, local ONNX inference, and Media3 playback.
+
+Android setup, model-pack layout, and the validation commands are documented in [docs/android.md](docs/android.md). The first Android build requires Android Studio, a JDK, the Android SDK/NDK, CMake, and the Rust Android targets; the build script also prepares the local eSpeak NG phonemizer bridge. This checkout does not vendor the large Kokoro or Supertonic model files. Narration remains unavailable with an explicit error until a compatible, integrity-pinned local model pack is installed; Folio never relabels the Android speech service as either neural engine and contacts no cloud backend.
+
 ## Development
 
 ### Requirements

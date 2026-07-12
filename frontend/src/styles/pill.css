@@ -61,6 +61,14 @@
   --hint-line: rgba(162, 226, 211, 0.10);
 }
 
+.theme-blackleaf .pill-selection-hint {
+  --hint-bg: #080808;
+  --hint-bg-2: #030303;
+  --hint-fg: var(--ink);
+  --hint-muted: var(--ink-2);
+  --hint-line: rgba(255, 255, 255, 0.12);
+}
+
 .theme-folio .pill-selection-hint {
   --hint-bg: rgba(25, 22, 17, 0.98);
   --hint-bg-2: rgba(9, 10, 12, 0.98);
@@ -116,7 +124,7 @@
 .pill {
   --pill-pop-ease: cubic-bezier(0.2, 1.45, 0.34, 1);
   --pill-collapse-ease: cubic-bezier(0.33, 0, 0.2, 1);
-  --pill-expand-dur: 280ms;
+  --pill-expand-dur: 220ms;
   /* The pill is always a dark surface across themes (background gets force-set
      dark in .theme-dark below). --pill-fg is the readable foreground for that
      surface in EVERY theme: light on dark in sepia/light (where var(--paper)
@@ -161,6 +169,17 @@
     0 20px 48px -12px rgba(0,0,0,0.8),
     0 0 0 1px rgba(162, 226, 211, 0.1),
     inset 0 1px 0 rgba(230, 237, 243, 0.06);
+}
+.theme-blackleaf .pill {
+  --pill-fg: #f2f2f2;
+  --pill-fg-muted: #8a8a8a;
+  color: var(--pill-fg);
+  background: #060606;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 22px 54px -14px rgba(0, 0, 0, 0.94),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 .theme-folio .pill {
   --pill-fg: #f6f0e3;
@@ -263,12 +282,17 @@
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
   border-radius: 24px;
   flex-direction: column;
   align-items: stretch;
   gap: 20px;
   cursor: default;
+}
+.pill.expanded::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /* ====== collapsed layout ====== */
@@ -362,28 +386,33 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.theme-dark .pill-meta .a { color: var(--ink-2); }
+.theme-dark .pill-meta .a,
+.theme-blackleaf .pill-meta .a { color: var(--ink-2); }
 .theme-folio .pill-meta .a { color: var(--pill-fg-muted); }
 
 .pill-waveform {
-  flex: 1 1 72px;
-  min-width: 24px;
-  max-width: 72px;
-  width: 72px;
+  flex: 0 0 48px;
+  min-width: 48px;
+  max-width: 48px;
+  width: 48px;
   height: 32px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
+  overflow: hidden;
+  contain: layout paint;
 }
 .wave-bar {
   flex: 1;
   min-width: 1px;
+  height: 100%;
   background: var(--ember);
   border-radius: 999px;
-  transition:
-    opacity var(--dur-fast) var(--ease-out),
-    height var(--dur-fast) var(--ease-out);
+  transform: scaleY(0.07);
   transform-origin: center;
+  transition:
+    opacity 40ms linear,
+    transform 40ms linear;
 }
 
 .pill-controls {
@@ -444,7 +473,8 @@
   color: var(--pill-fg);
   transform: translateY(-1px);
 }
-.theme-dark .pill-btn { color: var(--ink-2); }
+.theme-dark .pill-btn,
+.theme-blackleaf .pill-btn { color: var(--ink-2); }
 /* No .theme-dark .pill-btn:hover override needed — base rule's --pill-fg
    resolves to var(--ink) (light) inside .theme-dark .pill. */
 
@@ -473,6 +503,17 @@
     0 0 0 4px color-mix(in srgb, var(--ember) 14%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
+.theme-blackleaf .pill-btn.play {
+  box-shadow:
+    0 4px 14px -2px rgba(255, 255, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.theme-blackleaf .pill-btn.play.is-playing {
+  box-shadow:
+    0 6px 22px -4px rgba(255, 255, 255, 0.16),
+    0 0 0 4px rgba(255, 255, 255, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
 .pill-btn.play svg { margin-left: 2px; }
 .pill-btn.play.is-playing svg { margin-left: 0; }
 
@@ -490,7 +531,7 @@
    Motion layout only moves the control group, avoiding double animation. */
 .pill-preload-control,
 .pill-btn.follow-along-btn {
-  --pill-control-dur: 520ms;
+  --pill-control-dur: 360ms;
   --pill-control-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --pill-control-bg: color-mix(in srgb, var(--pill-fg) 8%, transparent);
   --pill-control-bg-hover: color-mix(in srgb, var(--pill-fg) 13%, transparent);
@@ -550,7 +591,7 @@
   transform: scaleX(var(--preload-progress, 0));
   transform-origin: left center;
   transition:
-    transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity var(--dur-fast) var(--ease-out);
 }
 .pill-preload-control > *,
@@ -695,7 +736,8 @@
   color: var(--ink-2);
   margin-top: 2px;
 }
-.theme-dark .pill-expanded-head .meta .a { color: var(--ink-2); }
+.theme-dark .pill-expanded-head .meta .a,
+.theme-blackleaf .pill-expanded-head .meta .a { color: var(--ink-2); }
 
 .collapse-btn {
   width: 32px; height: 32px;
@@ -720,13 +762,18 @@
 }
 .wave-bar-lg {
   flex: 1;
+  height: 100%;
   border-radius: 999px;
   min-height: 2px;
-  transition: background var(--dur-fast);
+  transform: scaleY(0.07);
+  transform-origin: center;
+  background: linear-gradient(180deg, var(--ember-soft), var(--ember));
+  transition: opacity 40ms linear, transform 40ms linear;
 }
 .wave-bar-lg.passed { background: var(--ember); }
 .wave-bar-lg.future { background: var(--ink-2); opacity: 0.35; }
-.theme-dark .wave-bar-lg.future { background: var(--ink-3); opacity: 0.35; }
+.theme-dark .wave-bar-lg.future,
+.theme-blackleaf .wave-bar-lg.future { background: var(--ink-3); opacity: 0.35; }
 
 .pill-timeline {
   display: flex;
@@ -741,6 +788,7 @@
 .theme-light .tele-stack.tele-stack-activity,
 .theme-sepia .tele-stack.tele-stack-activity,
 .theme-dark .tele-stack.tele-stack-activity,
+.theme-blackleaf .tele-stack.tele-stack-activity,
 .theme-folio .tele-stack.tele-stack-activity {
   display: block;
   min-height: 184px;
@@ -1190,6 +1238,10 @@
 @keyframes preload-shimmer {
   from { background-position: 200% 0; }
   to   { background-position: -200% 0; }
+}
+
+@media (max-width: 900px) {
+  .pill-waveform { display: none; }
 }
 
 @media (max-width: 780px) {
