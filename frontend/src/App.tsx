@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { AnimatePresence, MotionConfig, motion as m } from 'motion/react'
 import type {
   GlobalSettings,
@@ -25,6 +26,7 @@ import { Icons } from './components/icons'
 import {
   apiFetch,
   getBackendLogPath,
+  isAndroidRuntime,
   isPreviewWatchdogEnabled,
   isTauriRuntime,
   listenForOpenFile,
@@ -38,6 +40,7 @@ import CursorHalo from './components/CursorHalo'
 import TitleBar from './components/TitleBar'
 import { appViewTransition, fadeIn, spring } from './motion'
 import { isFolioTheme, resolveInitialTheme } from './systemTheme'
+import { performAndroidHaptic, syncAndroidSystemBars } from './androidShell'
 import './App.css'
 
 const PAGE_TOTAL_DEBOUNCE_MS = 500
@@ -72,6 +75,19 @@ function statusHasActiveWork(status: TtsStatus | null): boolean {
   )
 }
 
+function statusFingerprint(status: TtsStatus): string {
+  return JSON.stringify({
+    gpu: status.gpu,
+    model_loaded: status.model_loaded,
+    model_loading: status.model_loading,
+    active_tts_engine: status.active_tts_engine,
+    tts_runtime: status.tts_runtime,
+    tts_engines: status.tts_engines,
+    models: status.models,
+    tts_activity: status.tts_activity,
+  })
+}
+
 export default function App() {
   const [theme, setTheme] = useState(() => {
     return resolveInitialTheme(
@@ -83,6 +99,7 @@ export default function App() {
   const [motion, setMotion] = useState(() => localStorage.getItem('motion') !== 'false')
   const [wheelPaging, setWheelPaging] = useState(() => localStorage.getItem('wheelPaging') === 'true')
   const [sidebarTab, setSidebarTab] = useState(() => {
+    if (isAndroidRuntime()) return null
     const t = localStorage.getItem('sidebarTab')
     return t === 'null' || t === '' ? null : (t || null)
   })
@@ -91,6 +108,7 @@ export default function App() {
   const [hasSelectedReaderLine, setHasSelectedReaderLine] = useState(false)
   const [pageNavHidden, setPageNavHidden] = useState(false)
   const pageNavHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const readerSwipeRef = useRef({ pointerId: -1, x: 0, y: 0 })
 
   const [gpuEnabled, setGpuEnabled] = useState<boolean | null>(null)
   const [backendReachable, setBackendReachable] = useState(false)
@@ -111,6 +129,14 @@ export default function App() {
   const setThemeFromUi = useCallback((nextTheme: string) => {
     if (isFolioTheme(nextTheme)) setTheme(nextTheme)
   }, [])
+
+  useEffect(() => {
+    // Android can expose a gesture/navigation inset outside the WebView's
+    // content box. Mirror the active paper color there so landscape rotation
+    // never reveals the desktop shell's transparent/black canvas.
+    document.documentElement.dataset.folioTheme = theme
+    void syncAndroidSystemBars(theme)
+  }, [theme])
 
   useEffect(() => {
     let cancelled = false
@@ -159,25 +185,33 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+    let lastFingerprint = ''
+    const fastPollMs = isAndroidRuntime() ? 1500 : STATUS_POLL_FAST_MS
+    const idlePollMs = isAndroidRuntime() ? 4000 : STATUS_POLL_IDLE_MS
     const poll = async () => {
       if (cancelled) return
-      let nextPollDelay = STATUS_POLL_FAST_MS
+      let nextPollDelay = fastPollMs
       try {
         const r = await apiFetch('/api/status')
         if (!r.ok) throw new Error(`Backend status failed (${r.status})`)
         const d = await r.json() as TtsStatus
         if (cancelled) return
-        nextPollDelay = statusHasActiveWork(d) ? STATUS_POLL_FAST_MS : STATUS_POLL_IDLE_MS
+        nextPollDelay = statusHasActiveWork(d) ? fastPollMs : idlePollMs
         setBackendReachable(prev => prev || true)
-        setGpuEnabled(prev => prev === d.gpu ? prev : d.gpu)
-        setModelLoaded(prev => prev === d.model_loaded ? prev : d.model_loaded)
-        setModelLoading(prev => prev === d.model_loading ? prev : d.model_loading)
-        setTtsStatus(d)
-        setTtsEngineStatus(d.tts_engines || {})
-        setModelStatus(d.models || {})
+        const fingerprint = statusFingerprint(d)
+        if (fingerprint !== lastFingerprint) {
+          lastFingerprint = fingerprint
+          setGpuEnabled(prev => prev === d.gpu ? prev : d.gpu)
+          setModelLoaded(prev => prev === d.model_loaded ? prev : d.model_loaded)
+          setModelLoading(prev => prev === d.model_loading ? prev : d.model_loading)
+          setTtsStatus(d)
+          setTtsEngineStatus(d.tts_engines || {})
+          setModelStatus(d.models || {})
+        }
       } catch {
-        nextPollDelay = STATUS_POLL_FAST_MS
-        if (!cancelled) {
+        nextPollDelay = fastPollMs
+        if (!cancelled && !isAndroidRuntime()) {
+          lastFingerprint = ''
           setBackendReachable(prev => prev ? false : prev)
           setModelLoaded(prev => prev ? false : prev)
           setModelLoading(prev => prev ? false : prev)
@@ -488,6 +522,44 @@ export default function App() {
     reflowNavRef.current.goNext?.()
   }, [exitFollowAlong])
 
+  const onReaderPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (!isAndroidRuntime() || (event.pointerType !== 'touch' && event.pointerType !== 'pen')) return
+    const target = event.target as HTMLElement | null
+    if (target?.closest('button, input, textarea, select, [role="button"], .pill-wrap, .sidebar-wrap, .settings-overlay')) return
+    readerSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }, [])
+
+  const resolveReaderSwipe = useCallback((event: ReactPointerEvent<HTMLElement>, final: boolean) => {
+    const gesture = readerSwipeRef.current
+    if (event.pointerId !== gesture.pointerId) return
+    const dx = event.clientX - gesture.x
+    const dy = event.clientY - gesture.y
+    if (Math.abs(dy) > 28 && Math.abs(dy) > Math.abs(dx) * 1.1) {
+      readerSwipeRef.current.pointerId = -1
+      return
+    }
+    // WebView begins scroll arbitration after roughly 40 CSS px and can emit
+    // pointercancel immediately afterwards. Commit a clearly horizontal swipe
+    // on that first move; the larger finger-up threshold remains as fallback.
+    if (Math.abs(dx) < (final ? 64 : 36) || Math.abs(dx) < Math.abs(dy) * 1.35) return
+    readerSwipeRef.current.pointerId = -1
+    event.preventDefault()
+    if (dx < 0 && pageNavigation.canGoNext) goToNextVisualPage()
+    else if (dx > 0 && pageNavigation.canGoPrevious) goToPreviousVisualPage()
+    else return
+    void performAndroidHaptic('selection')
+  }, [goToNextVisualPage, goToPreviousVisualPage, pageNavigation.canGoNext, pageNavigation.canGoPrevious])
+
+  const onReaderPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    resolveReaderSwipe(event, false)
+  }, [resolveReaderSwipe])
+
+  const onReaderPointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    resolveReaderSwipe(event, true)
+    if (event.pointerId === readerSwipeRef.current.pointerId) readerSwipeRef.current.pointerId = -1
+  }, [resolveReaderSwipe])
+
   const toggleFollowAlong = useCallback(() => {
     if (followAlongMode) {
       setFollowAlongMode(false)
@@ -600,7 +672,7 @@ export default function App() {
         else if (s.darkMode !== undefined) { const t = s.darkMode ? 'dark' : 'sepia'; setTheme(t); localStorage.setItem('theme', t) }
         if (s.motion !== undefined) { setMotion(!!s.motion); localStorage.setItem('motion', String(!!s.motion)) }
         if (s.wheelPaging !== undefined) { setWheelPaging(!!s.wheelPaging); localStorage.setItem('wheelPaging', String(!!s.wheelPaging)) }
-        if (s.sidebarTab !== undefined) {
+        if (s.sidebarTab !== undefined && !isAndroidRuntime()) {
           const t = typeof s.sidebarTab === 'string' && s.sidebarTab !== '' ? s.sidebarTab : null
           setSidebarTab(t); localStorage.setItem('sidebarTab', t ?? '')
         }
@@ -716,7 +788,7 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <m.div className="reader-shell" layout transition={spring.layout}>
+          <m.div className="reader-shell" layout={!isAndroidRuntime()} transition={spring.layout}>
               <Sidebar
                 book={book}
                 reflow={reflow}
@@ -746,7 +818,15 @@ export default function App() {
                 hidden={followAlongMode}
               />
 
-              <m.main className={`reader-main ${followAlongMode ? 'follow-along' : ''}`} layout transition={spring.layout}>
+              <m.main
+                className={`reader-main ${followAlongMode ? 'follow-along' : ''}`}
+                layout={!isAndroidRuntime()}
+                transition={spring.layout}
+                onPointerDown={onReaderPointerDown}
+                onPointerMove={onReaderPointerMove}
+                onPointerUp={onReaderPointerUp}
+                onPointerCancel={() => { readerSwipeRef.current.pointerId = -1 }}
+              >
                 {book.format === 'pdf' ? (
                   <PdfViewer
                     bookId={book.id}
@@ -795,9 +875,9 @@ export default function App() {
                   onPointerMove={revealPageNav}
                 />
                 <m.button
-                  layout
+                  layout={!isAndroidRuntime()}
                   transition={spring.quick}
-                  whileHover={{ y: -1, scale: 1.03 }}
+                  whileHover={isAndroidRuntime() ? undefined : { y: -1, scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
                   className={`page-nav prev ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
                   animate={pageNavMotion}
@@ -813,9 +893,9 @@ export default function App() {
                   <Icons.ChevronLeft size={18} />
                 </m.button>
                 <m.button
-                  layout
+                  layout={!isAndroidRuntime()}
                   transition={spring.quick}
-                  whileHover={{ y: -1, scale: 1.03 }}
+                  whileHover={isAndroidRuntime() ? undefined : { y: -1, scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
                   className={`page-nav next ${followAlongMode ? 'follow-mode' : ''} ${pageNavHidden ? 'auto-hidden' : ''}`}
                   animate={pageNavMotion}
@@ -871,7 +951,10 @@ export default function App() {
               currentSentence={audio.currentSentence}
               sentenceCount={audio.readingSentenceCount || pageData?.sentences?.length || 0}
               subscribeAudioSpectrum={audio.subscribeAudioSpectrum}
-              playRequiresLineSelection={!audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
+              // Touch playback follows Android media-control expectations:
+              // play starts at the current page/sentence without a prior text
+              // selection. Keep the desktop line-selection workflow intact.
+              playRequiresLineSelection={!isAndroidRuntime() && !audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
               sleepTimer={audio.sleepTimer}
               setSleepTimer={audio.setSleepTimer}
               preloadState={audio.preloadState}

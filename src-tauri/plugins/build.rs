@@ -8,6 +8,8 @@ const COMMANDS: &[&str] = &[
     "install_model_pack",
     "synthesize",
     "platform_status",
+    "set_system_bars",
+    "perform_haptic",
     "play_audio",
     "control_audio",
     "audio_status",

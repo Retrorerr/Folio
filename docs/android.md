@@ -35,6 +35,24 @@ eSpeak NG is GPL-3.0-or-later. The build packages its GPL text plus upstream Apa
 
 ## Debug builds
 
+## Managed Android preview
+
+Use the managed preview entrypoint for normal Android UI and runtime work:
+
+```powershell
+npm run android:preview
+```
+
+It targets the visible `Folio_API36_Tablet_x86_64` Pixel Tablet AVD, starts it if needed, waits for Android boot, and launches `tauri android dev` against that emulator. React/CSS edits are served by Vite and hot-reload in the running app. Rust/Tauri and Android plugin edits stay under Tauri's watcher and rebuild/restart the app automatically. The wrapper keeps the session alive, relaunches Folio if its process stops, and prints only focused Folio/Tauri/runtime logcat tags.
+
+For a change that needs a real APK rebuild, use:
+
+```powershell
+npm run android:preview:native
+```
+
+This performs the incremental x86_64 debug build, installs the verified APK with `adb install -r`, force-stops Folio, relaunches `com.folio.reader/.MainActivity`, and keeps the emulator/logcat session alive. It intentionally does not run the complete lint, test, Cargo, Kotlin, and artifact-verification suite; run `npm run android:check` when the implementation is ready for final validation.
+
 Debug APKs are signed automatically with the Android debug certificate. They are for emulator/device QA only and must not be published.
 
 ```powershell
@@ -115,7 +133,9 @@ For API 35/36 device QA, install the appropriate APK with `adb install -r`, cold
 
 ## Local model packs
 
-Large neural weights are not embedded in the APK. Create deterministic local packs only from the exact pinned assets using `scripts/New-AndroidModelPack.ps1`; it rejects any unexpected size or SHA-256 before writing the archive.
+Large neural weights are not embedded in the APK. On Android, open Settings > Narrator and tap `Download model` for Kokoro or Supertonic 3. Folio downloads the pinned assets over HTTPS, reports progress, verifies every exact size and SHA-256, probes the ONNX contracts, and publishes the result atomically. An interrupted or invalid download never replaces an installed model.
+
+The ZIP workflow below remains an advanced/offline fallback for sideloaded model packs. It rejects any unexpected size or SHA-256 before writing the archive.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\New-AndroidModelPack.ps1 `
@@ -129,7 +149,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\New-AndroidModelPack
   -OutputPath "$env:USERPROFILE\Downloads\folio-supertonic-model-pack.zip"
 ```
 
-Import the resulting ZIP from Folio's Android model manager. Installation validates the schema, exact file set, sizes, and hashes, probes the ONNX input/output contracts, and publishes the model directory transactionally. A partial or invalid pack never becomes the active engine.
+Choose `Import pack` from the Android model card to import the resulting ZIP. Installation validates the schema, exact file set, sizes, and hashes, probes the ONNX input/output contracts, and publishes the model directory transactionally. A partial or invalid pack never becomes the active engine.
 
 ## Desktop safety
 

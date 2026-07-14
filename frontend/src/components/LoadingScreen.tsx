@@ -3,6 +3,7 @@ import TitleBar from './TitleBar'
 import { Icons } from './icons'
 import { fadeIn, listItem, listStagger, slideUp } from '../motion'
 import { buildStartupPresentation } from '../startupPresentation'
+import { isAndroidRuntime } from '../api'
 import type { BookState, TtsRuntimeInfo } from '../types'
 
 type LoadingScreenProps = {
@@ -57,6 +58,7 @@ export default function LoadingScreen({
   backendLogPath,
   onOpenBackendLog,
 }: LoadingScreenProps) {
+  const androidRuntime = isAndroidRuntime()
   const useGoldLogo = theme === 'light' || theme === 'sepia'
   const logoSrc = useGoldLogo ? '/folio-icon.png' : '/folio-monochrome-icon.png'
   const downloadActive = Boolean(activeRuntime?.download_active)
@@ -114,9 +116,9 @@ export default function LoadingScreen({
       aria-busy={!ready}
     >
       <TitleBar />
-      {motion && <div className="loading-aurora" aria-hidden="true" />}
+      {motion && !androidRuntime && <div className="loading-aurora" aria-hidden="true" />}
       <main className="loading-stage">
-        <m.section className="loading-card" variants={slideUp} initial="initial" animate="animate">
+        <m.section className="loading-card" variants={slideUp} initial={androidRuntime ? false : 'initial'} animate="animate">
           <div className="loading-brand-lockup">
             <img className="loading-logo" src={logoSrc} alt="" draggable={false} />
             <div>

@@ -74,6 +74,22 @@ pub(crate) async fn platform_status<R: Runtime>(app: AppHandle<R>) -> Result<Pla
 }
 
 #[command]
+pub(crate) async fn set_system_bars<R: Runtime>(
+    app: AppHandle<R>,
+    payload: SystemBarsRequest,
+) -> Result<SystemBarsResponse> {
+    app.mobile_runtime().set_system_bars(payload)
+}
+
+#[command]
+pub(crate) async fn perform_haptic<R: Runtime>(
+    app: AppHandle<R>,
+    payload: HapticRequest,
+) -> Result<HapticResponse> {
+    app.mobile_runtime().perform_haptic(payload)
+}
+
+#[command]
 pub(crate) async fn play_audio<R: Runtime>(
     app: AppHandle<R>,
     payload: PlayAudioRequest,

@@ -355,6 +355,18 @@
           "markdownDescription": "Denies the open_document_read command without any pre-configured scope."
         },
         {
+          "description": "Enables the perform_haptic command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-perform-haptic",
+          "markdownDescription": "Enables the perform_haptic command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the perform_haptic command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-perform-haptic",
+          "markdownDescription": "Denies the perform_haptic command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pick_epub command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pick-epub",
@@ -427,6 +439,18 @@
           "markdownDescription": "Denies the scan_document_tree command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_system_bars command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-system-bars",
+          "markdownDescription": "Enables the set_system_bars command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_system_bars command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-system-bars",
+          "markdownDescription": "Denies the set_system_bars command without any pre-configured scope."
+        },
+        {
           "description": "Enables the synthesize command without any pre-configured scope.",
           "type": "string",
           "const": "allow-synthesize",
@@ -439,10 +463,10 @@
           "markdownDescription": "Denies the synthesize command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-pick-epub`\n- `allow-pick-folder`\n- `allow-scan-document-tree`\n- `allow-open-document-read`\n- `allow-read-document-chunk`\n- `allow-close-document-read`\n- `allow-install-model-pack`\n- `allow-synthesize`\n- `allow-platform-status`\n- `allow-play-audio`\n- `allow-control-audio`\n- `allow-audio-status`",
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-pick-epub`\n- `allow-pick-folder`\n- `allow-scan-document-tree`\n- `allow-open-document-read`\n- `allow-read-document-chunk`\n- `allow-close-document-read`\n- `allow-install-model-pack`\n- `allow-synthesize`\n- `allow-platform-status`\n- `allow-set-system-bars`\n- `allow-perform-haptic`\n- `allow-play-audio`\n- `allow-control-audio`\n- `allow-audio-status`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-pick-epub`\n- `allow-pick-folder`\n- `allow-scan-document-tree`\n- `allow-open-document-read`\n- `allow-read-document-chunk`\n- `allow-close-document-read`\n- `allow-install-model-pack`\n- `allow-synthesize`\n- `allow-platform-status`\n- `allow-play-audio`\n- `allow-control-audio`\n- `allow-audio-status`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-pick-epub`\n- `allow-pick-folder`\n- `allow-scan-document-tree`\n- `allow-open-document-read`\n- `allow-read-document-chunk`\n- `allow-close-document-read`\n- `allow-install-model-pack`\n- `allow-synthesize`\n- `allow-platform-status`\n- `allow-set-system-bars`\n- `allow-perform-haptic`\n- `allow-play-audio`\n- `allow-control-audio`\n- `allow-audio-status`"
         }
       ]
     }

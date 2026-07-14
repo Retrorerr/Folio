@@ -45,6 +45,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::install_model_pack,
             commands::synthesize,
             commands::platform_status,
+            commands::set_system_bars,
+            commands::perform_haptic,
             commands::play_audio,
             commands::control_audio,
             commands::audio_status,

@@ -177,6 +177,13 @@ body {
 
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: none; }
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
 ::selection { background: var(--ember-wash); color: var(--ink); }
 
 :where(button, input, select, textarea, a[href], [tabindex]):focus-visible {

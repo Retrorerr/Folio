@@ -2,12 +2,18 @@ package com.folio.reader.mobile
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.view.HapticFeedbackConstants
 import androidx.activity.result.ActivityResult
 import androidx.core.net.toUri
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import app.tauri.annotation.ActivityCallback
 import org.json.JSONObject
 import app.tauri.annotation.Command
@@ -72,6 +78,19 @@ class SynthesizeArgs {
 @InvokeArg
 class InstallModelPackArgs {
     var engine: String? = null
+    var download: Boolean? = null
+    var cancel: Boolean? = null
+}
+
+@InvokeArg
+class SystemBarsArgs {
+    var darkBackground: Boolean? = null
+    var backgroundColor: String? = null
+}
+
+@InvokeArg
+class HapticArgs {
+    var kind: String? = null
 }
 
 @InvokeArg
@@ -133,6 +152,7 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private companion object {
         const val PICKER_CALLBACK = "onPickerResult"
         const val READ_SESSION_MAX_IDLE_MS = 5L * 60L * 1000L
+        const val STATUS_CACHE_TTL_MS = 750L
     }
 
     private val modelManager = OnDeviceModelManager(activity)
@@ -144,9 +164,16 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private val synthesisExecutor = boundedExecutor("folio-local-tts", workers = 2, queueSize = 4)
     private val statusExecutor = boundedExecutor("folio-native-status", workers = 1, queueSize = 1)
     private val modelImportExecutor = boundedExecutor("folio-model-import", workers = 1, queueSize = 1)
+    private val modelDownloadExecutor = boundedExecutor("folio-model-download", workers = 1, queueSize = 1)
     private val documentExecutor = boundedExecutor("folio-documents", workers = 1, queueSize = 12)
     private val playbackExecutor = boundedExecutor("folio-playback-bridge", workers = 1, queueSize = 8)
     private val documentReads = mutableMapOf<String, DocumentReadSession>()
+    private val statusLock = Any()
+    private val statusWaiters = ArrayDeque<Invoke>()
+    private var statusRefreshRunning = false
+    private var statusSnapshot: JSObject? = null
+    private var statusSnapshotAt = 0L
+    private val modelDownloader = AndroidModelDownloader(modelManager)
 
     override fun onStop() {
         // ONNX sessions are hundreds of MB and the current playback service
@@ -161,12 +188,18 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         synthesisExecutor.shutdownNow()
         statusExecutor.shutdownNow()
         modelImportExecutor.shutdownNow()
+        modelDownloadExecutor.shutdownNow()
         documentExecutor.shutdownNow()
         playbackExecutor.shutdownNow()
         synchronized(documentReads) {
             documentReads.values.forEach { runCatching { it.input.close() } }
             documentReads.clear()
         }
+        val pendingStatus = synchronized(statusLock) {
+            statusRefreshRunning = false
+            buildList { while (statusWaiters.isNotEmpty()) add(statusWaiters.removeFirst()) }
+        }
+        pendingStatus.forEach { it.reject("Android native runtime status stopped") }
         modelManager.unloadAllAsync()
         super.onDestroy()
     }
@@ -214,6 +247,25 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         val engine = args.engine?.trim().orEmpty()
         if (engine != "kokoro" && engine != "supertonic") {
             invoke.reject("Unknown model engine")
+            return
+        }
+        if (args.cancel == true) {
+            val requested = modelDownloader.cancel(engine)
+            invoke.resolve(JSObject().apply {
+                put("engine", engine)
+                put("cancelRequested", requested)
+                put("state", modelManager.downloadState(engine)["state"] ?: "not_installed")
+            })
+            return
+        }
+        if (args.download == true) {
+            try {
+                modelDownloadExecutor.execute {
+                    invoke.resolve(modelDownloader.download(engine))
+                }
+            } catch (_: RejectedExecutionException) {
+                invoke.reject("Another Android model download is already running")
+            }
             return
         }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -627,32 +679,140 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
 
     @Command
     fun platformStatus(invoke: Invoke) {
+        var immediate: JSObject? = null
+        var schedule = false
+        synchronized(statusLock) {
+            val now = System.currentTimeMillis()
+            if (statusSnapshot != null && now - statusSnapshotAt < STATUS_CACHE_TTL_MS) {
+                immediate = statusSnapshot
+            } else {
+                statusWaiters.addLast(invoke)
+                if (!statusRefreshRunning) {
+                    statusRefreshRunning = true
+                    schedule = true
+                }
+            }
+        }
+        immediate?.let {
+            invoke.resolve(it)
+            return
+        }
+        if (!schedule) return
         try {
             statusExecutor.execute {
                 try {
-                    val runtime = modelManager.nativeRuntimeReadiness()
-                    val supertonic = modelManager.status("supertonic")
-                    val kokoro = modelManager.status("kokoro")
-                    val models = JSObject()
-                    models.put("supertonic", statusJsonObject(supertonic))
-                    models.put("kokoro", statusJsonObject(kokoro))
-                    val result = JSObject()
-                    result.put("platform", "android")
-                    result.put("nativeTtsAvailable", runtime.ready)
-                    result.put("nativeTtsError", runtime.error ?: JSONObject.NULL)
-                    result.put("nativeRuntimeVersion", runtime.version ?: JSONObject.NULL)
-                    result.put("nativeRuntimeProviders", JSONArray(runtime.providers))
-                    result.put("fallbackPhonemizerReady", kokoro["fallbackPhonemizerReady"] ?: JSONObject.NULL)
-                    result.put("fallbackPhonemizerError", kokoro["fallbackPhonemizerError"] ?: JSONObject.NULL)
-                    result.put("modelRoot", File(activity.filesDir, "models").absolutePath)
-                    result.put("modelAssets", models)
-                    invoke.resolve(result)
+                    completePlatformStatus(buildPlatformStatus(), null)
                 } catch (error: Throwable) {
-                    invoke.reject(error.message ?: "Android native runtime status failed")
+                    completePlatformStatus(null, error)
                 }
             }
-        } catch (_: RejectedExecutionException) {
-            invoke.reject("Android native runtime status is busy")
+        } catch (error: RejectedExecutionException) {
+            completePlatformStatus(null, error)
+        }
+    }
+
+    private fun buildPlatformStatus(): JSObject {
+        val runtime = modelManager.nativeRuntimeReadiness()
+        val supertonic = modelManager.status("supertonic")
+        val kokoro = modelManager.status("kokoro")
+        val models = JSObject()
+        models.put("supertonic", statusJsonObject(supertonic))
+        models.put("kokoro", statusJsonObject(kokoro))
+        val density = activity.resources.displayMetrics.density.coerceAtLeast(1f)
+        val decorView = activity.window.decorView
+        val rootInsets = ViewCompat.getRootWindowInsets(decorView)
+        val systemInsets = rootInsets?.getInsets(
+            WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+        )
+        val imeInsets = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())
+        val insets = JSObject().apply {
+            put("top", (systemInsets?.top ?: 0) / density)
+            put("right", (systemInsets?.right ?: 0) / density)
+            put("bottom", (systemInsets?.bottom ?: 0) / density)
+            put("left", (systemInsets?.left ?: 0) / density)
+            put("imeBottom", if (rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) == true) (imeInsets?.bottom ?: 0) / density else 0f)
+        }
+        @Suppress("DEPRECATION")
+        val refreshRate = activity.display?.refreshRate ?: activity.windowManager.defaultDisplay.refreshRate
+        return JSObject().apply {
+            put("platform", "android")
+            put("nativeTtsAvailable", runtime.ready)
+            put("nativeTtsError", runtime.error ?: JSONObject.NULL)
+            put("nativeRuntimeVersion", runtime.version ?: JSONObject.NULL)
+            put("nativeRuntimeProviders", JSONArray(runtime.providers))
+            put("fallbackPhonemizerReady", kokoro["fallbackPhonemizerReady"] ?: JSONObject.NULL)
+            put("fallbackPhonemizerError", kokoro["fallbackPhonemizerError"] ?: JSONObject.NULL)
+            put("modelRoot", File(activity.filesDir, "models").absolutePath)
+            put("modelAssets", models)
+            put("windowInsets", insets)
+            put("density", density)
+            put("refreshRate", refreshRate)
+        }
+    }
+
+    @Command
+    fun setSystemBars(invoke: Invoke) {
+        val args = invoke.parseArgs(SystemBarsArgs::class.java)
+        val darkBackground = args.darkBackground != false
+        val backgroundColor = runCatching {
+            Color.parseColor(args.backgroundColor ?: if (darkBackground) "#030303" else "#ede0c4")
+        }.getOrDefault(if (darkBackground) Color.rgb(3, 3, 3) else Color.rgb(237, 224, 196))
+        activity.getSharedPreferences("folio_native_ui", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putInt("boot_background", backgroundColor)
+            .putBoolean("boot_dark", darkBackground)
+            .apply()
+        activity.runOnUiThread {
+            val window = activity.window
+            val decorView = window.decorView
+            window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(backgroundColor))
+            decorView.setBackgroundColor(backgroundColor)
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isStatusBarContrastEnforced = false
+                window.isNavigationBarContrastEnforced = false
+            }
+            WindowInsetsControllerCompat(window, decorView).apply {
+                isAppearanceLightStatusBars = !darkBackground
+                isAppearanceLightNavigationBars = !darkBackground
+            }
+            invoke.resolve(JSObject().apply {
+                put("darkBackground", darkBackground)
+                put("backgroundColor", args.backgroundColor ?: JSONObject.NULL)
+            })
+        }
+    }
+
+    @Command
+    fun performHaptic(invoke: Invoke) {
+        val args = invoke.parseArgs(HapticArgs::class.java)
+        activity.runOnUiThread {
+            val feedback = if (args.kind == "confirm") {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) HapticFeedbackConstants.CONFIRM
+                else HapticFeedbackConstants.LONG_PRESS
+            } else {
+                HapticFeedbackConstants.CLOCK_TICK
+            }
+            val performed = activity.window.decorView.performHapticFeedback(feedback)
+            invoke.resolve(JSObject().apply { put("performed", performed) })
+        }
+    }
+
+    private fun completePlatformStatus(snapshot: JSObject?, error: Throwable?) {
+        val pending = synchronized(statusLock) {
+            if (snapshot != null) {
+                statusSnapshot = snapshot
+                statusSnapshotAt = System.currentTimeMillis()
+            }
+            val fallback = snapshot ?: statusSnapshot
+            statusRefreshRunning = false
+            buildList { while (statusWaiters.isNotEmpty()) add(statusWaiters.removeFirst()) }
+                .map { it to fallback }
+        }
+        pending.forEach { (pendingInvoke, fallback) ->
+            if (fallback != null) pendingInvoke.resolve(fallback)
+            else pendingInvoke.reject(error?.message ?: "Android native runtime status failed")
         }
     }
 

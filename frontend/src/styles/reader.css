@@ -2114,6 +2114,39 @@
   }
 }
 
+.model-state-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--surface-line, var(--rule));
+  border-radius: var(--control-radius, 10px);
+  background: var(--surface-line, var(--rule));
+}
+
+.model-state-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--surface, var(--paper));
+}
+
+.model-state-row small {
+  color: var(--ink-3);
+  font: 600 9px/1.1 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.model-state-row strong {
+  overflow: hidden;
+  color: var(--ink);
+  font: 620 12px/1.25 ui-sans-serif, system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .page-footer {
   margin-top: auto;
   padding-top: 56px;

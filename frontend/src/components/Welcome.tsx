@@ -4,9 +4,15 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
 import { SettingsPanel } from './Sidebar'
-import { apiFetch, apiJson, apiResourceUrl } from '../api'
+import { apiFetch, apiJson, apiResourceUrl, isAndroidRuntime } from '../api'
+import {
+  androidShellMode,
+  installAndroidHorizontalSwipeListener,
+  isAndroidPhoneMode,
+  performAndroidHaptic,
+} from '../androidShell'
 import { buildDashboardGreeting } from '../dashboardGreeting'
-import { buttonHover, buttonTap, listItem, listStagger, pageTransition, scaleIn, slideUp, spring } from '../motion'
+import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, pageTransition, scaleIn, slideUp, spring } from '../motion'
 import type { BookState, DashboardHighlight, DashboardPayload, LibrarySearchResponse, WeeklyStat } from '../types'
 
 async function currentWindow() {
@@ -700,9 +706,9 @@ function EmptyLibraryWelcome({
           <div className="dash-empty-actions">
             <button type="button" className="dash-primary-btn" onClick={onAddBook}>
               <Icons.Upload size={15} />
-              {importing ? 'Opening book' : 'Choose first book'}
+              {importing ? 'Opening book' : isAndroidRuntime() ? 'Add first book' : 'Choose first book'}
             </button>
-            <span>or drop an EPUB or PDF anywhere on this window</span>
+            <span>{isAndroidRuntime() ? 'EPUB and PDF files stay private on this device.' : 'or drop an EPUB or PDF anywhere on this window'}</span>
           </div>
         </div>
 
@@ -857,6 +863,9 @@ export default memo(function Welcome({
   const [importError, setImportError] = useState('')
   const [goalDraft, setGoalDraft] = useState('60')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [androidNavOpen, setAndroidNavOpen] = useState(false)
+  const [androidMoreOpen, setAndroidMoreOpen] = useState(false)
+  const androidRuntime = isAndroidRuntime()
   const [readerName, setReaderName] = useState(() => normalizeReaderName(safeLocalStorage()?.getItem(READER_NAME_KEY) || ''))
   const [readerNameDraft, setReaderNameDraft] = useState(readerName)
   const [readerNameEditing, setReaderNameEditing] = useState(false)
@@ -883,6 +892,25 @@ export default memo(function Welcome({
   useEffect(() => {
     void refreshDashboard()
   }, [refreshDashboard])
+
+  useEffect(() => {
+    if (!isAndroidRuntime()) return
+    const updateMode = () => {
+      setAndroidNavOpen(false)
+    }
+    window.addEventListener('resize', updateMode, { passive: true })
+    window.addEventListener('orientationchange', updateMode, { passive: true })
+    const removeSwipe = installAndroidHorizontalSwipeListener((direction) => {
+      if (isAndroidPhoneMode(androidShellMode())) return
+      setAndroidNavOpen(direction === 'right')
+      void performAndroidHaptic('selection')
+    })
+    return () => {
+      window.removeEventListener('resize', updateMode)
+      window.removeEventListener('orientationchange', updateMode)
+      removeSwipe()
+    }
+  }, [])
 
   useEffect(() => {
     if (readerName) return
@@ -1318,7 +1346,7 @@ export default memo(function Welcome({
 
   return (
     <div
-      className={`dashboard-home ${motion ? 'motion-enabled' : 'motion-reduced'} ${drag ? 'is-dragging' : ''}`}
+      className={`dashboard-home ${motion ? 'motion-enabled' : 'motion-reduced'} ${drag ? 'is-dragging' : ''} ${androidNavOpen ? 'is-android-nav-open' : ''}`}
       onMouseDown={handleDashboardMouseDown}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -1352,7 +1380,10 @@ export default memo(function Welcome({
                 aria-current={view === item.id ? 'page' : undefined}
                 aria-label={item.label}
                 title={item.label}
-                onClick={() => setView(item.id)}
+                onClick={() => {
+                  setView(item.id)
+                  if (androidRuntime) void performAndroidHaptic('selection')
+                }}
               >
                 {view === item.id && (
                   <m.span
@@ -1452,6 +1483,85 @@ export default memo(function Welcome({
           </AnimatePresence>
         </div>
       </main>
+
+      {androidRuntime && (
+        <>
+          <AnimatePresence>
+            {androidMoreOpen && (
+              <m.div
+                className="android-more-scrim"
+                variants={overlayFade}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                onPointerDown={() => setAndroidMoreOpen(false)}
+              >
+                <m.section
+                  className="android-more-sheet"
+                  aria-label="More destinations"
+                  variants={modalPanel}
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <div className="android-sheet-handle" aria-hidden="true" />
+                  <h2>More in Folio</h2>
+                  {NAV_ITEMS.filter((item) => ['audiobooks', 'notes', 'history'].includes(item.id)).map((item) => {
+                    const Icon = Icons[item.icon]
+                    return (
+                      <button
+                        type="button"
+                        key={item.id}
+                        className={view === item.id ? 'active' : ''}
+                        onClick={() => {
+                          setView(item.id)
+                          setAndroidMoreOpen(false)
+                          void performAndroidHaptic('selection')
+                        }}
+                      >
+                        <Icon size={20} />
+                        <span>{item.label}</span>
+                      </button>
+                    )
+                  })}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAndroidMoreOpen(false)
+                      openSettings()
+                      void performAndroidHaptic('selection')
+                    }}
+                  >
+                    <Icons.Settings size={20} />
+                    <span>Settings</span>
+                  </button>
+                </m.section>
+              </m.div>
+            )}
+          </AnimatePresence>
+
+          <nav className="android-bottom-nav" aria-label="Primary destinations">
+            <button type="button" className="android-nav-add" onClick={() => fileRef.current?.click()} aria-label="Add books">
+              <Icons.Upload size={20} />
+              <span>Add</span>
+            </button>
+            <button type="button" className={view === 'home' ? 'active' : ''} onClick={() => setView('home')} aria-current={view === 'home' ? 'page' : undefined}>
+              <Icons.Home size={20} />
+              <span>Home</span>
+            </button>
+            <button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')} aria-current={view === 'library' ? 'page' : undefined}>
+              <Icons.Library size={20} />
+              <span>Library</span>
+            </button>
+            <button type="button" className={view === 'highlights' ? 'active' : ''} onClick={() => setView('highlights')} aria-current={view === 'highlights' ? 'page' : undefined}>
+              <Icons.Highlight size={20} />
+              <span>Highlights</span>
+            </button>
+            <button type="button" className={androidMoreOpen ? 'active' : ''} onClick={() => setAndroidMoreOpen((open) => !open)} aria-expanded={androidMoreOpen}>
+              <Icons.Dots size={20} />
+              <span>More</span>
+            </button>
+          </nav>
+        </>
+      )}
 
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>

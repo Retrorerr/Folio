@@ -13,6 +13,8 @@ Default permissions for the plugin
 - `allow-install-model-pack`
 - `allow-synthesize`
 - `allow-platform-status`
+- `allow-set-system-bars`
+- `allow-perform-haptic`
 - `allow-play-audio`
 - `allow-control-audio`
 - `allow-audio-status`
@@ -152,6 +154,32 @@ Enables the open_document_read command without any pre-configured scope.
 <td>
 
 Denies the open_document_read command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:allow-perform-haptic`
+
+</td>
+<td>
+
+Enables the perform_haptic command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:deny-perform-haptic`
+
+</td>
+<td>
+
+Denies the perform_haptic command without any pre-configured scope.
 
 </td>
 </tr>
@@ -308,6 +336,32 @@ Enables the scan_document_tree command without any pre-configured scope.
 <td>
 
 Denies the scan_document_tree command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:allow-set-system-bars`
+
+</td>
+<td>
+
+Enables the set_system_bars command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:deny-set-system-bars`
+
+</td>
+<td>
+
+Denies the set_system_bars command without any pre-configured scope.
 
 </td>
 </tr>
