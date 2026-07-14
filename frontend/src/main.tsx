@@ -6,6 +6,7 @@ import './styles/android.css'
 import App from './App'
 import ErrorBoundary from './ErrorBoundary'
 import { isAndroidRuntime, isTauriRuntime, requireAndroidBridge } from './platform'
+import { installAndroidShellModeListener } from './androidShell'
 
 async function setTauriWindowIcon() {
   if (!isTauriRuntime() || isAndroidRuntime()) return
@@ -32,7 +33,11 @@ if (!root) {
 const reactRoot = createRoot(root)
 
 async function boot() {
-  if (isAndroidRuntime()) document.documentElement.dataset.platform = 'android'
+  let disposeAndroidShellMode = () => {}
+  if (isAndroidRuntime()) {
+    document.documentElement.dataset.platform = 'android'
+    disposeAndroidShellMode = installAndroidShellModeListener()
+  }
 
   try {
     await requireAndroidBridge()
@@ -45,6 +50,7 @@ async function boot() {
         <p>Reinstall this Android build. Folio will not fall back to a desktop or network backend.</p>
       </main>,
     )
+    disposeAndroidShellMode()
     return
   }
 

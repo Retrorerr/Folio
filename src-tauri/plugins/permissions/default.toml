@@ -1,3 +1,3 @@
 [default]
 description = "Default permissions for the plugin"
-permissions = ["allow-pick-epub", "allow-pick-folder", "allow-scan-document-tree", "allow-open-document-read", "allow-read-document-chunk", "allow-close-document-read", "allow-install-model-pack", "allow-synthesize", "allow-platform-status", "allow-play-audio", "allow-control-audio", "allow-audio-status"]
+permissions = ["allow-pick-epub", "allow-pick-folder", "allow-scan-document-tree", "allow-open-document-read", "allow-read-document-chunk", "allow-close-document-read", "allow-install-model-pack", "allow-synthesize", "allow-platform-status", "allow-set-system-bars", "allow-perform-haptic", "allow-play-audio", "allow-control-audio", "allow-audio-status"]

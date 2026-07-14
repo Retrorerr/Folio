@@ -50,6 +50,7 @@ export default function PdfViewer({
   onVisualPositionChange,
 }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const stageRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const documentRef = useRef<PDFDocumentProxy | null>(null)
   const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null)
@@ -69,8 +70,8 @@ export default function PdfViewer({
         const response = await apiFetch(`/api/book/${bookId}/source`, { signal: controller.signal })
         if (!response.ok) throw new Error('The original PDF could not be opened from local storage.')
         const bytes = new Uint8Array(await response.arrayBuffer())
-        const { getDocument } = await import('../pdfRuntime')
-        const task = getDocument({ data: bytes })
+        const { getDocument, standardFontDataUrl } = await import('../pdfRuntime')
+        const task = getDocument({ data: bytes, standardFontDataUrl, useSystemFonts: false })
         loadingTaskRef.current = task
         const next = await task.promise
         if (disposed) {
@@ -115,7 +116,7 @@ export default function PdfViewer({
   }, [])
 
   useEffect(() => {
-    if (!document || !canvasRef.current || !containerRef.current) return
+    if (!document || !canvasRef.current || !containerRef.current || !stageRef.current) return
     let disposed = false
     let page: PDFPageProxy | null = null
     setLoading(true)
@@ -123,7 +124,7 @@ export default function PdfViewer({
     ;(async () => {
       try {
         page = await document.getPage(Math.min(document.numPages, Math.max(1, pageIdx + 1)))
-        if (disposed || !canvasRef.current || !containerRef.current) return
+        if (disposed || !canvasRef.current || !containerRef.current || !stageRef.current) return
         const natural = page.getViewport({ scale: 1 })
         const availableWidth = Math.max(280, containerRef.current.clientWidth - 40)
         const availableHeight = Math.max(360, window.innerHeight - 190)
@@ -135,6 +136,7 @@ export default function PdfViewer({
         canvas.height = Math.max(1, Math.floor(viewport.height * pixelRatio))
         canvas.style.width = `${Math.floor(viewport.width)}px`
         canvas.style.height = `${Math.floor(viewport.height)}px`
+        stageRef.current.style.height = `${Math.floor(viewport.height)}px`
         const task = page.render({
           canvas,
           viewport,
@@ -200,7 +202,7 @@ export default function PdfViewer({
 
   return (
     <div ref={containerRef} className="pdf-viewer" data-loading={loading || undefined}>
-      <div className="pdf-page-stage" aria-busy={loading}>
+      <div ref={stageRef} className="pdf-page-stage" aria-busy={loading}>
         <canvas ref={canvasRef} className="pdf-page-canvas" aria-label={`PDF page ${pageIdx + 1} of ${pageCount}`} />
         {loading && <div className="pdf-page-status">Rendering page {pageIdx + 1}…</div>}
         {error && <div className="pdf-page-error" role="alert">{error}</div>}

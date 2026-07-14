@@ -65,6 +65,17 @@ impl<R: Runtime> MobileRuntime<R> {
         Err(crate::Error::Unsupported)
     }
 
+    pub fn set_system_bars(
+        &self,
+        _payload: SystemBarsRequest,
+    ) -> crate::Result<SystemBarsResponse> {
+        Err(crate::Error::Unsupported)
+    }
+
+    pub fn perform_haptic(&self, _payload: HapticRequest) -> crate::Result<HapticResponse> {
+        Err(crate::Error::Unsupported)
+    }
+
     pub fn play_audio(&self, _payload: PlayAudioRequest) -> crate::Result<PlaybackStatus> {
         Err(crate::Error::Unsupported)
     }

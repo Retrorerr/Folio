@@ -121,6 +121,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Tauri Android project initialization failed' }
   }
 
+  & (Join-Path $repoRoot 'scripts\sync-android-branding.ps1') -AndroidRoot $androidRoot
+  if ($LASTEXITCODE -ne 0) { throw 'Android branding synchronization failed' }
+
   # Platform config explicitly clears bundle.resources, but older generated
   # projects can retain a copied Windows sidecar tree. Never package it.
   $generatedResources = Join-Path $androidRoot 'app\src\main\assets\resources'

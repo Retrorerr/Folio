@@ -377,6 +377,7 @@ export default memo(function Pill({
         return `Downloading ${engineName}… ${pct}%`
       }
       if (installState.state === 'verifying') return `Verifying ${engineName}…`
+      if (installState.installed) return installState.error || `${engineName} is installed but its runtime is not ready`
       return `${engineName} not installed`
     }
     // Engine-level load failure (memory pressure, missing dep, etc.) wins
@@ -392,14 +393,22 @@ export default memo(function Pill({
       return `Downloading ${engineName}… ${pct}% · ${mb}/${totalMb} MB`
     }
     if (modelLoading) return `Loading ${engineName}…`
+    if (textLoading) return 'Extracting text (OCR)…'
+    // On Android, pressing play may initialize the selected runtime and
+    // synthesize the first chunk in one operation. Generation is the active
+    // truth during that window; a stale status snapshot must not label the
+    // same operation as merely "ready on demand".
+    if (isGenerating) return 'Generating audio…'
+    // Cached audio can play without loading the synthesis runtime in this
+    // process. In that valid state, show the active voice/engine metadata
+    // instead of the misleading "ready on demand" preparation label.
+    if (isPlaying) return null
     if (!modelLoaded) {
       return `${engineName} ready on demand`
     }
     if (modelLoaded && engineFallbackReason && !isPlaying) {
       return engineFallbackReason
     }
-    if (textLoading) return 'Extracting text (OCR)…'
-    if (isGenerating) return 'Generating audio…'
     if (sentenceCount === 0) return 'No text on this page'
     return null
   }
@@ -526,8 +535,10 @@ export default memo(function Pill({
         detail = `${engineName} assets are being checked before use.`
         progressMode = 'indeterminate'
       } else {
-        headline = 'Model not installed'
-        detail = `${engineName} needs a local model before narration can start.`
+        headline = installState.installed ? 'Runtime not ready' : 'Model not installed'
+        detail = installState.installed
+          ? (installState.error || `${engineName} is installed but its native runtime is not ready.`)
+          : `${engineName} needs a local model before narration can start.`
         progressMode = 'idle'
       }
     } else if (engineLoadError && !modelLoaded) {

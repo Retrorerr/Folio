@@ -94,6 +94,21 @@ impl<R: Runtime> MobileRuntime<R> {
             .map_err(Into::into)
     }
 
+    pub fn set_system_bars(
+        &self,
+        payload: SystemBarsRequest,
+    ) -> crate::Result<SystemBarsResponse> {
+        self.0
+            .run_mobile_plugin("setSystemBars", payload)
+            .map_err(Into::into)
+    }
+
+    pub fn perform_haptic(&self, payload: HapticRequest) -> crate::Result<HapticResponse> {
+        self.0
+            .run_mobile_plugin("performHaptic", payload)
+            .map_err(Into::into)
+    }
+
     pub fn play_audio(&self, payload: PlayAudioRequest) -> crate::Result<PlaybackStatus> {
         self.0
             .run_mobile_plugin("playAudio", payload)

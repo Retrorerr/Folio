@@ -1,5 +1,6 @@
 import { unzipSync } from 'fflate'
 import { clampSpeedForEngine, normalizeTtsEngine, normalizeVoiceForEngine } from './ttsVoices'
+import { applyAndroidPlatformMetrics, type AndroidPlatformMetrics } from './androidShell'
 import type {
   BookState,
   DashboardPayload,
@@ -44,13 +45,22 @@ type NativeModelAsset = {
   installed?: boolean
   loaded?: boolean
   synthesisReady?: boolean
+  state?: ModelInstallInfo['state']
+  downloaded_bytes?: number
+  total_bytes?: number
+  progress?: number
+  download_active?: boolean
+  download_label?: string | null
+  download_error?: string | null
+  approx_download_bytes?: number
   path?: string
   runner?: string
   error?: string | null
   [key: string]: unknown
 }
 
-type NativePlatformStatus = {
+type NativePlatformStatus = AndroidPlatformMetrics & {
+  platform?: string
   nativeTtsAvailable: boolean
   modelAssets: Record<string, NativeModelAsset>
 }
@@ -102,10 +112,16 @@ const RESOURCE_CACHE_LIMIT = 160
 const CONTENT_CACHE_LIMIT = 6
 let dbPromise: Promise<IDBDatabase> | null = null
 let booksCache: BookState[] | null = null
+let booksLoadPromise: Promise<BookState[]> | null = null
 const contentCache = new Map<string, MobileContentRecord>()
 const audioGenerationJobs = new Map<string, Promise<MobileAudioRecord>>()
 const preloadJobs = new Map<string, MobilePreloadJob>()
 const bufferWindows = new Map<string, MobileBufferWindow>()
+let audioCacheEpoch = 0
+let nativePlatformStatusCache: { value: NativePlatformStatus; at: number } | null = null
+let nativePlatformStatusInFlight: Promise<NativePlatformStatus> | null = null
+const NATIVE_STATUS_CACHE_MS = 900
+const NATIVE_STATUS_TIMEOUT_MS = 2400
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise
@@ -162,18 +178,22 @@ function openDb(): Promise<IDBDatabase> {
       db.onversionchange = () => {
         db.close()
         dbPromise = null
+        booksCache = null
+        booksLoadPromise = null
       }
-      // The v2 upgrade transaction has committed by this point, so the legacy
-      // heavyweight copies are now redundant and can be reclaimed safely.
-      if (!db.objectStoreNames.contains(RECORDS_STORE)) {
-        resolve(db)
-        return
+      // The v2 upgrade transaction has committed by this point, so current
+      // books are ready. Reclaim legacy heavyweight copies in the background:
+      // a slow or stale cleanup transaction must never hold the Android boot
+      // screen open or block status/library requests.
+      resolve(db)
+      if (db.objectStoreNames.contains(RECORDS_STORE)) {
+        try {
+          const cleanup = db.transaction(RECORDS_STORE, 'readwrite')
+          cleanup.objectStore(RECORDS_STORE).clear()
+        } catch {
+          // The next launch can retry this best-effort cleanup.
+        }
       }
-      const cleanup = db.transaction(RECORDS_STORE, 'readwrite')
-      cleanup.objectStore(RECORDS_STORE).clear()
-      cleanup.oncomplete = () => resolve(db)
-      cleanup.onerror = () => resolve(db)
-      cleanup.onabort = () => resolve(db)
     }
     request.onerror = () => {
       dbPromise = null
@@ -189,13 +209,23 @@ function openDb(): Promise<IDBDatabase> {
 
 async function getAllBooks(): Promise<BookState[]> {
   if (booksCache) return booksCache
-  const db = await openDb()
-  booksCache = await new Promise<BookState[]>((resolve, reject) => {
-    const request = db.transaction(BOOKS_STORE, 'readonly').objectStore(BOOKS_STORE).getAll()
-    request.onsuccess = () => resolve((request.result || []) as BookState[])
-    request.onerror = () => reject(request.error || new Error('Could not read Folio library'))
-  })
-  return booksCache
+  if (!booksLoadPromise) {
+    // Status, dashboard and recent-book requests all start together during an
+    // Android cold launch. Share one IndexedDB read rather than opening
+    // competing startup transactions whose completion order can strand one
+    // caller behind legacy maintenance.
+    booksLoadPromise = openDb().then((db) => new Promise<BookState[]>((resolve, reject) => {
+      const request = db.transaction(BOOKS_STORE, 'readonly').objectStore(BOOKS_STORE).getAll()
+      request.onsuccess = () => resolve((request.result || []) as BookState[])
+      request.onerror = () => reject(request.error || new Error('Could not read Folio library'))
+    }))
+  }
+  try {
+    booksCache = await booksLoadPromise
+    return booksCache
+  } finally {
+    booksLoadPromise = null
+  }
 }
 
 function cacheContent(record: MobileContentRecord): void {
@@ -852,8 +882,8 @@ async function parsePdf(bytes: Uint8Array, filename: string, id: string): Promis
     throw new Error('This PDF is too large to import safely on this device.')
   }
 
-  const { getDocument } = await import('./pdfRuntime')
-  const loadingTask = getDocument({ data: bytes.slice() })
+  const { getDocument, standardFontDataUrl } = await import('./pdfRuntime')
+  const loadingTask = getDocument({ data: bytes.slice(), standardFontDataUrl, useSystemFonts: false })
   const document = await loadingTask.promise
   if (!document.numPages || document.numPages > MAX_PDF_PAGES) {
     await loadingTask.destroy()
@@ -963,9 +993,47 @@ async function nativeInvoke<T>(command: string, payload?: unknown): Promise<T> {
   return invoke<T>(`plugin:mobile-runtime|${command}`, payload === undefined ? undefined : { payload })
 }
 
+async function nativePlatformStatus(): Promise<NativePlatformStatus> {
+  const now = Date.now()
+  if (nativePlatformStatusCache && now - nativePlatformStatusCache.at < NATIVE_STATUS_CACHE_MS) {
+    return nativePlatformStatusCache.value
+  }
+  if (!nativePlatformStatusInFlight) {
+    const request = nativeInvoke<NativePlatformStatus>('platform_status')
+      .then((value) => {
+        nativePlatformStatusCache = { value, at: Date.now() }
+        applyAndroidPlatformMetrics(value)
+        return value
+      })
+    nativePlatformStatusInFlight = request
+    void request.finally(() => {
+      if (nativePlatformStatusInFlight === request) nativePlatformStatusInFlight = null
+    }).catch(() => {})
+  }
+
+  const request = nativePlatformStatusInFlight!
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      request,
+      new Promise<NativePlatformStatus>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Android runtime status timed out')), NATIVE_STATUS_TIMEOUT_MS)
+      }),
+    ])
+  } catch (error) {
+    // A last-known-good snapshot is stable installation evidence. A slow ONNX
+    // operation must not turn verified files into a false missing-model state.
+    if (nativePlatformStatusCache) return nativePlatformStatusCache.value
+    throw error
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
 function modelInstallInfo(engine: 'supertonic' | 'kokoro', platform: NativePlatformStatus, bridgeError?: string): ModelInstallInfo {
   const native = platform.modelAssets?.[engine] || {}
   const installed = Boolean(native.installed)
+  const nativeState = native.state
   const error = bridgeError || native.error || (installed && native.synthesisReady === false
     ? `${engine === 'kokoro' ? 'Kokoro' : 'Supertonic 3'} is installed but its native runtime is not ready.`
     : null)
@@ -977,12 +1045,16 @@ function modelInstallInfo(engine: 'supertonic' | 'kokoro', platform: NativePlatf
     ...native,
     engine,
     label: engine === 'kokoro' ? 'Kokoro' : 'Supertonic 3',
-    state: ready ? 'ready' : error ? 'failed' : 'not_installed',
+    state: ready
+      ? 'ready'
+      : nativeState || (error ? 'failed' : 'not_installed'),
     ready,
     installed,
-    downloaded_bytes: 0,
-    total_bytes: 0,
-    progress: installed ? 1 : 0,
+    downloaded_bytes: Number(native.downloaded_bytes || 0),
+    total_bytes: Number(native.total_bytes || native.approx_download_bytes || 0),
+    progress: Number.isFinite(Number(native.progress))
+      ? Number(native.progress)
+      : installed ? 1 : 0,
     error,
   }
 }
@@ -991,7 +1063,7 @@ async function nativeModelRequirement(engine: 'supertonic' | 'kokoro'): Promise<
   let platform: NativePlatformStatus
   let bridgeError = ''
   try {
-    platform = await nativeInvoke<NativePlatformStatus>('platform_status')
+    platform = await nativePlatformStatus()
   } catch (error) {
     bridgeError = error instanceof Error ? error.message : String(error)
     platform = { nativeTtsAvailable: false, modelAssets: {} }
@@ -999,7 +1071,9 @@ async function nativeModelRequirement(engine: 'supertonic' | 'kokoro'): Promise<
   const install = modelInstallInfo(engine, platform, bridgeError || undefined)
   if (install.ready) return null
   const detail = install.error
-    || `${install.label} is not installed. Import the verified Android model pack to use this engine.`
+    || (install.installed
+      ? `${install.label} is installed, but its native runtime is not ready yet.`
+      : `${install.label} is not installed. Download the verified Android model to use this engine.`)
   return jsonResponse({ error: 'model_required', detail, engine, install }, install.installed || bridgeError ? 423 : 409)
 }
 
@@ -1007,6 +1081,7 @@ async function getOrGenerateAudioRecord(identity: AudioRequestIdentity, text: st
   const key = audioCacheKey(identity)
   const existingJob = audioGenerationJobs.get(key)
   if (existingJob) return existingJob
+  const epoch = audioCacheEpoch
 
   const job = (async () => {
     const cached = await getAudioRecord(key)
@@ -1045,6 +1120,9 @@ async function getOrGenerateAudioRecord(identity: AudioRequestIdentity, text: st
       sampleRate: decoded.sampleRate,
       createdAt: now,
       lastAccessedAt: now,
+    }
+    if (epoch !== audioCacheEpoch) {
+      throw new Error('Narration cache changed while this audio was being generated.')
     }
     await putAudioRecord(record)
     return record
@@ -1422,7 +1500,7 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
 
   if (url.pathname === '/api/status') {
     let bridgeError = ''
-    const platform: NativePlatformStatus = await nativeInvoke<NativePlatformStatus>('platform_status').catch((error): NativePlatformStatus => {
+    const platform: NativePlatformStatus = await nativePlatformStatus().catch((error): NativePlatformStatus => {
       bridgeError = error instanceof Error ? error.message : String(error)
       return { nativeTtsAvailable: false, modelAssets: {} }
     })
@@ -1446,20 +1524,40 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
       system: { ram: { used_bytes: 0, total_bytes: 0, percent: 0 }, gpu: null },
     })
   }
-  if (url.pathname === '/api/models' || /^\/api\/models\/(supertonic|kokoro)\/(download|retry|cancel)$/.test(url.pathname)) {
-    const modelAction = url.pathname.match(/^\/api\/models\/(supertonic|kokoro)\/(download|retry|cancel)$/)
+  if (url.pathname === '/api/models' || /^\/api\/models\/(supertonic|kokoro)(?:\/(download|retry|cancel|import))?$/.test(url.pathname)) {
+    const modelAction = url.pathname.match(/^\/api\/models\/(supertonic|kokoro)(?:\/(download|retry|cancel|import))?$/)
+    if (modelAction && !modelAction[2]) {
+      const platform = await nativePlatformStatus().catch(() => ({ nativeTtsAvailable: false, modelAssets: {} }))
+      return jsonResponse(modelInstallInfo(modelAction[1] as 'supertonic' | 'kokoro', platform))
+    }
     if (modelAction && modelAction[2] !== 'cancel') {
-      const result = await nativeInvoke<{ installed?: boolean; error?: string | null }>('install_model_pack', { engine: modelAction[1] })
+      const result = await nativeInvoke<{ installed?: boolean; started?: boolean; cancelled?: boolean; state?: string; error?: string | null }>('install_model_pack', {
+        engine: modelAction[1],
+        download: modelAction[2] !== 'import',
+      })
+      nativePlatformStatusCache = null
+      // Downloads/imports are allowed to be long-running. Native status is the
+      // progress source of truth, so return the operation acknowledgement
+      // without converting an in-flight install into a false failure.
       if (!result?.installed) {
-        const detail = result?.error || `${modelAction[1]} model-pack import failed.`
-        return jsonResponse({ ...result, detail, error: 'model_pack_invalid' }, 422)
+        if (result?.cancelled) {
+          return jsonResponse({ ...result, ok: true })
+        }
+        if (result?.started || result?.state === 'download_queued' || result?.state === 'downloading') {
+          return jsonResponse({ ...result, ok: true })
+        }
+        const detail = result?.error || `${modelAction[1]} model installation failed.`
+        return jsonResponse({ ...result, detail, error: 'model_install_failed' }, 422)
       }
       return jsonResponse(result)
     }
-    return handleRequest('/api/status', options).then(async (response) => {
-      const data = await response.json() as { models: Record<string, unknown> }
-      return url.pathname === '/api/models' ? jsonResponse(data.models) : jsonResponse(data.models[url.pathname.split('/')[3]] || {})
-    })
+    if (modelAction && modelAction[2] === 'cancel') {
+      await nativeInvoke('install_model_pack', { engine: modelAction[1], cancel: true })
+      nativePlatformStatusCache = null
+    }
+    const response = await handleRequest('/api/status', options)
+    const data = await response.json() as { models: Record<string, unknown> }
+    return url.pathname === '/api/models' ? jsonResponse(data.models) : jsonResponse(data.models[url.pathname.split('/')[3]] || {})
   }
   if (url.pathname === '/api/settings' && method === 'GET') return jsonResponse(await getValue('settings', {}))
   if (url.pathname === '/api/settings' && method === 'POST') {
@@ -1567,8 +1665,17 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
     return jsonResponse({ files: records.length, size_mb: bytes / (1024 * 1024) })
   }
   if (url.pathname === '/api/cache/clear' && method === 'POST') {
+    // Invalidate every layer before touching IndexedDB. Native synthesis jobs
+    // cannot be interrupted safely, so the epoch prevents an older result
+    // from repopulating the cache after this clear completes.
+    audioCacheEpoch += 1
+    bufferWindows.forEach((window) => { window.cancelled = true })
+    bufferWindows.clear()
+    preloadJobs.clear()
+    audioGenerationJobs.clear()
     const deleted = await clearAudioRecords()
     releaseAllResources()
+    globalThis.dispatchEvent(new CustomEvent('folio:audio-cache-cleared', { detail: { deleted } }))
     return jsonResponse({ ok: true, deleted, skipped: 0, files: 0, size_mb: 0 })
   }
 

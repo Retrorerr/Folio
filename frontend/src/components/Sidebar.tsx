@@ -4,6 +4,12 @@ import { createPortal, flushSync } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
 import { apiFetch, apiJson, isAndroidRuntime, selectLibraryFolder } from '../api'
+import {
+  androidShellMode,
+  installAndroidHorizontalSwipeListener,
+  isAndroidPhoneMode,
+  performAndroidHaptic,
+} from '../androidShell'
 import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, panelReveal, scaleIn, slideUp, spring } from '../motion'
 import {
   engineDisplayName,
@@ -117,9 +123,28 @@ function runThemeTransition(event: React.MouseEvent, nextTheme: string, currentT
   })
 }
 
+function displayFolderPath(path: string): string {
+  if (!path) return ''
+  if (path.startsWith('content://')) {
+    try {
+      const decoded = decodeURIComponent(path)
+      const documentId = decoded.split('/tree/')[1]?.split('/document/')[0] || ''
+      if (documentId.startsWith('primary:')) {
+        return `Internal storage / ${documentId.slice('primary:'.length).replace(/\//g, ' / ')}`
+      }
+      if (documentId) return documentId.replace(':', ' / ').replace(/\//g, ' / ')
+    } catch {
+      return 'Android document folder'
+    }
+    return 'Android document folder'
+  }
+  return path
+}
+
 function folderLabel(path: string): string {
-  if (!path) return 'No folder selected'
-  const normalized = path.replace(/[\\/]+$/, '')
+  const displayPath = displayFolderPath(path)
+  if (!displayPath) return 'No folder selected'
+  const normalized = displayPath.replace(/[\\/]+$/, '')
   const parts = normalized.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] || normalized
 }
@@ -154,8 +179,16 @@ export default memo(function Sidebar({
   hidden = false,
 }: SidebarProps) {
   const [renderedTab, setRenderedTab] = useState(tab)
+  const [androidMode, setAndroidMode] = useState(() => androidShellMode())
+  const [androidDrawerOpen, setAndroidDrawerOpen] = useState(false)
+  const androidRuntime = isAndroidRuntime()
+  const androidTablet = androidRuntime && !isAndroidPhoneMode(androidMode)
+  const androidPhone = androidRuntime && isAndroidPhoneMode(androidMode)
   const panelTab = renderedTab === 'settings' ? null : renderedTab
-  const panelOpen = Boolean(tab && tab !== 'settings')
+  const panelSelected = Boolean(tab && tab !== 'settings')
+  const panelOpen = panelSelected
+  const sidebarExpanded = panelSelected && (!androidTablet || androidDrawerOpen)
+  const androidOverlayOpen = androidTablet && panelSelected && !androidDrawerOpen
   const settingsOpen = tab === 'settings'
   const useGoldLogo = theme === 'light' || theme === 'sepia'
   const logoSrc = useGoldLogo ? '/folio-icon.png' : '/folio-monochrome-icon.png'
@@ -170,20 +203,58 @@ export default memo(function Sidebar({
     return () => clearTimeout(timer)
   }, [tab])
 
+  useEffect(() => {
+    if (!isAndroidRuntime()) return
+    const updateMode = () => {
+      setAndroidMode(androidShellMode())
+      setAndroidDrawerOpen(false)
+    }
+    window.addEventListener('resize', updateMode, { passive: true })
+    window.addEventListener('orientationchange', updateMode, { passive: true })
+    return () => {
+      window.removeEventListener('resize', updateMode)
+      window.removeEventListener('orientationchange', updateMode)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!androidTablet || hidden) {
+      setAndroidDrawerOpen(false)
+      return
+    }
+    return installAndroidHorizontalSwipeListener((direction) => {
+      if (direction === 'right') {
+        setAndroidDrawerOpen(true)
+        if (!tab) setTab('chapters')
+      } else {
+        setAndroidDrawerOpen(false)
+        setTab(null)
+      }
+      void performAndroidHaptic('selection')
+    })
+  }, [androidTablet, hidden, setTab, tab])
+
   const railBtn = (key: string, Ico: IconComponent, label: string) => (
     <m.button
       key={key}
       className={`rail-btn ${tab === key ? 'active' : ''}`}
-      onClick={() => setTab(tab === key ? null : key)}
+      onClick={() => {
+        if (androidRuntime) {
+          setAndroidDrawerOpen(false)
+          void performAndroidHaptic('selection')
+        }
+        setTab(tab === key ? null : key)
+      }}
       title={label}
       aria-label={label}
-      layout
-      whileHover={buttonHover}
+      layout={!androidRuntime}
+      whileHover={androidRuntime ? undefined : buttonHover}
       whileTap={buttonTap}
       transition={spring.quick}
     >
       {tab === key && <m.span className="rail-active-bg" layoutId="reader-rail-active" transition={spring.layout} aria-hidden="true" />}
       <Ico size={18} />
+      <span className="android-nav-label">{label}</span>
     </m.button>
   )
 
@@ -206,9 +277,9 @@ export default memo(function Sidebar({
 
   return (
     <>
-      <m.div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${panelOpen ? 'is-open' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''}`} layout transition={spring.layout}>
-      <m.div className="icon-rail" ref={railRef} layout>
-        <m.button className="rail-brand" onClick={onHome} title="Library" aria-label="Library" whileHover={buttonHover} whileTap={buttonTap}>
+      <m.div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${sidebarExpanded ? 'is-open' : ''} ${androidOverlayOpen ? 'is-android-overlay' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''} ${androidPhone ? 'is-android-phone' : ''}`} layout={!androidRuntime} transition={spring.layout}>
+      <m.div className="icon-rail" ref={railRef} layout={!androidRuntime}>
+        <m.button className="rail-brand" onClick={onHome} title="Library" aria-label="Library" whileHover={androidRuntime ? undefined : buttonHover} whileTap={buttonTap}>
           <img className="rail-brand-logo" src={logoSrc} alt="" draggable={false} />
         </m.button>
         {railBtn('chapters', Icons.Chapters, 'Chapters')}
@@ -229,7 +300,7 @@ export default memo(function Sidebar({
             initial="initial"
             animate={panelOpen ? 'animate' : 'exit'}
             exit="exit"
-            layout
+            layout={!androidRuntime}
             transition={spring.layout}
           >
             {panelTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
@@ -619,17 +690,17 @@ export function SettingsPanel({
 
   const installLabel = (engineId: string) => {
     const install = modelStatus?.[engineId]
-    if (!install) return androidRuntime ? 'Import' : 'Download'
+    if (!install) return 'Download'
     if (install.state === 'ready') return 'Installed'
     if (install.state === 'verifying') return 'Verifying'
-    if (install.state === 'failed') return androidRuntime ? 'Import again' : 'Retry'
+    if (install.state === 'failed') return 'Retry download'
     if (install.state === 'download_queued' || install.state === 'downloading') {
       const pct = install.total_bytes > 0
         ? Math.round(((install.downloaded_bytes || 0) / install.total_bytes) * 100)
         : Math.round((install.progress || 0) * 100)
       return `Downloading ${Math.max(1, Math.min(99, pct))}%`
     }
-    return androidRuntime ? 'Import' : 'Download'
+    return 'Download'
   }
 
   const installBusy = (install: any) => (
@@ -637,10 +708,10 @@ export function SettingsPanel({
   )
 
   const installActionLabel = (install: any) => {
-    if (install?.state === 'failed') return androidRuntime ? 'Choose another pack' : 'Retry download'
+    if (install?.state === 'failed') return 'Retry download'
     if (install?.state === 'verifying') return 'Verifying...'
     if (install?.state === 'download_queued' || install?.state === 'downloading') return 'Downloading...'
-    return androidRuntime ? 'Choose model pack' : 'Start download'
+    return androidRuntime ? 'Download model' : 'Start download'
   }
 
   const requestEngine = (engineId: string) => {
@@ -655,19 +726,23 @@ export function SettingsPanel({
     setInstallingEngine(engineId)
   }
 
-  const runInstallAction = async (engineId: string, mode: 'download' | 'retry' | 'cancel' = 'download') => {
+  const runInstallAction = async (engineId: string, mode: 'download' | 'retry' | 'cancel' | 'import' = 'download') => {
     const path = mode === 'retry'
       ? `/api/models/${engineId}/retry`
       : mode === 'cancel'
         ? `/api/models/${engineId}/cancel`
-        : `/api/models/${engineId}/download`
+        : mode === 'import'
+          ? `/api/models/${engineId}/import`
+          : `/api/models/${engineId}/download`
     try {
+      if (androidRuntime) void performAndroidHaptic(mode === 'cancel' ? 'selection' : 'confirm')
+      if (mode !== 'cancel') setInstallingEngine(engineId)
+      setUpdateMessage('')
       const response = await apiFetch(path, { method: 'POST' })
       if (!response.ok) {
         const payload = await response.json().catch(() => null)
-        throw new Error(payload?.detail || payload?.error || `Model import failed (${response.status})`)
+        throw new Error(payload?.detail || payload?.error || `Model installation failed (${response.status})`)
       }
-      if (mode !== 'cancel') setInstallingEngine(engineId)
     } catch (error) {
       setUpdateMessage(error instanceof Error ? error.message : 'Could not update the model install. Please try again.')
     }
@@ -884,7 +959,7 @@ export function SettingsPanel({
         className="settings-shell"
         onMouseDown={(event) => event.stopPropagation()}
         variants={modalPanel}
-        layout
+        layout={!androidRuntime}
         transition={spring.panel}
       >
         <section className="settings-main">
@@ -913,7 +988,7 @@ export function SettingsPanel({
                 </div>
                 <span>{theme}</span>
               </div>
-              <m.div className="theme-switch" layout>
+              <m.div className="theme-switch" layout={!androidRuntime}>
                 {['light', 'sepia', 'dark', 'folio', 'blackleaf'].map((t) => (
                   <m.button
                     key={t}
@@ -923,7 +998,7 @@ export function SettingsPanel({
                     onClick={(e) => {
                       runThemeTransition(e, t, theme, setTheme)
                     }}
-                    layout
+                    layout={!androidRuntime}
                     whileTap={buttonTap}
                   >
                     {theme === t && <m.span className="settings-active-bg" layoutId="settings-theme-active" transition={spring.layout} aria-hidden="true" />}
@@ -943,17 +1018,19 @@ export function SettingsPanel({
                   onClick={() => setMotion(!motion)}
                 />
               </div>
-              <div className="control-row">
-                <span className="k" id="wheel-toggle-label">Scroll wheel flips pages</span>
-                <button
-                  type="button"
-                  className={`toggle ${wheelPaging ? 'on' : ''}`}
-                  role="switch"
-                  aria-checked={Boolean(wheelPaging)}
-                  aria-labelledby="wheel-toggle-label"
-                  onClick={() => setWheelPaging(!wheelPaging)}
-                />
-              </div>
+              {!androidRuntime && (
+                <div className="control-row">
+                  <span className="k" id="wheel-toggle-label">Scroll wheel flips pages</span>
+                  <button
+                    type="button"
+                    className={`toggle ${wheelPaging ? 'on' : ''}`}
+                    role="switch"
+                    aria-checked={Boolean(wheelPaging)}
+                    aria-labelledby="wheel-toggle-label"
+                    onClick={() => setWheelPaging(!wheelPaging)}
+                  />
+                </div>
+              )}
             </div>
 
             <div className="settings-group settings-card-wide settings-library-folder">
@@ -972,7 +1049,7 @@ export function SettingsPanel({
                   </strong>
                   <p>
                     {libraryFolderStatus?.folder
-                      ? libraryFolderStatus.folder
+                      ? displayFolderPath(libraryFolderStatus.folder)
                       : 'Choose a folder and Folio will periodically pick up new EPUB and PDF files from it.'}
                   </p>
                 </div>
@@ -998,7 +1075,7 @@ export function SettingsPanel({
                 </div>
                 <span>{activeVoice}</span>
               </div>
-              <m.div className="tts-engine-switch" role="group" aria-label="Narration engine" layout>
+              <m.div className="tts-engine-switch" role="group" aria-label="Narration engine" layout={!androidRuntime}>
                 {ttsEngines.map((engine) => (
                   <m.button
                     key={engine.id}
@@ -1006,7 +1083,7 @@ export function SettingsPanel({
                     className={`tts-engine-option ${activeEngine === engine.id ? 'active' : ''}`}
                     aria-pressed={activeEngine === engine.id}
                     onClick={() => requestEngine(engine.id)}
-                    layout
+                    layout={!androidRuntime}
                     whileTap={buttonTap}
                   >
                     {activeEngine === engine.id && <m.span className="settings-active-bg" layoutId="settings-engine-active" transition={spring.layout} aria-hidden="true" />}
@@ -1015,15 +1092,22 @@ export function SettingsPanel({
                   </m.button>
                 ))}
               </m.div>
+              <div className="model-state-row" aria-label="Narration model state">
+                <span><small>Selected</small><strong>{activeEngineName}</strong></span>
+                <span><small>Model files</small><strong>{activeInstall?.installed ? 'Installed + verified' : installLabel(activeEngine)}</strong></span>
+                <span><small>Runtime</small><strong>{activeInstall?.loaded ? 'Initialized' : engineReady ? 'Ready on demand' : 'Unavailable'}</strong></span>
+              </div>
               <AnimatePresence>
                 {!engineReady && (
                 <m.div className="model-install-card" role="status" variants={slideUp} initial="initial" animate="animate" exit="exit" layout>
                   <div className="model-install-copy">
                     <div className="label">Model install</div>
-                    <h4>{activeEngineName} is not installed yet</h4>
+                    <h4>{activeInstall?.installed ? `${activeEngineName} is installed but not ready` : `${activeEngineName} is not installed yet`}</h4>
                     <p>
                       {androidRuntime
-                        ? 'Choose a trusted Folio model pack. Folio verifies every required file before storing it privately on this device.'
+                        ? activeInstall?.installed
+                          ? (activeInstall.error || 'The native runtime is not ready for this installed model yet.')
+                          : 'Download the verified Folio model directly to this device. Folio checks every required file before it becomes available to playback.'
                         : 'Download the voice engine once, store it locally on this machine, and Folio will use it offline after that.'}
                     </p>
                     <div className="model-install-meta">
@@ -1040,6 +1124,21 @@ export function SettingsPanel({
                     >
                       {installActionLabel(activeInstall)}
                     </button>
+                    {installBusy(activeInstall) && (
+                      <button type="button" className="settings-action" onClick={() => runInstallAction(activeEngine, 'cancel')}>
+                        Cancel download
+                      </button>
+                    )}
+                    {androidRuntime && (
+                      <button
+                        type="button"
+                        className="settings-action model-install-secondary"
+                        disabled={installBusy(activeInstall)}
+                        onClick={() => runInstallAction(activeEngine, 'import')}
+                      >
+                        Import pack
+                      </button>
+                    )}
                   </div>
                   {(!androidRuntime || installBusy(activeInstall)) && (
                     <div className="model-install-progress" aria-hidden="true">
@@ -1049,7 +1148,7 @@ export function SettingsPanel({
                 </m.div>
                 )}
               </AnimatePresence>
-              <m.div className={`voice-picker ${engineReady ? '' : 'is-disabled'}`} role="radiogroup" aria-label={`${activeEngineName} voice`} layout>
+              <m.div className={`voice-picker ${engineReady ? '' : 'is-disabled'}`} role="radiogroup" aria-label={`${activeEngineName} voice`} layout={!androidRuntime}>
                 {voiceItems.map((item) => {
                   const active = activeVoice === item.id
                   return (
@@ -1061,8 +1160,8 @@ export function SettingsPanel({
                       disabled={!engineReady}
                       role="radio"
                       aria-checked={active}
-                      layout
-                      whileHover={engineReady ? buttonHover : undefined}
+                      layout={!androidRuntime}
+                      whileHover={!androidRuntime && engineReady ? buttonHover : undefined}
                       whileTap={engineReady ? buttonTap : undefined}
                     >
                       {active && <m.span className="settings-active-bg" layoutId="settings-voice-active" transition={spring.layout} aria-hidden="true" />}
@@ -1101,7 +1200,7 @@ export function SettingsPanel({
                     <div className="label">Storage</div>
                     <h3>Voice cache</h3>
                   </div>
-                  <span>{cacheInfo.size_mb} MB</span>
+                  <span>{Number(cacheInfo.size_mb || 0).toFixed(1)} MB</span>
                 </div>
                 <div className="settings-metric">
                   <span>Cached files</span>
@@ -1123,10 +1222,10 @@ export function SettingsPanel({
             <div className="model-install-orbit" aria-hidden="true" />
             <div className="model-install-head">
               <div className="label">Local voice engine</div>
-              <h3>{androidRuntime ? 'Import' : 'Download'} {installingEngineName}</h3>
+              <h3>Download {installingEngineName}</h3>
               <p>
                 {androidRuntime
-                  ? 'Select a Folio model-pack ZIP from Android storage. The files remain local and are verified before use.'
+                  ? 'Folio downloads the pinned model files directly, verifies their hashes and ONNX contracts, then installs them atomically for offline playback.'
                   : 'Folio keeps models on your device and only downloads them when you choose to install one.'}
               </p>
             </div>
@@ -1143,9 +1242,9 @@ export function SettingsPanel({
               {promptInstall?.state === 'failed'
                 ? (promptInstall?.error || 'The previous install failed. Retry to continue.')
                 : promptInstall?.state === 'ready'
-                  ? 'Installed and ready. Folio will switch to this engine automatically.'
-                  : androidRuntime
-                    ? 'Narration stays unavailable until a compatible local pack passes size, hash, and ONNX contract validation.'
+                    ? 'Installed and ready. Folio will switch to this engine automatically.'
+                    : androidRuntime
+                    ? 'Narration stays unavailable until the download passes size, hash, and ONNX contract validation.'
                     : 'Narration stays unavailable for this engine until the local model finishes downloading and verifying.'}
             </p>
             <div className="model-install-actions">
@@ -1159,13 +1258,23 @@ export function SettingsPanel({
                   {installActionLabel(promptInstall)}
                 </button>
               )}
-              {!androidRuntime && (promptInstall?.state === 'download_queued' || promptInstall?.state === 'downloading' || promptInstall?.state === 'verifying') && (
+              {(promptInstall?.state === 'download_queued' || promptInstall?.state === 'downloading' || promptInstall?.state === 'verifying') && (
                 <button
                   type="button"
                   className="settings-action"
                   onClick={() => runInstallAction(installingEngine, 'cancel')}
                 >
                   Cancel
+                </button>
+              )}
+              {androidRuntime && promptInstall?.state !== 'ready' && (
+                <button
+                  type="button"
+                  className="settings-action model-install-secondary"
+                  disabled={installBusy(promptInstall)}
+                  onClick={() => runInstallAction(installingEngine, 'import')}
+                >
+                  Import pack instead
                 </button>
               )}
               <button type="button" className="settings-action" onClick={() => { setInstallingEngine(null); clearInstallPrompt?.() }}>

@@ -1,3 +1,5 @@
+import { applyAndroidPlatformMetrics, type AndroidPlatformMetrics } from './androidShell'
+
 export type FolioPlatform = 'android' | 'desktop' | 'web'
 
 const configuredPlatform = String(import.meta.env.VITE_FOLIO_PLATFORM || '')
@@ -24,7 +26,7 @@ export function folioPlatform(): FolioPlatform {
   return isTauriRuntime() ? 'desktop' : 'web'
 }
 
-export type AndroidPlatformStatus = {
+export type AndroidPlatformStatus = AndroidPlatformMetrics & {
   platform: string
   nativeTtsAvailable: boolean
   modelRoot: string
@@ -42,6 +44,7 @@ export async function requireAndroidBridge(): Promise<AndroidPlatformStatus | nu
   if (status?.platform !== 'android') {
     throw new Error('The Folio Android runtime returned an invalid platform status.')
   }
+  applyAndroidPlatformMetrics(status)
   try {
     await navigator.storage?.persist?.()
   } catch {

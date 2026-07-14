@@ -113,6 +113,8 @@ pub struct CloseDocumentReadResponse {
 #[serde(rename_all = "camelCase")]
 pub struct InstallModelPackRequest {
     pub engine: String,
+    pub download: Option<bool>,
+    pub cancel: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -148,8 +150,40 @@ pub struct SynthesizeResponse {
 pub struct PlatformStatus {
     pub platform: String,
     pub native_tts_available: bool,
+    pub native_tts_error: Option<String>,
+    pub native_runtime_version: Option<String>,
+    pub native_runtime_providers: Vec<String>,
+    pub fallback_phonemizer_ready: Option<bool>,
+    pub fallback_phonemizer_error: Option<String>,
     pub model_root: String,
     pub model_assets: serde_json::Value,
+    pub window_insets: serde_json::Value,
+    pub density: Option<f32>,
+    pub refresh_rate: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemBarsRequest {
+    pub dark_background: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemBarsResponse {
+    pub dark_background: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HapticRequest {
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HapticResponse {
+    pub performed: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

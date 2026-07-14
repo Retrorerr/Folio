@@ -209,8 +209,18 @@ class OnDeviceModelManager(private val activity: Activity) {
         var lastError: String? = null
     }
 
+    private data class DownloadState(
+        var state: String = "not_installed",
+        var active: Boolean = false,
+        var downloadedBytes: Long = 0L,
+        var totalBytes: Long = 0L,
+        var error: String? = null,
+    )
+
     private val environment = OrtEnvironment.getEnvironment()
     private val states = DEFINITIONS.keys.associateWith { EngineState() }
+    private val downloadStates = DEFINITIONS.keys.associateWith { DownloadState() }.toMutableMap()
+    private val downloadStateLock = Any()
     private val cleanupRunning = AtomicBoolean(false)
     val phonemizer = EspeakPhonemizer(activity.applicationContext)
     internal val kokoroG2p = MisakiEnglishG2p(activity.applicationContext, phonemizer)
@@ -222,6 +232,93 @@ class OnDeviceModelManager(private val activity: Activity) {
     fun modelRoot(engine: String): File = File(activity.filesDir, "models/${definition(engine).let { engine }}")
 
     fun requiredFiles(engine: String): List<String> = definition(engine).assets.keys.toList()
+
+    internal fun expectedAssets(engine: String): Map<String, TrustedModelAsset> = definition(engine).assets.toMap()
+
+    internal fun beginDownload(engine: String, totalBytes: Long): Boolean = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: throw IllegalArgumentException("Unknown local model engine: $engine")
+        if (state.active) return@synchronized false
+        state.state = "download_queued"
+        state.active = true
+        state.downloadedBytes = 0L
+        state.totalBytes = totalBytes
+        state.error = null
+        true
+    }
+
+    internal fun updateDownload(engine: String, downloadedBytes: Long, totalBytes: Long) = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: return@synchronized
+        state.state = "downloading"
+        state.active = true
+        state.downloadedBytes = downloadedBytes.coerceAtLeast(0L)
+        state.totalBytes = totalBytes.coerceAtLeast(0L)
+        state.error = null
+    }
+
+    internal fun markDownloadVerifying(engine: String, downloadedBytes: Long, totalBytes: Long) = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: return@synchronized
+        state.state = "verifying"
+        state.active = true
+        state.downloadedBytes = downloadedBytes.coerceAtLeast(0L)
+        state.totalBytes = totalBytes.coerceAtLeast(0L)
+        state.error = null
+    }
+
+    internal fun finishDownload(engine: String) = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: return@synchronized
+        state.state = "ready"
+        state.active = false
+        state.downloadedBytes = state.totalBytes
+        state.error = null
+    }
+
+    internal fun failDownload(engine: String, error: String) = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: return@synchronized
+        state.state = "failed"
+        state.active = false
+        state.error = error.take(300)
+    }
+
+    internal fun cancelDownload(engine: String, installed: Boolean) = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: return@synchronized
+        state.state = if (installed) "ready" else "not_installed"
+        state.active = false
+        state.downloadedBytes = if (installed) state.totalBytes else 0L
+        state.error = null
+    }
+
+    internal fun downloadState(engine: String): Map<String, Any?> = synchronized(downloadStateLock) {
+        val state = downloadStates[engine] ?: throw IllegalArgumentException("Unknown local model engine: $engine")
+        val approxBytes = definition(engine).assets.values.sumOf { it.size }
+        val totalBytes = state.totalBytes.takeIf { it > 0L } ?: approxBytes
+        mapOf(
+            "state" to state.state,
+            "download_active" to state.active,
+            "downloaded_bytes" to state.downloadedBytes,
+            "total_bytes" to totalBytes,
+            "progress" to if (totalBytes > 0) state.downloadedBytes.toDouble() / totalBytes else 0.0,
+            "download_label" to "${if (engine == "kokoro") "Kokoro" else "Supertonic 3"} model assets",
+            "download_error" to state.error,
+            "approx_download_bytes" to approxBytes,
+        )
+    }
+
+    internal fun writeManifest(root: File, engine: String) {
+        val files = org.json.JSONArray()
+        expectedAssets(engine).forEach { (path, asset) ->
+            files.put(JSONObject().apply {
+                put("path", path)
+                put("size", asset.size)
+                put("sha256", asset.sha256)
+            })
+        }
+        val manifest = JSONObject().apply {
+            put("schemaVersion", MANIFEST_SCHEMA_VERSION)
+            put("engine", engine)
+            put("files", files)
+        }
+        File(root, "manifest.json").writeText(manifest.toString())
+    }
 
     fun installed(engine: String): Boolean {
         val state = state(engine)
@@ -345,7 +442,12 @@ class OnDeviceModelManager(private val activity: Activity) {
             primaryG2p?.ready == false -> primaryG2p.error
             else -> null
         }
+        val download = downloadState(engine)
+        val resolvedState = if (isInstalled) "ready" else (download["state"] ?: "not_installed")
+        val downloadError = download["download_error"] as? String
+        val totalBytes = download["total_bytes"] as? Long ?: 0L
         return mapOf(
+            "state" to resolvedState,
             "installed" to isInstalled,
             "loaded" to loaded(engine),
             "synthesisReady" to when (engine) {
@@ -364,7 +466,15 @@ class OnDeviceModelManager(private val activity: Activity) {
             "g2pDialect" to if (engine == "kokoro") g2p.dialect else null,
             "g2pFallbackCount" to if (engine == "kokoro") g2p.fallbackCount else 0,
             "g2pFallbackWords" to if (engine == "kokoro") g2p.fallbackWords else emptyList<String>(),
-            "error" to (state.lastError ?: installCheck.exceptionOrNull()?.message ?: readinessError),
+            "error" to (state.lastError ?: installCheck.exceptionOrNull()?.message ?: readinessError
+                ?: if (!isInstalled) downloadError else null),
+            "download_active" to download["download_active"],
+            "downloaded_bytes" to if (isInstalled) totalBytes else download["downloaded_bytes"],
+            "total_bytes" to totalBytes,
+            "progress" to if (isInstalled) 1.0 else download["progress"],
+            "download_label" to download["download_label"],
+            "download_error" to download["download_error"],
+            "approx_download_bytes" to download["approx_download_bytes"],
         )
     }
 
@@ -545,6 +655,9 @@ class OnDeviceModelManager(private val activity: Activity) {
         if (!target.exists()) backups.firstOrNull()?.renameTo(target)
         backups.filter { it.exists() && it != target }.forEach { it.deleteRecursively() }
         parent.listFiles { file -> file.name.startsWith(".$engine.import-") }
+            .orEmpty()
+            .forEach { it.deleteRecursively() }
+        parent.listFiles { file -> file.name.startsWith(".$engine.download-") }
             .orEmpty()
             .forEach { it.deleteRecursively() }
     }

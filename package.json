@@ -11,6 +11,8 @@
     "android:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\check-android.ps1",
     "android:init": "npx tauri android init",
     "android:dev": "npx tauri android dev",
+    "android:preview": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\preview-android.ps1",
+    "android:preview:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\preview-android.ps1 -Native",
     "android:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-android.ps1",
     "android:build:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-android.ps1 -Debug",
     "android:build:all": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\build-android.ps1 -Targets aarch64,armv7,i686,x86_64",

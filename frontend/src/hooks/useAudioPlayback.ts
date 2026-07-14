@@ -442,6 +442,21 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [book?.id, ttsEngine, voice, speed, resetNativeQueueTracking])
 
   useEffect(() => {
+    const onAudioCacheCleared = () => {
+      audioCacheRef.current.clear()
+      readAheadAbortRef.current?.abort()
+      readAheadAbortRef.current = null
+      readAheadRef.current.clear()
+      preloadAbortRef.current?.abort()
+      preloadAbortRef.current = null
+      setPreloadState({ state: 'idle', ready: 0, total: 0, failed: [] })
+      setGenerationError('')
+    }
+    globalThis.addEventListener('folio:audio-cache-cleared', onAudioCacheCleared)
+    return () => globalThis.removeEventListener('folio:audio-cache-cleared', onAudioCacheCleared)
+  }, [])
+
+  useEffect(() => {
     if (!bookId || !settingsHydratedRef.current || !settingsReady) return
     const currentBookId = bookId
     const nextSettingsKey = audioSettingsKey(currentBookId, ttsEngine, voice, speed)
@@ -605,7 +620,9 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       if (!res.ok) {
         readAheadRef.current.delete(key)
         res.clone().json().then((data) => {
-          if (data?.error === 'model_required' && isPlayingRef.current) {
+          // Android playback is preflighted before the session becomes active.
+          // A late status race must not open an install surface over live audio.
+          if (data?.error === 'model_required' && isPlayingRef.current && !isAndroidRuntime()) {
             dispatchModelRequired(data.engine || ttsEngine, data.install || null)
           }
         }).catch(() => {})
@@ -616,6 +633,26 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       readAheadRef.current.delete(key)
     })
   }, [book, ttsEngine, voice, speed])
+
+  const ensureAndroidModelReady = useCallback(async (): Promise<boolean> => {
+    if (!isAndroidRuntime()) return true
+    try {
+      const response = await apiFetch(`/api/models/${encodeURIComponent(ttsEngine)}`, { cache: 'no-store' })
+      const install = await response.json().catch(() => null)
+      if (response.ok && install?.ready) return true
+      const detail = install?.error
+        || (install?.state === 'downloading' || install?.state === 'verifying'
+          ? `${install?.label || ttsEngine} is still being installed.`
+          : install?.installed
+            ? `${install?.label || ttsEngine} is installed, but its native runtime is not ready yet.`
+            : `${install?.label || ttsEngine} is not installed yet.`)
+      dispatchModelRequired(install?.engine || ttsEngine, install || null)
+      setGenerationError(detail)
+    } catch {
+      setGenerationError('Android could not confirm the selected voice model. Please try again.')
+    }
+    return false
+  }, [ttsEngine])
 
   // Check whether the current chapter/page is already cached, but do not start
   // generation. Preload is intentionally user-triggered from the pill.
@@ -1025,12 +1062,30 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     return new Promise<AudioPlaybackResult>((resolve) => {
       let settled = false
       let pollTimer: ReturnType<typeof setTimeout> | null = null
+      let progressFrame: number | null = null
       let nativeSessionId = 0
+      let nativeSample = {
+        current: false,
+        positionMs: Math.max(0, startProgress * Number(audioInfo.duration_ms || 0)),
+        durationMs: Number(audioInfo.duration_ms || 0),
+        sampledAt: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+      }
+
+      const paintProgress = () => {
+        if (settled) return
+        if (nativeSample.current && nativeSample.durationMs > 0) {
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+          const estimatedPosition = nativeSample.positionMs + Math.max(0, now - nativeSample.sampledAt)
+          publishChunkProgress(clampProgress(estimatedPosition / nativeSample.durationMs))
+        }
+        progressFrame = requestAnimationFrame(paintProgress)
+      }
 
       const finish = (result: AudioPlaybackResult) => {
         if (settled) return
         settled = true
         if (pollTimer) clearTimeout(pollTimer)
+        if (progressFrame != null) cancelAnimationFrame(progressFrame)
         if (audioCompletionRef.current?.sessionId === sessionId) audioCompletionRef.current = null
         resolve(result)
       }
@@ -1056,6 +1111,12 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
             const progress = duration > 0
               ? clampProgress(Number(status.positionMs || 0) / duration)
               : startProgress
+            nativeSample = {
+              current: status.state === 'playing',
+              positionMs: Math.max(0, Number(status.positionMs || 0)),
+              durationMs: duration,
+              sampledAt: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+            }
             publishChunkProgress(progress)
           }
           if (transition === 'advanced' || transition === 'finished') {
@@ -1072,7 +1133,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
             finish(transition === 'paused' ? 'paused' : 'cancelled')
             return
           }
-          pollTimer = setTimeout(() => { void poll() }, 50)
+          // Native playback owns timing. Sample it at a modest cadence and
+          // interpolate visual progress on requestAnimationFrame so the bridge
+          // is not hammered at 20Hz while the cursor still tracks smoothly.
+          pollTimer = setTimeout(() => { void poll() }, 160)
         } catch (error) {
           setGenerationError(error?.message || 'Android audio playback failed.')
           finish('error')
@@ -1083,6 +1147,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         if (settled) return
         nativeSessionId = preparedSessionId
         publishChunkProgress(startProgress, true)
+        progressFrame = requestAnimationFrame(paintProgress)
         pollTimer = setTimeout(() => { void poll() }, 20)
       }).catch((error) => {
         setGenerationError(error?.message || 'Android audio playback failed.')
@@ -1330,6 +1395,11 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const startPlayback = useCallback(async (startPage, startSentence, startProgress = 0) => {
     if (!book) return
 
+    // Keep model/install checks outside the active playback state machine. This
+    // prevents a stale model response from presenting an import prompt or
+    // turning a normal first-play failure into a bogus runtime interruption.
+    if (!(await ensureAndroidModelReady())) return
+
     const sessionId = ++playbackSessionRef.current
     let firstChunkProgress = clampProgress(startProgress)
     setGenerationError('')
@@ -1389,7 +1459,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       })
       setIsGenerating(true)
       const generationStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
-      const audioPromise = fetchSentenceAudio(page, sentence, { promptForMissingModel: true })
+      const audioPromise = fetchSentenceAudio(page, sentence, { promptForMissingModel: !isAndroidRuntime() })
       queueReadAhead(page, sentence)
       const audioInfo = await audioPromise.finally(() => {
         if (playbackSessionRef.current === sessionId) setIsGenerating(false)
@@ -1453,6 +1523,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     playAudio,
     playNativeAudio,
     fetchSentenceAudio,
+    ensureAndroidModelReady,
     queueReadAhead,
     savePosition,
     publishChunkProgress,
