@@ -35,6 +35,17 @@ function Get-ExternalAttributes([string]$Mode) {
   }
 }
 
+function Get-FileSha256([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sourceRoot = Join-Path $repoRoot '.android-build\espeak-ng\source'
 $git = (Get-Command git -ErrorAction Stop).Source
@@ -149,4 +160,4 @@ $bundle = Get-Item -LiteralPath $output
 if ($bundle.Length -le 0) { throw "Corresponding source archive is empty: $output" }
 Write-Host "Created deterministic eSpeak NG Corresponding Source: $output"
 Write-Host "Tracked upstream files: $($tracked.Count)"
-Write-Host "SHA-256: $((Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash)"
+Write-Host "SHA-256: $(Get-FileSha256 $output)"

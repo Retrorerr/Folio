@@ -31,7 +31,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
     if (this.state.error) {
       const message = this.state.error?.message || String(this.state.error)
       return (
-        <div className="error-screen theme-folio">
+        <div className="error-screen theme-folio" data-android-scroll-fade>
           <TitleBar />
           <main className="error-card" role="alert">
             <img src="/folio-monochrome-icon.png" alt="" />
@@ -43,7 +43,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
             </button>
             <details>
               <summary>Technical details</summary>
-              <pre>{message}</pre>
+              <pre data-android-scroll-fade>{message}</pre>
             </details>
           </main>
         </div>

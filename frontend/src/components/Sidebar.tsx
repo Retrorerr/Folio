@@ -275,12 +275,30 @@ export default memo(function Sidebar({
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [tab, setTab])
 
+  const navigateFromPanel = useCallback((page: number) => {
+    const result = goToPage(page)
+    if (androidRuntime) void performAndroidHaptic('selection')
+    if (androidPhone) setTab(null)
+    return result
+  }, [androidPhone, androidRuntime, goToPage, setTab])
+
+  const navigateFromSearch = useCallback(async (result: SearchResult) => {
+    await onNavigateSearchResult?.(result)
+    if (androidRuntime) void performAndroidHaptic('selection')
+    if (androidPhone) setTab(null)
+  }, [androidPhone, androidRuntime, onNavigateSearchResult, setTab])
+
   return (
     <>
       <m.div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${sidebarExpanded ? 'is-open' : ''} ${androidOverlayOpen ? 'is-android-overlay' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''} ${androidPhone ? 'is-android-phone' : ''}`} layout={!androidRuntime} transition={spring.layout}>
       <m.div className="icon-rail" ref={railRef} layout={!androidRuntime}>
-        <m.button className="rail-brand" onClick={onHome} title="Library" aria-label="Library" whileHover={androidRuntime ? undefined : buttonHover} whileTap={buttonTap}>
+        <m.button className="rail-brand" onClick={onHome} title="Back to library" aria-label="Back to library" whileHover={androidRuntime ? undefined : buttonHover} whileTap={buttonTap}>
           <img className="rail-brand-logo" src={logoSrc} alt="" draggable={false} />
+          <span className="rail-home-badge" aria-hidden="true"><Icons.ArrowLeft size={11} /></span>
+        </m.button>
+        <m.button className="rail-btn rail-reader-home" onClick={onHome} aria-label="Library" whileTap={buttonTap}>
+          <Icons.Home size={18} />
+          <span className="android-nav-label">Library</span>
         </m.button>
         {railBtn('chapters', Icons.Chapters, 'Chapters')}
         {railBtn('bookmarks', Icons.Bookmark, 'Bookmarks')}
@@ -303,14 +321,14 @@ export default memo(function Sidebar({
             layout={!androidRuntime}
             transition={spring.layout}
           >
-            {panelTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={goToPage} />}
+            {panelTab === 'chapters' && <ChapterPanel book={book} reflow={reflow} currentPage={currentPage} goToPage={navigateFromPanel} />}
             {panelTab === 'bookmarks' && (
               <BookmarkPanel
                 book={book}
                 currentPage={currentPage}
                 visualPageCurrent={visualPageCurrent}
                 currentSentence={currentSentence}
-                goToPage={goToPage}
+                goToPage={navigateFromPanel}
                 addBookmark={addBookmark}
                 removeBookmark={removeBookmark}
               />
@@ -319,7 +337,7 @@ export default memo(function Sidebar({
               <SearchPanel
                 book={book}
                 currentPage={currentPage}
-                onNavigateSearchResult={onNavigateSearchResult}
+                onNavigateSearchResult={navigateFromSearch}
               />
             )}
           </m.div>
@@ -377,7 +395,7 @@ function ChapterPanel({
         <h2>{book.title}</h2>
         {book.author && <div className="sub">by {book.author}</div>}
       </div>
-      <div className="panel-body">
+      <div className="panel-body" data-android-scroll-fade>
         {toc.length === 0 ? (
           <div style={{ padding: 24, color: 'var(--ink-3)', fontStyle: 'italic', fontSize: 13.5, textAlign: 'center' }}>
             No table of contents was found for this book.
@@ -439,7 +457,7 @@ function BookmarkPanel({
         <h2>Bookmarks</h2>
         <div className="sub">{bookmarks.length} saved passage{bookmarks.length === 1 ? '' : 's'}</div>
       </div>
-      <div className="panel-body">
+      <div className="panel-body" data-android-scroll-fade>
         <button
           className="add-bookmark"
           onClick={() => addBookmark(currentPage, currentSentence, `Page ${visualPageCurrent}`, visualPageCurrent)}
@@ -572,7 +590,7 @@ function SearchPanel({
             : 'Search across the full text of the current book.'}
         </div>
       </div>
-      <div className="panel-body search-body">
+      <div className="panel-body search-body" data-android-scroll-fade>
         <label className="search-box">
           <Icons.Search size={14} />
           <input
@@ -666,6 +684,9 @@ export function SettingsPanel({
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [updateMessage, setUpdateMessage] = useState('')
   const [installingEngine, setInstallingEngine] = useState<string | null>(null)
+  const modelDialogRef = useRef<HTMLDivElement | null>(null)
+  const installingEngineRef = useRef<string | null>(null)
+  const clearInstallPromptRef = useRef(clearInstallPrompt)
   const [libraryFolderStatus, setLibraryFolderStatus] = useState<LibraryFolderStatus | null>(null)
   const [libraryFolderBusy, setLibraryFolderBusy] = useState(false)
   const [libraryFolderMessage, setLibraryFolderMessage] = useState('')
@@ -679,6 +700,11 @@ export function SettingsPanel({
   const androidRuntime = isAndroidRuntime()
   const activeEngineName = engineDisplayName(activeEngine)
   const installingEngineName = engineDisplayName(installingEngine)
+
+  const dismissModelInstall = useCallback(() => {
+    setInstallingEngine(null)
+    clearInstallPromptRef.current?.()
+  }, [])
 
   const formatInstallSize = (bytes: number | undefined) => {
     const safe = Number(bytes || 0)
@@ -845,6 +871,37 @@ export function SettingsPanel({
   }, [onClose])
 
   useEffect(() => {
+    clearInstallPromptRef.current = clearInstallPrompt
+  }, [clearInstallPrompt])
+
+  useEffect(() => {
+    if (!androidRuntime) return
+    let disposed = false
+    let listener: { unregister: () => Promise<void> } | null = null
+
+    void import('@tauri-apps/api/app')
+      .then(({ onBackButtonPress }) => onBackButtonPress(() => {
+        if (installingEngineRef.current) {
+          dismissModelInstall()
+          return
+        }
+        onCloseRef.current?.()
+      }))
+      .then((nextListener) => {
+        if (disposed) void nextListener.unregister()
+        else listener = nextListener
+      })
+      .catch((error) => {
+        console.warn('Android settings back-button listener failed', error)
+      })
+
+    return () => {
+      disposed = true
+      if (listener) void listener.unregister()
+    }
+  }, [androidRuntime, dismissModelInstall])
+
+  useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null
@@ -853,12 +910,17 @@ export function SettingsPanel({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
+        if (installingEngineRef.current) {
+          dismissModelInstall()
+          return
+        }
         onCloseRef.current?.()
         return
       }
       if (event.key !== 'Tab') return
 
-      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      const focusScope = modelDialogRef.current || dialogRef.current
+      const focusable = Array.from(focusScope?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
       ) || []).filter((element) => (
         element.getAttribute('aria-hidden') !== 'true' &&
@@ -884,11 +946,26 @@ export function SettingsPanel({
       window.removeEventListener('keydown', onKeyDown)
       if (previouslyFocused?.isConnected) previouslyFocused.focus()
     }
-  }, [])
+  }, [dismissModelInstall])
 
   useEffect(() => {
     if (installPromptEngine) setInstallingEngine(normalizeTtsEngine(installPromptEngine))
   }, [installPromptEngine])
+
+  useEffect(() => {
+    installingEngineRef.current = installingEngine
+    if (!installingEngine) return
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const focusFrame = window.requestAnimationFrame(() => {
+      modelDialogRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      if (previouslyFocused?.isConnected) previouslyFocused.focus()
+    }
+  }, [installingEngine])
 
   useEffect(() => {
     if (installingEngine && modelStatus?.[installingEngine]?.ready) {
@@ -962,15 +1039,12 @@ export function SettingsPanel({
         layout={!androidRuntime}
         transition={spring.panel}
       >
-        <section className="settings-main">
+        <section className="settings-main" data-android-scroll-fade>
           <header className="settings-full-head">
             <div>
               <h2 id="settings-title">Settings</h2>
               <p>Reader, narrator, and local storage controls.</p>
             </div>
-            <button ref={closeButtonRef} className="settings-close" type="button" onClick={onClose} aria-label="Close settings">
-              <Icons.X size={18} />
-            </button>
           </header>
 
           <div className="settings-summary" aria-label="Current settings">
@@ -1212,18 +1286,31 @@ export function SettingsPanel({
                 {cacheMessage && <p className="settings-note">{cacheMessage}</p>}
               </div>
             )}
-          </div>
+            </div>
         </section>
+        <button ref={closeButtonRef} className="settings-close" type="button" onClick={onClose} aria-label="Close settings">
+          <Icons.X size={18} />
+        </button>
       </m.div>
       <AnimatePresence>
       {installingEngine && (
-        <m.div className="model-install-overlay" onMouseDown={() => { setInstallingEngine(null); clearInstallPrompt?.() }} variants={overlayFade} initial="initial" animate="animate" exit="exit">
-          <m.div className="model-install-modal" onMouseDown={(event) => event.stopPropagation()} variants={modalPanel}>
+        <m.div className="model-install-overlay" onMouseDown={dismissModelInstall} variants={overlayFade} initial="initial" animate="animate" exit="exit">
+          <m.div
+            ref={modelDialogRef}
+            className="model-install-modal"
+            data-android-scroll-fade
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="model-install-title"
+            aria-describedby="model-install-description"
+            onMouseDown={(event) => event.stopPropagation()}
+            variants={modalPanel}
+          >
             <div className="model-install-orbit" aria-hidden="true" />
             <div className="model-install-head">
               <div className="label">Local voice engine</div>
-              <h3>Download {installingEngineName}</h3>
-              <p>
+              <h3 id="model-install-title">Download {installingEngineName}</h3>
+              <p id="model-install-description">
                 {androidRuntime
                   ? 'Folio downloads the pinned model files directly, verifies their hashes and ONNX contracts, then installs them atomically for offline playback.'
                   : 'Folio keeps models on your device and only downloads them when you choose to install one.'}
@@ -1277,7 +1364,7 @@ export function SettingsPanel({
                   Import pack instead
                 </button>
               )}
-              <button type="button" className="settings-action" onClick={() => { setInstallingEngine(null); clearInstallPrompt?.() }}>
+              <button type="button" className="settings-action" onClick={dismissModelInstall}>
                 {promptInstall?.state === 'ready' ? 'Done' : 'Close'}
               </button>
             </div>

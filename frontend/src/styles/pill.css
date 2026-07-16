@@ -196,17 +196,11 @@
 .pill:hover {
   transform: translateY(-2px);
 }
-.pill.expanding {
-  animation: pill-expand-bounce var(--pill-expand-dur) var(--pill-pop-ease);
-}
-.pill.collapsing {
-  animation: pill-collapse-snap 220ms var(--pill-collapse-ease);
-}
 .pill-collapsed-content {
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 10px;
 }
@@ -224,41 +218,6 @@
   flex-direction: column;
   align-items: stretch;
   gap: 20px;
-}
-.pill.expanding .pill-expanded-content {
-  animation: pill-content-rise 240ms var(--pill-pop-ease) both;
-}
-.pill.collapsing .pill-collapsed-content {
-  animation: pill-content-settle 190ms var(--ease-out) both;
-}
-.pill.expanding .pill-expanded-content > * {
-  animation: pill-panel-item-in 260ms var(--pill-pop-ease) both;
-}
-.pill.expanding .pill-expanded-content > *:nth-child(2) { animation-delay: 22ms; }
-.pill.expanding .pill-expanded-content > *:nth-child(3) { animation-delay: 38ms; }
-.pill.expanding .pill-expanded-content > *:nth-child(4) { animation-delay: 54ms; }
-.pill.expanding .pill-expanded-content > *:nth-child(5) { animation-delay: 70ms; }
-
-@keyframes pill-expand-bounce {
-  0% { transform: translateY(2px) scale(0.985); }
-  62% { transform: translateY(-5px) scale(1.018); }
-  100% { transform: translateY(0) scale(1); }
-}
-@keyframes pill-collapse-snap {
-  0% { transform: translateY(-2px) scale(1.01); }
-  100% { transform: translateY(0) scale(1); }
-}
-@keyframes pill-content-rise {
-  0% { opacity: 0; transform: translateY(10px) scale(0.985); filter: blur(2px); }
-  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
-}
-@keyframes pill-content-settle {
-  0% { opacity: 0.75; transform: translateY(-4px) scale(0.99); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes pill-panel-item-in {
-  0% { opacity: 0; transform: translateY(8px); }
-  100% { opacity: 1; transform: translateY(0); }
 }
 .pill-wrap.follow-mode .pill {
   box-shadow:
@@ -502,6 +461,12 @@
     0 6px 22px -4px rgba(181, 71, 26, 0.62),
     0 0 0 4px color-mix(in srgb, var(--ember) 14%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.pill-expand-btn {
+  grid-column: 4;
+  justify-self: end;
+  flex: 0 0 auto;
 }
 .theme-blackleaf .pill-btn.play {
   box-shadow:
@@ -1314,7 +1279,7 @@
   }
 
   .pill-collapsed-content {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     column-gap: 8px;
   }
   .pill-now-group {
@@ -1322,6 +1287,10 @@
   }
   .pill-controls-prep {
     display: none;
+  }
+
+  .pill-expand-btn {
+    grid-column: 3;
   }
 
   .pill-btn {

@@ -9,6 +9,7 @@ const COMMANDS: &[&str] = &[
     "synthesize",
     "platform_status",
     "set_system_bars",
+    "background_app",
     "perform_haptic",
     "play_audio",
     "control_audio",

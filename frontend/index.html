@@ -8,7 +8,10 @@
     <meta name="color-scheme" content="dark light" />
     <title>Folio — A reader for listening</title>
     <script>
-      const androidRuntime = /Android/i.test(navigator.userAgent) && location.hostname === 'tauri.localhost'
+      // Android dev builds load from the managed preview host (10.2.0.2), while
+      // packaged builds use tauri.localhost. The platform is the Android
+      // WebView in both cases, so hostname must not decide the startup theme.
+      const androidRuntime = /Android/i.test(navigator.userAgent)
       try {
         if (androidRuntime) {
           document.documentElement.dataset.platform = 'android'
@@ -35,11 +38,11 @@
         min-height: 100%;
         background: var(--boot-bg, #08090b);
       }
-      html[data-folio-theme="sepia"] { --boot-bg: #ede0c4; --boot-card: #f3e7cf; --boot-ink: #2a1d10; --boot-muted: #786142; --boot-line: #c9b58b; --boot-accent: #b5471a; }
-      html[data-folio-theme="light"] { --boot-bg: #edf0f2; --boot-card: #fafbfc; --boot-ink: #1d252c; --boot-muted: #68737c; --boot-line: #ccd2d7; --boot-accent: #a74823; }
-      html[data-folio-theme="dark"] { --boot-bg: #10171d; --boot-card: #162027; --boot-ink: #e6edf3; --boot-muted: #9aabb7; --boot-line: #34434d; --boot-accent: #a2e2d3; }
-      html[data-folio-theme="folio"] { --boot-bg: #0c0d0f; --boot-card: #15130f; --boot-ink: #f6f0e3; --boot-muted: #9b907e; --boot-line: #373126; --boot-accent: #f2bd53; }
-      html[data-folio-theme="blackleaf"] { --boot-bg: #030303; --boot-card: #090909; --boot-ink: #f2f2f2; --boot-muted: #8a8a8a; --boot-line: #262626; --boot-accent: #dedede; }
+      html[data-folio-theme="sepia"] { --boot-bg: #f3e7cf; --boot-card: #f3e7cf; --boot-ink: #2a1d10; --boot-muted: #5a4730; --boot-line: #c9b58b; --boot-accent: #b5471a; }
+      html[data-folio-theme="light"] { --boot-bg: #f7f4ed; --boot-card: #f7f4ed; --boot-ink: #1a1612; --boot-muted: #5a544a; --boot-line: #c9c3b0; --boot-accent: #a33c14; }
+      html[data-folio-theme="dark"] { --boot-bg: #111417; --boot-card: #111417; --boot-ink: #e6edf3; --boot-muted: #b7c4cf; --boot-line: #303946; --boot-accent: #7cc7b2; }
+      html[data-folio-theme="folio"] { --boot-bg: #090a0c; --boot-card: #090a0c; --boot-ink: #f6f0e3; --boot-muted: #cfc5b2; --boot-line: #2d2a22; --boot-accent: #f2bd53; }
+      html[data-folio-theme="blackleaf"] { --boot-bg: #000000; --boot-card: #000000; --boot-ink: #f2f2f2; --boot-muted: #b7b7b7; --boot-line: #252525; --boot-accent: #dedede; }
       #folio-bootstrap {
         box-sizing: border-box;
         min-height: 100vh;
@@ -47,7 +50,7 @@
         place-items: center;
         padding: 24px;
         color: var(--boot-ink);
-        background: radial-gradient(circle at 50% -18%, color-mix(in srgb, var(--boot-accent) 14%, transparent), transparent 38%), var(--boot-bg);
+        background: var(--boot-bg);
         font-family: system-ui, -apple-system, sans-serif;
       }
       .folio-bootstrap-card {
@@ -59,24 +62,35 @@
         background: color-mix(in srgb, var(--boot-card) 88%, transparent);
         box-shadow: 0 34px 100px -54px rgba(0, 0, 0, 0.55);
       }
-      .folio-bootstrap-brand { display: flex; align-items: center; gap: 17px; margin-bottom: 34px; }
+      .folio-bootstrap-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 36px; }
       .folio-bootstrap-mark {
-        width: 56px; height: 56px; object-fit: contain;
+        width: 58px; height: 58px; object-fit: contain;
       }
-      .folio-bootstrap-brand strong { display: block; font: 600 41px/1 Georgia, serif; letter-spacing: -0.02em; }
-      .folio-bootstrap-brand span { display: block; margin-bottom: 6px; color: var(--boot-accent); font-size: 9px; letter-spacing: 0.25em; text-transform: uppercase; }
+      .folio-bootstrap-mark-dark { display: none; }
+      html[data-folio-theme="dark"] .folio-bootstrap-mark-light,
+      html[data-folio-theme="folio"] .folio-bootstrap-mark-light,
+      html[data-folio-theme="blackleaf"] .folio-bootstrap-mark-light { display: none; }
+      html[data-folio-theme="dark"] .folio-bootstrap-mark-dark,
+      html[data-folio-theme="folio"] .folio-bootstrap-mark-dark,
+      html[data-folio-theme="blackleaf"] .folio-bootstrap-mark-dark { display: block; }
+      .folio-bootstrap-brand strong { display: block; margin-top: 1px; font: 650 42px/.92 Georgia, serif; letter-spacing: -0.025em; }
+      .folio-bootstrap-brand span { display: block; margin-bottom: 8px; color: var(--boot-accent); font-size: 10px; line-height: 1; letter-spacing: 0.27em; text-transform: uppercase; }
       .folio-bootstrap-card h1 { margin: 0; font: 500 34px/1.1 Georgia, serif; }
-      .folio-bootstrap-card p { margin: 10px 0 28px; color: var(--boot-muted); font-size: 15px; line-height: 1.5; }
-      @media (max-width: 680px) { .folio-bootstrap-card { padding: 30px 24px; } }
-      html[data-platform="android"],
-      html[data-platform="android"] body,
-      html[data-platform="android"] #root,
-      html[data-platform="android"] #folio-bootstrap {
-        background: transparent;
+      .folio-bootstrap-card p { margin: 10px 0 0; color: var(--boot-muted); font-size: 15px; line-height: 1.55; }
+      .folio-bootstrap-progress {
+        width: min(240px, 70vw);
+        height: 4px;
+        margin: 24px auto 0;
+        overflow: hidden;
+        border-radius: 999px;
+        background: var(--boot-line);
+        opacity: .78;
       }
+      @media (max-width: 680px) { .folio-bootstrap-card { padding: 30px 24px; } }
       html[data-platform="android"] #folio-bootstrap {
-        min-height: 100dvh;
-        padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+        height: 100%;
+        min-height: 0;
+        padding: 24px;
       }
       html[data-platform="android"] .folio-bootstrap-card {
         width: min(440px, 100%);
@@ -85,18 +99,21 @@
         background: transparent;
         box-shadow: none;
         text-align: center;
-        transform: translateY(-18px);
       }
       html[data-platform="android"] .folio-bootstrap-brand {
         justify-content: center;
-        margin-bottom: 30px;
+        margin: 0;
         text-align: left;
       }
-      html[data-platform="android"] .folio-bootstrap-card h1 {
-        font-size: clamp(26px, 4vw, 34px);
+      html[data-platform="android"] .folio-bootstrap-mark {
+        width: 110px;
+        height: 110px;
       }
-      html[data-platform="android"] .folio-bootstrap-card p {
-        margin-bottom: 0;
+      html[data-platform="android"] .folio-bootstrap-brand > div,
+      html[data-platform="android"] .folio-bootstrap-card > h1,
+      html[data-platform="android"] .folio-bootstrap-card > p,
+      html[data-platform="android"] .folio-bootstrap-progress {
+        display: none;
       }
     </style>
   </head>
@@ -105,11 +122,13 @@
       <main id="folio-bootstrap" aria-label="Starting Folio">
         <section class="folio-bootstrap-card">
           <div class="folio-bootstrap-brand">
-            <img class="folio-bootstrap-mark" src="/folio-icon.png" alt="" draggable="false" />
+            <img class="folio-bootstrap-mark folio-bootstrap-mark-light folio-splash-logo" src="/folio-icon-gold-splash.png" alt="" draggable="false" />
+            <img class="folio-bootstrap-mark folio-bootstrap-mark-dark folio-splash-logo" src="/folio-monochrome-icon.png" alt="" draggable="false" />
             <div><span>Your reading room</span><strong>Folio</strong></div>
           </div>
           <h1>Starting Folio</h1>
           <p>Opening your private, local reading library.</p>
+          <div class="folio-bootstrap-progress" aria-hidden="true"></div>
         </section>
       </main>
     </div>

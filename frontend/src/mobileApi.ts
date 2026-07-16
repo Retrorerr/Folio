@@ -1316,7 +1316,7 @@ function decodeBase64Chunk(value: string): Uint8Array {
   return bytes
 }
 
-async function readNativeDocument(document: NativeTreeDocument): Promise<Uint8Array> {
+async function readNativeDocument(document: Pick<NativeTreeDocument, 'uri'>): Promise<Uint8Array> {
   const opened = await nativeInvoke<{ handle: string; size: number; displayName: string; mimeType: string }>('open_document_read', { uri: document.uri })
   const chunks: Uint8Array[] = []
   let total = 0
@@ -1344,6 +1344,29 @@ async function readNativeDocument(document: NativeTreeDocument): Promise<Uint8Ar
   let offset = 0
   chunks.forEach((chunk) => { result.set(chunk, offset); offset += chunk.length })
   return result
+}
+
+type NativePickedBook = {
+  uri?: string
+  displayName?: string
+  persisted?: boolean
+}
+
+/**
+ * Open Android's Storage Access Framework and copy the selected EPUB or PDF
+ * into a normal File. Tauri's WebView does not consistently surface a hidden
+ * HTML file input on Android, while the native document contract preserves
+ * provider access and enforces Folio's size/type policy before reading.
+ */
+export async function pickAndroidBookFile(): Promise<File | null> {
+  const selected = await nativeInvoke<NativePickedBook>('pick_epub', { initialUri: null })
+  if (!selected?.uri) return null
+  const bytes = await readNativeDocument({ uri: selected.uri })
+  const displayName = String(selected.displayName || '').trim()
+  const filename = /\.(?:epub|pdf)$/i.test(displayName) ? displayName : 'book.epub'
+  const mimeType = /\.pdf$/i.test(filename) ? 'application/pdf' : 'application/epub+zip'
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  return new File([buffer], filename, { type: mimeType, lastModified: Date.now() })
 }
 
 async function importBookBytes(

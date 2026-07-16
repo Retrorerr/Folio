@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react'
 import type React from 'react'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
-import { apiResourceUrl } from '../api'
+import { apiResourceUrl, isAndroidRuntime } from '../api'
 import { formatPlaybackTime } from '../hooks/audioPlaybackState'
 import { engineDisplayName, engineShortLabel, speedRangeForEngine, voiceLabel } from '../ttsVoices'
 import type { BookState, ModelInstallInfo, PreloadState, TtsActivity, TtsRuntimeInfo } from '../types'
@@ -13,15 +13,12 @@ import {
   pillContentContinuity,
   pillControlHover,
   pillControlTap,
-  pillMorph,
-  pillShellSlowTransition,
   pillShellTransition,
   spring,
 } from '../motion'
 
 const BARS = 64
 const COMPACT_WAVE_BARS = 18
-const PILL_MORPH_MS = pillMorph.ms
 
 interface PillBufferState {
   state: 'idle' | 'warming' | 'prebuffering' | 'playing'
@@ -136,25 +133,19 @@ export default memo(function Pill({
   book,
   subscribeAudioSpectrum,
 }: PillProps) {
+  const androidRuntime = isAndroidRuntime()
   // Show Follow Along whenever the user has a position to follow — once you've
   // started a book you can re-enter immersive mode at will, even from pause.
   // The button morphs (compact vs prominent) based on isPlaying so the most
   // useful action for the current state is the larger target.
   const showFollowAlong = readingPage != null && toggleFollowAlong
   const [expanded, setExpanded] = useState(false)
-  // Render-state machine: separates the layout (defines pill geometry) from
-  // the leaving tree, which is held mounted as an overlay during the morph
-  // so the user never sees an empty shell. Values:
-  //   'collapsed' | 'expanded' (steady)
-  //   'expanding' | 'collapsing' (during morph: BOTH trees mounted)
-  const [pillMotion, setPillMotion] = useState('')
   const [controlsHidden, setControlsHidden] = useState(false)
   const [selectionHintVisible, setSelectionHintVisible] = useState(false)
   const pillRef = useRef<HTMLDivElement | null>(null)
   const compactWaveBarsRef = useRef<Array<HTMLDivElement | null>>([])
   const expandedWaveBarsRef = useRef<Array<HTMLDivElement | null>>([])
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pillMotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectionHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previousVisualPage = useCallback(() => {
     if (goToPreviousPage) goToPreviousPage()
@@ -167,22 +158,14 @@ export default memo(function Pill({
   const previousVisualPageAvailable = canGoPreviousPage ?? currentPage > 0
   const nextVisualPageAvailable = canGoNextPage ?? currentPage < pageCount - 1
 
-  const setExpandedWithMotion = useCallback((next) => {
-    if (pillMotionTimerRef.current) clearTimeout(pillMotionTimerRef.current)
-    setPillMotion(next ? 'expanding' : 'collapsing')
+  const setExpandedWithMotion = useCallback((next: boolean) => {
     setExpanded(next)
-    const slow = typeof window !== 'undefined' && (
-      window.__SLOWPILL__ || (typeof location !== 'undefined' && /[?&]slowpill=1/.test(location.search))
-    )
-    pillMotionTimerRef.current = setTimeout(() => setPillMotion(''), PILL_MORPH_MS * (slow ? pillMorph.slowScale : 1))
+    if (next) {
+      requestAnimationFrame(() => {
+        if (pillRef.current) pillRef.current.scrollTop = 0
+      })
+    }
   }, [])
-
-  // Optional slow-mo via ?slowpill=1 in the URL (or window.__SLOWPILL__).
-  // CSS and Motion both read this so the morph can be studied by eye without
-  // rebuilding.
-  const slowMo = typeof window !== 'undefined' && (
-    window.__SLOWPILL__ || (typeof location !== 'undefined' && /[?&]slowpill=1/.test(location.search))
-  )
 
   const revealControls = useCallback(() => {
     setControlsHidden(false)
@@ -256,7 +239,6 @@ export default memo(function Pill({
   }, [handleKeyDown])
 
   useEffect(() => () => {
-    if (pillMotionTimerRef.current) clearTimeout(pillMotionTimerRef.current)
     if (selectionHintTimerRef.current) clearTimeout(selectionHintTimerRef.current)
   }, [])
 
@@ -276,6 +258,21 @@ export default memo(function Pill({
       document.removeEventListener('keydown', onKey)
     }
   }, [expanded, setExpandedWithMotion])
+
+  useEffect(() => {
+    if (!androidRuntime || !expanded) return
+    let landscape = window.innerWidth > window.innerHeight
+    const resetScrollForPosture = () => {
+      const nextLandscape = window.innerWidth > window.innerHeight
+      if (nextLandscape === landscape) return
+      landscape = nextLandscape
+      requestAnimationFrame(() => {
+        if (pillRef.current) pillRef.current.scrollTop = 0
+      })
+    }
+    window.addEventListener('resize', resetScrollForPosture, { passive: true })
+    return () => window.removeEventListener('resize', resetScrollForPosture)
+  }, [androidRuntime, expanded])
 
   useEffect(() => {
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
@@ -747,18 +744,6 @@ export default memo(function Pill({
     ? preloadLabel
     : (status || `${voiceLabel(ttsEngine, voice)} voice · ${engineShortLabel(ttsEngine)}`)
 
-  // Render both content trees during the morph so the pill is never empty.
-  // The arriving tree drives layout (.pill grows/shrinks to fit it); the
-  // leaving tree is absolutely positioned over the same area, fading out.
-  const showCollapsed = !expanded || pillMotion === 'expanding'
-  const showExpanded  =  expanded || pillMotion === 'collapsing'
-  const collapsedClass = pillMotion === 'expanding'
-    ? 'is-leaving'
-    : (pillMotion === 'collapsing' ? 'is-arriving' : '')
-  const expandedClass = pillMotion === 'collapsing'
-    ? 'is-leaving'
-    : (pillMotion === 'expanding' ? 'is-arriving' : '')
-
   return (
     <>
     <div
@@ -786,27 +771,28 @@ export default memo(function Pill({
             <span className="pill-selection-hint-dot" aria-hidden="true" />
             <span>
               <strong>Select a line first</strong>
-              <small>Click any sentence in the page, then press play.</small>
+              <small>{androidRuntime ? 'Tap a line in the page, then press play.' : 'Double-click a line in the page, then press play.'}</small>
             </span>
           </m.div>
         )}
       </AnimatePresence>
       <m.div
         ref={pillRef}
-        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${isPlaying ? 'is-playing' : ''} ${(isPlaying || isGenerating || textLoading || modelLoading || downloadActive) ? 'is-active' : ''} ${pillMotion} ${slowMo ? 'pill-slowmo' : ''}`}
+        className={`pill ${expanded ? 'expanded' : 'collapsed'} ${isPlaying ? 'is-playing' : ''} ${(isPlaying || isGenerating || textLoading || modelLoading || downloadActive) ? 'is-active' : ''}`}
+        data-android-scroll-fade
         role="region"
         aria-label="Narration playback controls"
         onClick={() => { if (!expanded) setExpandedWithMotion(true) }}
-        layout
-        transition={slowMo ? pillShellSlowTransition : pillShellTransition}
+        layout={androidRuntime ? 'size' : true}
+        layoutDependency={expanded}
+        transition={androidRuntime ? spring.layout : pillShellTransition}
       >
-        <AnimatePresence initial={false}>
-        {showCollapsed && (
+        <AnimatePresence initial={false} mode="popLayout">
+        {!expanded && (
           <m.div
             key="pill-collapsed"
-            className={`pill-content-layer pill-collapsed-content ${collapsedClass}`}
-            aria-hidden={collapsedClass === 'is-leaving'}
-            custom={{ state: collapsedClass, slow: slowMo }}
+            className="pill-content-layer pill-collapsed-content"
+            custom={{ state: 'is-arriving', slow: false }}
             variants={pillContentContinuity}
             initial="initial"
             animate="animate"
@@ -863,7 +849,7 @@ export default memo(function Pill({
                   title={preloadButtonLabel}
                   aria-label={preloadButtonLabel}
                   style={{ '--preload-progress': preloadProgress } as React.CSSProperties}
-                  layout="position"
+                  layout={androidRuntime ? false : 'position'}
                   transition={spring.pillControl}
                   whileHover={pillControlHover}
                   whileTap={pillControlTap}
@@ -887,7 +873,7 @@ export default memo(function Pill({
                   aria-pressed={followAlongMode}
                   aria-hidden={!showFollowAlong}
                   tabIndex={!showFollowAlong ? -1 : 0}
-                  layout="position"
+                  layout={androidRuntime ? false : 'position'}
                   transition={spring.pillControl}
                   whileHover={pillControlHover}
                   whileTap={pillControlTap}
@@ -897,19 +883,18 @@ export default memo(function Pill({
                   </span>
                   <span className="live-label">{followAlongMode ? 'Following' : 'Follow Along'}</span>
                 </m.button>
-                <m.button className="pill-btn pill-expand-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand" aria-label="Expand playback controls" whileTap={buttonTap}>
-                  <Icons.ChevronDown size={16} style={{ transform: 'rotate(180deg)' }} />
-                </m.button>
               </div>
+              <m.button className="pill-btn pill-expand-btn" onClick={(e) => { e.stopPropagation(); setExpandedWithMotion(true) }} title="Expand" aria-label="Expand playback controls" whileTap={buttonTap}>
+                <Icons.ChevronDown size={16} style={{ transform: 'rotate(180deg)' }} />
+              </m.button>
             </div>
           </m.div>
         )}
-        {showExpanded && (
+        {expanded && (
           <m.div
             key="pill-expanded"
-            className={`pill-content-layer pill-expanded-content ${expandedClass}`}
-            aria-hidden={expandedClass === 'is-leaving'}
-            custom={{ state: expandedClass, slow: slowMo }}
+            className="pill-content-layer pill-expanded-content"
+            custom={{ state: 'is-arriving', slow: false }}
             variants={pillContentContinuity}
             initial="initial"
             animate="animate"
@@ -993,7 +978,7 @@ export default memo(function Pill({
               </div>
             </div>
 
-            <m.div className="pill-expanded-controls" layout>
+            <m.div className="pill-expanded-controls" layout={!androidRuntime}>
               <div className="pill-expanded-transport">
                 <button className="pill-btn" onClick={previousVisualPage} disabled={!previousVisualPageAvailable} title="Previous page" aria-label="Previous page">
                   <Icons.SkipBack size={18} />
@@ -1030,7 +1015,7 @@ export default memo(function Pill({
                       initial="initial"
                       animate="animate"
                       exit="exit"
-                      layout
+                      layout={!androidRuntime}
                       transition={spring.pillControl}
                       whileHover={pillControlHover}
                       whileTap={pillControlTap}

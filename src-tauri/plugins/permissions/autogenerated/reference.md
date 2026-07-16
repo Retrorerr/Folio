@@ -14,6 +14,7 @@ Default permissions for the plugin
 - `allow-synthesize`
 - `allow-platform-status`
 - `allow-set-system-bars`
+- `allow-background-app`
 - `allow-perform-haptic`
 - `allow-play-audio`
 - `allow-control-audio`
@@ -50,6 +51,32 @@ Enables the audio_status command without any pre-configured scope.
 <td>
 
 Denies the audio_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:allow-background-app`
+
+</td>
+<td>
+
+Enables the background_app command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:deny-background-app`
+
+</td>
+<td>
+
+Denies the background_app command without any pre-configured scope.
 
 </td>
 </tr>

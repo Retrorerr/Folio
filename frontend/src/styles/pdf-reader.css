@@ -37,7 +37,7 @@
   padding: 12px 16px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface, #171717) 92%, transparent);
-  color: var(--text, #f6f1e8);
+  color: var(--ink, #f6f1e8);
   text-align: center;
   box-shadow: 0 12px 36px rgb(0 0 0 / 24%);
 }
@@ -55,7 +55,7 @@
   max-height: calc(100dvh - 190px);
   overflow: auto;
   padding: 14px;
-  border: 1px solid var(--border, rgb(128 106 79 / 25%));
+  border: 1px solid var(--surface-line, var(--rule, rgb(128 106 79 / 25%)));
   border-radius: 16px;
   background: color-mix(in srgb, var(--surface, #f6ead1) 88%, transparent);
 }
@@ -65,7 +65,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 0 4px 8px;
-  color: var(--muted, #776957);
+  color: var(--ink-2, #776957);
   font: 600 0.72rem/1.2 var(--font-mono, monospace);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -78,7 +78,7 @@
   border: 0;
   border-radius: 10px;
   background: transparent;
-  color: var(--text, #271a0e);
+  color: var(--ink, #271a0e);
   font: 400 0.96rem/1.45 var(--font-reading, serif);
   text-align: left;
   cursor: pointer;
@@ -86,17 +86,17 @@
 
 .pdf-transcript-sentence:hover,
 .pdf-transcript-sentence:focus-visible {
-  background: color-mix(in srgb, var(--accent, #b26b42) 12%, transparent);
+  background: color-mix(in srgb, var(--ember, #b26b42) 12%, transparent);
 }
 
 .pdf-transcript-sentence.is-active {
-  background: color-mix(in srgb, var(--accent, #b26b42) 20%, transparent);
-  box-shadow: inset 3px 0 var(--accent, #b26b42);
+  background: color-mix(in srgb, var(--ember, #b26b42) 20%, transparent);
+  box-shadow: inset 3px 0 var(--ember, #b26b42);
 }
 
 .pdf-transcript-empty {
   margin: 8px 4px;
-  color: var(--muted, #776957);
+  color: var(--ink-3, #776957);
   line-height: 1.5;
 }
 

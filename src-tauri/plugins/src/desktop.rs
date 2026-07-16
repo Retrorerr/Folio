@@ -72,6 +72,10 @@ impl<R: Runtime> MobileRuntime<R> {
         Err(crate::Error::Unsupported)
     }
 
+    pub fn background_app(&self) -> crate::Result<BackgroundAppResponse> {
+        Err(crate::Error::Unsupported)
+    }
+
     pub fn perform_haptic(&self, _payload: HapticRequest) -> crate::Result<HapticResponse> {
         Err(crate::Error::Unsupported)
     }
