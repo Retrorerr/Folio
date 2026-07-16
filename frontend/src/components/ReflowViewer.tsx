@@ -52,7 +52,9 @@ const READER_POSITION_PREFIX = 'folio:reader-position:'
 
 function getInitialPagesPerView() {
   if (typeof window === 'undefined') return 1
-  return window.innerWidth >= TWO_PAGE_WIDTH + TWO_PAGE_MARGIN ? 2 : 1
+  const androidTabletLandscape = document.documentElement.dataset.platform === 'android' &&
+    document.documentElement.dataset.androidShell === 'tablet-landscape'
+  return window.innerWidth >= (androidTabletLandscape ? 1040 : TWO_PAGE_WIDTH + TWO_PAGE_MARGIN) ? 2 : 1
 }
 
 function clamp(n: number, min: number, max: number) {
@@ -828,14 +830,17 @@ function ReflowViewer({
   resumePosition = null,
   onVisualPositionChange,
 }: ReflowViewerProps) {
+  const androidRuntime = typeof document !== 'undefined' && document.documentElement.dataset.platform === 'android'
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const chapterMeasureRef = useRef<HTMLDivElement | null>(null)
+  const androidLineTapRef = useRef({ pointerId: -1, x: 0, y: 0 })
   const [contentPageCount, setContentPageCount] = useState(1)
   const [chapterPageCounts, setChapterPageCounts] = useState<number[]>([])
   const [measureChapterIdx, setMeasureChapterIdx] = useState<number | null>(null)
   const [viewPage, setViewPage] = useState(0)
   const [pagesPerView, setPagesPerView] = useState(getInitialPagesPerView)
+  const [spreadScale, setSpreadScale] = useState(1)
   const [modeMeasured, setModeMeasured] = useState(false)
 
   const chapter = reflow?.chapters?.[chapterIdx]
@@ -1179,8 +1184,29 @@ function ReflowViewer({
   const cursorPlacementForRegion = useCallback((region: any) => {
     const root = scrollRef.current
     if (!root || !region) return null
-    return lineMarkerRect(region, root.getBoundingClientRect(), root)
-  }, [])
+    const rootRect = root.getBoundingClientRect()
+    const scale = Number.isFinite(spreadScale) && spreadScale > 0 ? spreadScale : 1
+    if (Math.abs(scale - 1) < 0.001) return lineMarkerRect(region, rootRect, root)
+
+    // Chromium reports descendant ranges in the pre-zoom coordinate space,
+    // while the cursor is rendered outside the zoomed spread. Project the
+    // measured line back into the page-scroll coordinate space first.
+    const visualRect = (rect: any) => rect ? {
+      left: rootRect.left + (rect.left - rootRect.left) * scale,
+      top: rootRect.top + (rect.top - rootRect.top) * scale,
+      right: rootRect.left + (rect.right - rootRect.left) * scale,
+      bottom: rootRect.top + (rect.bottom - rootRect.top) * scale,
+      width: rect.width * scale,
+      height: rect.height * scale,
+    } : rect
+    return lineMarkerRect({
+      ...region,
+      rect: visualRect(region.rect),
+      lineRect: visualRect(region.lineRect),
+      markerRect: visualRect(region.markerRect),
+      currentRect: visualRect(region.currentRect),
+    }, rootRect, root)
+  }, [spreadScale])
 
   const hideLineCursor = useCallback((mode: CursorHideMode = 'hidden') => {
     const cursor = cursorRef.current
@@ -1199,25 +1225,83 @@ function ReflowViewer({
     const viewport = root.querySelector('.reflow-viewport')
     const viewportRect = viewport?.getBoundingClientRect()
     if (!viewportRect) return null
+    const rootRect = root.getBoundingClientRect()
+    const scale = Number.isFinite(spreadScale) && spreadScale > 0 ? spreadScale : 1
+    const geometryX = rootRect.left + (clientX - rootRect.left) / scale
+    const geometryY = rootRect.top + (clientY - rootRect.top) / scale
     if (
-      clientX < viewportRect.left ||
-      clientX > viewportRect.right ||
-      clientY < viewportRect.top ||
-      clientY > viewportRect.bottom
+      geometryX < viewportRect.left ||
+      geometryX > viewportRect.right ||
+      geometryY < viewportRect.top ||
+      geometryY > viewportRect.bottom
     ) return null
 
     const range = caretRangeFromPoint(clientX, clientY)
-    const sentence = sentenceFromNode(range?.startContainer || null)
-    if (!sentence || !viewport.contains(sentence)) return null
+    let sentence = sentenceFromNode(range?.startContainer || null)
+    let words = sentence && viewport.contains(sentence)
+      ? wordCacheForElement(sentence).words
+      : []
+    let wordIdx = -1
+    if (sentence && words.length && range?.startContainer) {
+      const offset = textOffsetInElement(sentence, range.startContainer, range.startOffset)
+      wordIdx = wordIndexForOffset(words, offset)
+    }
+    let region = wordIdx >= 0
+      ? activeLineRect(sentence!, words, wordIdx, viewportRect)
+      : null
+
+    // Android WebView can return a caret range from an adjacent visual line
+    // when the compact phone page is scaled with CSS zoom. Treat the caret as
+    // a fast path, then recover from the rendered line fragments themselves.
+    if (!region || !pointIntersectsRect(geometryX, geometryY, region.rect)) {
+      sentence = null
+      words = []
+      wordIdx = -1
+      region = null
+      const candidates = Array.from(viewport.querySelectorAll('.sentence[data-local-sent-idx]'))
+      for (const candidate of candidates) {
+        const candidateRange = document.createRange()
+        candidateRange.selectNodeContents(candidate)
+        const lineFragments = Array.from(candidateRange.getClientRects()).filter(rect => (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          pointIntersectsRect(geometryX, geometryY, expandRect(rect, 18, 9))
+        ))
+        candidateRange.detach?.()
+        if (!lineFragments.length) continue
+
+        const candidateWords = wordCacheForElement(candidate).words
+        let bestWordIdx = -1
+        let bestDistance = Number.POSITIVE_INFINITY
+        for (let idx = 0; idx < candidateWords.length; idx++) {
+          const rect = wordRect(candidate, candidateWords[idx])
+          if (!rect || !lineFragments.some(fragment => sameVisualLine(fragment, rect, viewportRect))) continue
+          const dx = geometryX < rect.left
+            ? rect.left - geometryX
+            : (geometryX > rect.right ? geometryX - rect.right : 0)
+          const dy = geometryY < rect.top
+            ? rect.top - geometryY
+            : (geometryY > rect.bottom ? geometryY - rect.bottom : 0)
+          const distance = Math.hypot(dx, dy)
+          if (distance < bestDistance) {
+            bestDistance = distance
+            bestWordIdx = idx
+          }
+        }
+        if (bestWordIdx < 0) continue
+        const candidateRegion = activeLineRect(candidate, candidateWords, bestWordIdx, viewportRect)
+        if (!candidateRegion || !pointIntersectsRect(geometryX, geometryY, candidateRegion.rect)) continue
+        sentence = candidate
+        words = candidateWords
+        wordIdx = bestWordIdx
+        region = candidateRegion
+        break
+      }
+    }
+
+    if (!sentence || !region || wordIdx < 0) return null
     const sentenceIdx = Number.parseInt(sentence.getAttribute('data-local-sent-idx') || '-1', 10)
     if (!Number.isFinite(sentenceIdx) || sentenceIdx < 0) return null
-    const { words } = wordCacheForElement(sentence)
-    if (!words.length || !range?.startContainer) return null
-    const offset = textOffsetInElement(sentence, range.startContainer, range.startOffset)
-    const wordIdx = wordIndexForOffset(words, offset)
-    if (wordIdx < 0) return null
-    const region = activeLineRect(sentence, words, wordIdx, viewportRect)
-    if (!region || !pointIntersectsRect(clientX, clientY, region.rect)) return null
     const placement = cursorPlacementForRegion(region)
     if (!placement) return null
     const lineStartWordIdx = Math.max(0, region.startIdx ?? wordIdx)
@@ -1230,7 +1314,7 @@ function ReflowViewer({
       lineStartWordIdx,
       text: sentence.textContent || '',
     }
-  }, [cursorPlacementForRegion])
+  }, [cursorPlacementForRegion, spreadScale])
 
   // Word boundaries only change with the active sentence/chapter. Rebuilding
   // this cache on every progress tick forces repeated text walks at 20Hz.
@@ -1285,6 +1369,7 @@ function ReflowViewer({
   }, [isPageTurning, isPlaying, locateLineAtPoint, restoreSelectedOrHide, selectedLineMatchesCurrentView, showLineCursor])
 
   const handleLinePointerMove = useCallback((event: React.PointerEvent) => {
+    if (event.pointerType === 'touch' || event.pointerType === 'pen') return
     if (isPlaying || isPageTurning || selectedLineMatchesCurrentView()) return
     hoverPointRef.current = { x: event.clientX, y: event.clientY }
     if (hoverFrameRef.current == null) {
@@ -1306,12 +1391,10 @@ function ReflowViewer({
     restoreSelectedOrHide()
   }, [hideLineCursor, isPageTurning, isPlaying, restoreSelectedOrHide])
 
-  const handleLinePointerDown = useCallback((event: React.PointerEvent) => {
+  const selectLineAtPoint = useCallback((clientX: number, clientY: number) => {
     if (isPageTurning) return
-    if (event.button !== 0) return
-    const located = locateLineAtPoint(event.clientX, event.clientY)
+    const located = locateLineAtPoint(clientX, clientY)
     if (!located) return
-    event.preventDefault()
     if (hoverFrameRef.current != null) {
       cancelAnimationFrame(hoverFrameRef.current)
       hoverFrameRef.current = null
@@ -1326,6 +1409,32 @@ function ReflowViewer({
     showLineCursor(located.placement, 1, 'selected')
     onSentenceSelect?.(chapterIdx, located.sentenceIdx, { progress: located.progress })
   }, [chapterIdx, isPageTurning, locateLineAtPoint, onSentenceSelect, pagesPerView, showLineCursor, viewPage])
+
+  const handleLineDoubleClick = useCallback((event: React.MouseEvent) => {
+    if (androidRuntime || event.button !== 0) return
+    event.preventDefault()
+    selectLineAtPoint(event.clientX, event.clientY)
+  }, [androidRuntime, selectLineAtPoint])
+
+  const handleAndroidLinePointerDown = useCallback((event: React.PointerEvent) => {
+    if (!androidRuntime || (event.pointerType !== 'touch' && event.pointerType !== 'pen')) return
+    const target = event.target as HTMLElement | null
+    if (target?.closest('button, a, input, textarea, select, [role="button"]')) return
+    androidLineTapRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+  }, [androidRuntime])
+
+  const handleAndroidLinePointerUp = useCallback((event: React.PointerEvent) => {
+    const tap = androidLineTapRef.current
+    androidLineTapRef.current = { pointerId: -1, x: 0, y: 0 }
+    if (!androidRuntime || event.pointerId !== tap.pointerId) return
+    if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 12) return
+    event.preventDefault()
+    selectLineAtPoint(event.clientX, event.clientY)
+  }, [androidRuntime, selectLineAtPoint])
+
+  const cancelAndroidLineTap = useCallback(() => {
+    androidLineTapRef.current = { pointerId: -1, x: 0, y: 0 }
+  }, [])
 
   useEffect(() => () => {
     if (hoverFrameRef.current != null) cancelAnimationFrame(hoverFrameRef.current)
@@ -1564,7 +1673,7 @@ function ReflowViewer({
     hideLineCursor('force-hidden')
     const direction: TurnDirection = nextView > currentView ? 'next' : 'prev'
     const adjacent = Math.abs(nextView - currentView) === 1
-    if (animate && adjacent && ppv === 2) {
+    if (animate && adjacent && ppv === 2 && !androidRuntime) {
       const turnState = triggerDoubleTurn(direction, currentView, nextView, ppv)
       if (turnState === 'busy') return false
       setViewPage(nextView)
@@ -1573,7 +1682,7 @@ function ReflowViewer({
     if (animate && adjacent && triggerSingleTurn(direction) === 'busy') return false
     setViewPage(nextView)
     return true
-  }, [hideLineCursor, triggerDoubleTurn, triggerSingleTurn])
+  }, [androidRuntime, hideLineCursor, triggerDoubleTurn, triggerSingleTurn])
 
   useEffect(() => () => {
     if (singleTurnTimeoutRef.current) clearTimeout(singleTurnTimeoutRef.current)
@@ -1587,7 +1696,12 @@ function ReflowViewer({
     if (!el) return
     const rect = el.getBoundingClientRect()
     const available = Math.max(el.clientWidth || 0, rect.width || 0)
-    const next = available >= TWO_PAGE_WIDTH + TWO_PAGE_MARGIN ? 2 : 1
+    const androidTabletLandscape = document.documentElement.dataset.platform === 'android' &&
+      document.documentElement.dataset.androidShell === 'tablet-landscape'
+    const next = available >= (androidTabletLandscape ? 1040 : TWO_PAGE_WIDTH + TWO_PAGE_MARGIN) ? 2 : 1
+    const paperWidth = next * PAGE_WIDTH
+    const horizontalRoom = Math.max(280, available - (androidTabletLandscape ? 24 : 16))
+    setSpreadScale(Math.min(1, horizontalRoom / paperWidth))
     setModeMeasured(true)
     setPagesPerView(prev => {
       if (prev === next) return prev
@@ -1798,7 +1912,7 @@ function ReflowViewer({
     const nChapters = reflow.chapters.length
     const { viewPage: vp, viewCount: vc, chapterIdx: ci, pagesPerView: ppv } = stateRef.current
     if (vp < vc - 1) {
-      if (ppv === 2) {
+      if (ppv === 2 && !androidRuntime) {
         const turnState = triggerDoubleTurn('next', vp, vp + 1, ppv)
         if (turnState !== 'busy') setViewPage(vp + 1)
       } else {
@@ -1812,13 +1926,13 @@ function ReflowViewer({
       const turnState = triggerSingleTurn('next')
       if (turnState !== 'busy') setChapterIdx?.(ci + 1)
     }
-  }, [reflow, setChapterIdx, triggerDoubleTurn, triggerSingleTurn])
+  }, [androidRuntime, reflow, setChapterIdx, triggerDoubleTurn, triggerSingleTurn])
 
   const goPrev = useCallback(() => {
     if (!reflow) return
     const { viewPage: vp, chapterIdx: ci, pagesPerView: ppv } = stateRef.current
     if (vp > 0) {
-      if (ppv === 2) {
+      if (ppv === 2 && !androidRuntime) {
         const turnState = triggerDoubleTurn('prev', vp, vp - 1, ppv)
         if (turnState !== 'busy') setViewPage(vp - 1)
       } else {
@@ -1832,7 +1946,7 @@ function ReflowViewer({
         setChapterIdx?.(ci - 1)
       }
     }
-  }, [reflow, setChapterIdx, triggerDoubleTurn, triggerSingleTurn])
+  }, [androidRuntime, reflow, setChapterIdx, triggerDoubleTurn, triggerSingleTurn])
 
   const goToReadingPosition = useCallback((targetChapter, sentenceIdx, progress = 0, indexType = 'local', animate = true) => {
     if (sentenceIdx == null || sentenceIdx < 0) return
@@ -1985,7 +2099,7 @@ function ReflowViewer({
 
   if (!reflow) {
     return (
-      <div className={`page-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`}>
+      <div className={`page-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`} data-android-scroll-fade>
         <div style={{ margin: 'auto', color: 'var(--ink-3)', fontFamily: 'var(--font-display)', fontStyle: 'italic' }}>
           Loading reflow...
         </div>
@@ -1995,7 +2109,7 @@ function ReflowViewer({
 
   if (!chapter) {
     return (
-      <div className={`page-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`}>
+      <div className={`page-scroll ${followAlongMode ? 'follow-along-scroll' : ''}`} data-android-scroll-fade>
         <div style={{ margin: 'auto', color: 'var(--ink-3)' }}>No chapters found.</div>
       </div>
     )
@@ -2056,12 +2170,14 @@ function ReflowViewer({
   return (
     <div
       className={`page-scroll reflow-scroll ${followAlongMode ? 'follow-along-scroll' : ''} ${isPageTurning ? 'is-page-turning' : ''}`}
+      data-android-scroll-fade
       data-page-turning={isPageTurning ? 'true' : undefined}
       ref={scrollRef}
     >
       <div className="reader-line-cursor" ref={cursorRef} aria-hidden="true" />
       <div
         className={`spread reflow-spread pt-spread pages-${pagesPerView}${singleTurn ? ` sp-turning sp-turning-${singleTurn}` : ''}`}
+        style={{ zoom: spreadScale } as React.CSSProperties}
         data-turn-direction={activeTurn?.direction}
         data-turn-from={activeTurn?.fromFirstPage}
         data-turn-to={activeTurn?.toFirstPage}
@@ -2161,9 +2277,12 @@ function ReflowViewer({
           tabIndex={0}
           aria-label={`Reading page ${versoFooter}${showRecto ? ` and ${rectoFooter}` : ''}. Press Enter to begin narration from this page.`}
           aria-keyshortcuts="Enter PageUp PageDown Space"
+          onPointerDown={handleAndroidLinePointerDown}
           onPointerMove={handleLinePointerMove}
+          onPointerUp={handleAndroidLinePointerUp}
+          onPointerCancel={cancelAndroidLineTap}
           onPointerLeave={handleLinePointerLeave}
-          onPointerDown={handleLinePointerDown}
+          onDoubleClick={handleLineDoubleClick}
           onKeyDown={handleViewportKeyDown}
         >
           <div

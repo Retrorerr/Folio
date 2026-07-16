@@ -6,7 +6,7 @@ import './styles/android.css'
 import App from './App'
 import ErrorBoundary from './ErrorBoundary'
 import { isAndroidRuntime, isTauriRuntime, requireAndroidBridge } from './platform'
-import { installAndroidShellModeListener } from './androidShell'
+import { installAndroidScrollFades, installAndroidShellModeListener } from './androidShell'
 
 async function setTauriWindowIcon() {
   if (!isTauriRuntime() || isAndroidRuntime()) return
@@ -32,11 +32,28 @@ if (!root) {
 
 const reactRoot = createRoot(root)
 
+function markWebContentReady() {
+  // The native Android overlay owns the visible launch surface. Signal only
+  // after React has committed and the browser has crossed two paint frames, so
+  // native never waits on a bootstrap DOM node that React has already replaced.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.documentElement.dataset.folioWebReady = 'true'
+    })
+  })
+}
+
 async function boot() {
   let disposeAndroidShellMode = () => {}
+  let disposeAndroidScrollFades = () => {}
   if (isAndroidRuntime()) {
     document.documentElement.dataset.platform = 'android'
     disposeAndroidShellMode = installAndroidShellModeListener()
+    disposeAndroidScrollFades = installAndroidScrollFades()
+    window.addEventListener('pagehide', () => {
+      disposeAndroidScrollFades()
+      disposeAndroidShellMode()
+    }, { once: true })
   }
 
   try {
@@ -44,13 +61,13 @@ async function boot() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     reactRoot.render(
-      <main className="runtime-boot-error" role="alert">
+      <main className="runtime-boot-error" role="alert" data-android-scroll-fade>
         <h1>Folio could not start</h1>
         <p>{message}</p>
         <p>Reinstall this Android build. Folio will not fall back to a desktop or network backend.</p>
       </main>,
     )
-    disposeAndroidShellMode()
+    markWebContentReady()
     return
   }
 
@@ -62,6 +79,7 @@ async function boot() {
       </ErrorBoundary>
     </StrictMode>,
   )
+  markWebContentReady()
 }
 
 void boot()

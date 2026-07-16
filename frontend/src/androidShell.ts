@@ -2,10 +2,6 @@ export type AndroidShellMode = 'phone-portrait' | 'phone-landscape' | 'tablet-po
 export type AndroidSwipeDirection = 'left' | 'right'
 
 export type AndroidWindowInsets = {
-  top?: number
-  right?: number
-  bottom?: number
-  left?: number
   imeBottom?: number
 }
 
@@ -56,10 +52,6 @@ export function applyAndroidPlatformMetrics(metrics?: AndroidPlatformMetrics | n
     const parsed = Number(value)
     root.style.setProperty(name, `${Number.isFinite(parsed) ? Math.max(0, parsed) : 0}px`)
   }
-  setPixels('--android-inset-top', insets.top)
-  setPixels('--android-inset-right', insets.right)
-  setPixels('--android-inset-bottom', insets.bottom)
-  setPixels('--android-inset-left', insets.left)
   setPixels('--android-ime-bottom', insets.imeBottom)
   if (Number.isFinite(Number(metrics.refreshRate))) {
     root.style.setProperty('--android-refresh-rate', String(metrics.refreshRate))
@@ -70,15 +62,17 @@ export async function syncAndroidSystemBars(theme: string): Promise<void> {
   if (!isAndroidDocument()) return
   const darkBackground = theme === 'dark' || theme === 'folio' || theme === 'blackleaf'
   const backgroundColor = ({
-    light: '#edf0f2',
-    sepia: '#ede0c4',
-    dark: '#10171d',
-    folio: '#0c0d0f',
-    blackleaf: '#030303',
-  } as Record<string, string>)[theme] || '#ede0c4'
+    light: '#f7f4ed',
+    sepia: '#f3e7cf',
+    dark: '#111417',
+    folio: '#090a0c',
+    blackleaf: '#000000',
+  } as Record<string, string>)[theme] || '#f3e7cf'
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('plugin:mobile-runtime|set_system_bars', { payload: { darkBackground, backgroundColor } })
+    await invoke('plugin:mobile-runtime|set_system_bars', {
+      payload: { theme, darkBackground, backgroundColor },
+    })
   } catch {
     // Older debug APKs do not expose the command. The next native preview
     // rebuild installs it; CSS still paints a safe matching background.
@@ -92,6 +86,253 @@ export async function performAndroidHaptic(kind: 'selection' | 'confirm' = 'sele
     await invoke('plugin:mobile-runtime|perform_haptic', { payload: { kind } })
   } catch {
     // Haptics are an enhancement and may be disabled by the user or device.
+  }
+}
+
+export async function backgroundAndroidApp(): Promise<boolean> {
+  if (!isAndroidDocument()) return false
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const result = await invoke<{ backgrounded?: boolean }>('plugin:mobile-runtime|background_app')
+    return result.backgrounded === true
+  } catch (error) {
+    console.warn('Android native background command failed', error)
+    return false
+  }
+}
+
+const ANDROID_SCROLL_FADE_SELECTOR = '[data-android-scroll-fade]'
+
+type AndroidScrollFadeOverlay = {
+  top: HTMLDivElement
+  bottom: HTMLDivElement
+}
+
+/**
+ * Applies edge fades only to declared vertical scroll viewports, and only in
+ * directions where more content exists. Persistent chrome deliberately lives
+ * outside these viewports, so navigation bars and playback controls never get
+ * washed out by a screen-wide overlay.
+ */
+export function installAndroidScrollFades(): () => void {
+  if (!isAndroidDocument()) return () => {}
+
+  const tracked = new Set<HTMLElement>()
+  const pending = new Set<HTMLElement>()
+  const overlays = new Map<HTMLElement, AndroidScrollFadeOverlay>()
+  const overlayLayer = document.createElement('div')
+  overlayLayer.className = 'android-scroll-fade-layer'
+  overlayLayer.setAttribute('aria-hidden', 'true')
+  document.body.append(overlayLayer)
+
+  let animationFrame = 0
+  let pendingAll = false
+  let disposed = false
+  let resizeObserver: ResizeObserver | null = null
+
+  const createOverlay = (): AndroidScrollFadeOverlay => {
+    const top = document.createElement('div')
+    const bottom = document.createElement('div')
+    top.className = 'android-scroll-fade-band android-scroll-fade-band-top'
+    bottom.className = 'android-scroll-fade-band android-scroll-fade-band-bottom'
+    top.hidden = true
+    bottom.hidden = true
+    overlayLayer.append(top, bottom)
+    return { top, bottom }
+  }
+
+  const setStyle = (element: HTMLElement, property: string, value: string) => {
+    if (element.style.getPropertyValue(property) !== value) element.style.setProperty(property, value)
+  }
+
+  const clearFadeState = (element: HTMLElement) => {
+    delete element.dataset.androidScrollFadeUp
+    delete element.dataset.androidScrollFadeDown
+  }
+
+  const untrack = (element: HTMLElement) => {
+    resizeObserver?.unobserve(element)
+    clearFadeState(element)
+    const overlay = overlays.get(element)
+    overlay?.top.remove()
+    overlay?.bottom.remove()
+    overlays.delete(element)
+    tracked.delete(element)
+    pending.delete(element)
+  }
+
+  const updateFadeState = (element: HTMLElement) => {
+    if (!element.isConnected || !element.matches(ANDROID_SCROLL_FADE_SELECTOR)) {
+      untrack(element)
+      return
+    }
+
+    const style = window.getComputedStyle(element)
+    const overflowY = style.overflowY
+    const acceptsVerticalScroll = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
+    const hasOverflow = acceptsVerticalScroll && maxScrollTop > 2
+    const canScrollUp = hasOverflow && element.scrollTop > 1
+    const canScrollDown = hasOverflow && element.scrollTop < maxScrollTop - 1
+    const rect = element.getBoundingClientRect()
+    const left = Math.max(0, rect.left)
+    const right = Math.min(window.innerWidth, rect.right)
+    const top = Math.max(0, rect.top)
+    const bottom = Math.min(window.innerHeight, rect.bottom)
+    const visible = style.display !== 'none' && style.visibility !== 'hidden' && right - left > 1 && bottom - top > 1
+    const ownsViewportPoint = (x: number, y: number) => {
+      const frontmost = document.elementFromPoint(x, y)
+      return frontmost?.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR) === element
+    }
+    const sampleX = left + ((right - left) / 2)
+    const sampleDepth = Math.min(24, Math.max(1, (bottom - top) / 4))
+    const topIsFrontmost = visible && ownsViewportPoint(sampleX, Math.min(bottom - 1, top + sampleDepth))
+    const bottomIsFrontmost = visible && ownsViewportPoint(sampleX, Math.max(top + 1, bottom - sampleDepth))
+    const showTop = canScrollUp && topIsFrontmost
+    const showBottom = canScrollDown && bottomIsFrontmost
+    const fadeColor = style.getPropertyValue('--android-scroll-fade-color').trim()
+      || (style.backgroundColor !== 'rgba(0, 0, 0, 0)' ? style.backgroundColor : window.getComputedStyle(document.body).backgroundColor)
+    const overlay = overlays.get(element) || createOverlay()
+    overlays.set(element, overlay)
+
+    const geometry: Array<[string, string]> = [
+      ['left', `${left}px`],
+      ['width', `${Math.max(0, right - left)}px`],
+      ['max-height', `${Math.max(0, (bottom - top) / 2)}px`],
+      ['--android-scroll-fade-color', fadeColor],
+    ]
+    geometry.forEach(([property, value]) => {
+      setStyle(overlay.top, property, value)
+      setStyle(overlay.bottom, property, value)
+    })
+    setStyle(overlay.top, 'top', `${top}px`)
+    setStyle(overlay.bottom, 'bottom', `${Math.max(0, window.innerHeight - bottom)}px`)
+    overlay.top.hidden = !showTop
+    overlay.bottom.hidden = !showBottom
+
+    if (showTop) element.dataset.androidScrollFadeUp = 'true'
+    else delete element.dataset.androidScrollFadeUp
+    if (showBottom) element.dataset.androidScrollFadeDown = 'true'
+    else delete element.dataset.androidScrollFadeDown
+  }
+
+  const flush = () => {
+    animationFrame = 0
+    const elements = pendingAll ? Array.from(tracked) : Array.from(pending)
+    pendingAll = false
+    pending.clear()
+    elements.forEach(updateFadeState)
+  }
+
+  const schedule = (element?: HTMLElement | null) => {
+    if (disposed) return
+    if (element) pending.add(element)
+    else pendingAll = true
+    if (!animationFrame) animationFrame = window.requestAnimationFrame(flush)
+  }
+
+  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((entries) => {
+    entries.forEach((entry) => schedule(entry.target as HTMLElement))
+  })
+
+  const track = (element: HTMLElement) => {
+    if (tracked.has(element)) return
+    tracked.add(element)
+    resizeObserver?.observe(element)
+    schedule(element)
+  }
+
+  const discover = (root: ParentNode) => {
+    if (root instanceof HTMLElement && root.matches(ANDROID_SCROLL_FADE_SELECTOR)) track(root)
+    root.querySelectorAll<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR).forEach(track)
+  }
+
+  discover(document)
+
+  const mutationObserver = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      if (mutation.target === overlayLayer || overlayLayer.contains(mutation.target)) return
+
+      if (mutation.type === 'childList') {
+        mutation.addedNodes.forEach((node) => {
+          if (node instanceof HTMLElement) discover(node)
+        })
+        const viewport = mutation.target instanceof Element
+          ? mutation.target.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR)
+          : mutation.target.parentElement?.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR)
+        if (viewport) schedule(viewport)
+        schedule()
+        return
+      }
+
+      const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement
+      if (mutation.type === 'attributes' && target === document.documentElement) {
+        schedule()
+        return
+      }
+      if (mutation.type === 'attributes' && target instanceof HTMLElement && target.matches(ANDROID_SCROLL_FADE_SELECTOR)) {
+        track(target)
+        schedule(target)
+        return
+      }
+      const viewport = target?.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR)
+      if (viewport) schedule(viewport)
+    })
+
+    tracked.forEach((element) => {
+      if (!element.isConnected || !element.matches(ANDROID_SCROLL_FADE_SELECTOR)) {
+        untrack(element)
+      }
+    })
+  })
+  mutationObserver.observe(document.documentElement, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'data-android-scroll-fade', 'data-folio-theme'],
+  })
+
+  const onScroll = (event: Event) => {
+    const element = event.target instanceof HTMLElement ? event.target : null
+    if (!element?.matches(ANDROID_SCROLL_FADE_SELECTOR)) return
+    schedule(element)
+    element.querySelectorAll<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR).forEach(schedule)
+  }
+  const scheduleAll = () => schedule()
+  const scheduleClosest = (event: Event) => {
+    const target = event.target instanceof Element ? event.target : null
+    const viewport = target?.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR)
+    if (viewport) schedule(viewport)
+  }
+
+  document.addEventListener('scroll', onScroll, true)
+  document.addEventListener('load', scheduleClosest, true)
+  document.addEventListener('transitionend', scheduleClosest, true)
+  document.addEventListener('animationend', scheduleClosest, true)
+  window.addEventListener('resize', scheduleAll, { passive: true })
+  window.addEventListener('orientationchange', scheduleAll, { passive: true })
+  window.addEventListener('folio:android-shell-change', scheduleAll)
+  void document.fonts?.ready.then(scheduleAll)
+
+  return () => {
+    disposed = true
+    if (animationFrame) window.cancelAnimationFrame(animationFrame)
+    mutationObserver.disconnect()
+    resizeObserver?.disconnect()
+    document.removeEventListener('scroll', onScroll, true)
+    document.removeEventListener('load', scheduleClosest, true)
+    document.removeEventListener('transitionend', scheduleClosest, true)
+    document.removeEventListener('animationend', scheduleClosest, true)
+    window.removeEventListener('resize', scheduleAll)
+    window.removeEventListener('orientationchange', scheduleAll)
+    window.removeEventListener('folio:android-shell-change', scheduleAll)
+    tracked.forEach(clearFadeState)
+    tracked.clear()
+    pending.clear()
+    overlays.clear()
+    overlayLayer.remove()
+    pendingAll = false
   }
 }
 

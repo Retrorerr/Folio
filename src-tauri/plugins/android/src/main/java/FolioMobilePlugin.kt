@@ -35,6 +35,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 
+interface FolioSystemBarHost {
+    fun applyFolioSystemBars(theme: String, darkBackground: Boolean, backgroundColor: Int)
+}
+
 @InvokeArg
 class PickEpubArgs {
     var initialUri: String? = null
@@ -84,6 +88,7 @@ class InstallModelPackArgs {
 
 @InvokeArg
 class SystemBarsArgs {
+    var theme: String? = null
     var darkBackground: Boolean? = null
     var backgroundColor: String? = null
 }
@@ -175,14 +180,6 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private var statusSnapshotAt = 0L
     private val modelDownloader = AndroidModelDownloader(modelManager)
 
-    override fun onStop() {
-        // ONNX sessions are hundreds of MB and the current playback service
-        // consumes already-generated WAVs. Release inference memory once the
-        // WebView is no longer visible; a later request reloads lazily.
-        modelManager.unloadAllAsync()
-        super.onStop()
-    }
-
     override fun onDestroy() {
         synchronized(pickerLock) { pendingPickerKind = null }
         synthesisExecutor.shutdownNow()
@@ -200,7 +197,6 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
             buildList { while (statusWaiters.isNotEmpty()) add(statusWaiters.removeFirst()) }
         }
         pendingStatus.forEach { it.reject("Android native runtime status stopped") }
-        modelManager.unloadAllAsync()
         super.onDestroy()
     }
 
@@ -222,8 +218,11 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
             addCategory(Intent.CATEGORY_OPENABLE)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-            type = "application/epub+zip"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/epub+zip", "application/octet-stream"))
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/epub+zip", "application/pdf", "application/octet-stream"),
+            )
             args.initialUri?.let { putExtra("android.provider.extra.INITIAL_URI", it.toUri()) }
         }
         launchPicker(invoke, "epub", intent)
@@ -721,19 +720,16 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         val density = activity.resources.displayMetrics.density.coerceAtLeast(1f)
         val decorView = activity.window.decorView
         val rootInsets = ViewCompat.getRootWindowInsets(decorView)
-        val systemInsets = rootInsets?.getInsets(
-            WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-        )
         val imeInsets = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())
         val insets = JSObject().apply {
-            put("top", (systemInsets?.top ?: 0) / density)
-            put("right", (systemInsets?.right ?: 0) / density)
-            put("bottom", (systemInsets?.bottom ?: 0) / density)
-            put("left", (systemInsets?.left ?: 0) / density)
             put("imeBottom", if (rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) == true) (imeInsets?.bottom ?: 0) / density else 0f)
         }
-        @Suppress("DEPRECATION")
-        val refreshRate = activity.display?.refreshRate ?: activity.windowManager.defaultDisplay.refreshRate
+        val refreshRate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            activity.display?.refreshRate ?: 60f
+        } else {
+            @Suppress("DEPRECATION")
+            activity.windowManager.defaultDisplay.refreshRate
+        }
         return JSObject().apply {
             put("platform", "android")
             put("nativeTtsAvailable", runtime.ready)
@@ -755,14 +751,24 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(SystemBarsArgs::class.java)
         val darkBackground = args.darkBackground != false
         val backgroundColor = runCatching {
-            Color.parseColor(args.backgroundColor ?: if (darkBackground) "#030303" else "#ede0c4")
-        }.getOrDefault(if (darkBackground) Color.rgb(3, 3, 3) else Color.rgb(237, 224, 196))
+            Color.parseColor(args.backgroundColor ?: if (darkBackground) "#000000" else "#f3e7cf")
+        }.getOrDefault(if (darkBackground) Color.BLACK else Color.rgb(243, 231, 207))
+        val savedTheme = args.theme?.takeIf { it in launchThemes } ?: if (darkBackground) "blackleaf" else "sepia"
         activity.getSharedPreferences("folio_native_ui", android.content.Context.MODE_PRIVATE)
             .edit()
+            .putString("boot_theme", savedTheme)
             .putInt("boot_background", backgroundColor)
             .putBoolean("boot_dark", darkBackground)
             .apply()
         activity.runOnUiThread {
+            (activity as? FolioSystemBarHost)?.let { host ->
+                host.applyFolioSystemBars(savedTheme, darkBackground, backgroundColor)
+                invoke.resolve(JSObject().apply {
+                    put("darkBackground", darkBackground)
+                    put("backgroundColor", args.backgroundColor ?: JSONObject.NULL)
+                })
+                return@runOnUiThread
+            }
             val window = activity.window
             val decorView = window.decorView
             window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(backgroundColor))
@@ -781,6 +787,16 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 put("darkBackground", darkBackground)
                 put("backgroundColor", args.backgroundColor ?: JSONObject.NULL)
             })
+        }
+    }
+
+    private val launchThemes = setOf("sepia", "light", "dark", "folio", "blackleaf")
+
+    @Command
+    fun backgroundApp(invoke: Invoke) {
+        activity.runOnUiThread {
+            val backgrounded = activity.moveTaskToBack(true)
+            invoke.resolve(JSObject().apply { put("backgrounded", backgrounded) })
         }
     }
 

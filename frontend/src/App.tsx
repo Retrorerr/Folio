@@ -38,7 +38,7 @@ import {
 } from './api'
 import CursorHalo from './components/CursorHalo'
 import TitleBar from './components/TitleBar'
-import { appViewTransition, fadeIn, spring } from './motion'
+import { androidAppViewTransition, appViewTransition, fadeIn, spring } from './motion'
 import { isFolioTheme, resolveInitialTheme } from './systemTheme'
 import { performAndroidHaptic, syncAndroidSystemBars } from './androidShell'
 import './App.css'
@@ -108,7 +108,8 @@ export default function App() {
   const [hasSelectedReaderLine, setHasSelectedReaderLine] = useState(false)
   const [pageNavHidden, setPageNavHidden] = useState(false)
   const pageNavHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const readerSwipeRef = useRef({ pointerId: -1, x: 0, y: 0 })
+  const readerSwipeRef = useRef({ pointerId: -1, x: 0, y: 0, committed: false })
+  const readerBackInProgressRef = useRef(false)
 
   const [gpuEnabled, setGpuEnabled] = useState<boolean | null>(null)
   const [backendReachable, setBackendReachable] = useState(false)
@@ -514,11 +515,13 @@ export default function App() {
 
   const goToPreviousVisualPage = useCallback(() => {
     exitFollowAlong()
+    setHasSelectedReaderLine(false)
     reflowNavRef.current.goPrev?.()
   }, [exitFollowAlong])
 
   const goToNextVisualPage = useCallback(() => {
     exitFollowAlong()
+    setHasSelectedReaderLine(false)
     reflowNavRef.current.goNext?.()
   }, [exitFollowAlong])
 
@@ -526,24 +529,24 @@ export default function App() {
     if (!isAndroidRuntime() || (event.pointerType !== 'touch' && event.pointerType !== 'pen')) return
     const target = event.target as HTMLElement | null
     if (target?.closest('button, input, textarea, select, [role="button"], .pill-wrap, .sidebar-wrap, .settings-overlay')) return
-    readerSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
-    event.currentTarget.setPointerCapture(event.pointerId)
+    readerSwipeRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, committed: false }
   }, [])
 
   const resolveReaderSwipe = useCallback((event: ReactPointerEvent<HTMLElement>, final: boolean) => {
     const gesture = readerSwipeRef.current
-    if (event.pointerId !== gesture.pointerId) return
+    if (event.pointerId !== gesture.pointerId || gesture.committed) return
     const dx = event.clientX - gesture.x
     const dy = event.clientY - gesture.y
     if (Math.abs(dy) > 28 && Math.abs(dy) > Math.abs(dx) * 1.1) {
-      readerSwipeRef.current.pointerId = -1
+      readerSwipeRef.current = { ...gesture, pointerId: -1 }
       return
     }
-    // WebView begins scroll arbitration after roughly 40 CSS px and can emit
-    // pointercancel immediately afterwards. Commit a clearly horizontal swipe
-    // on that first move; the larger finger-up threshold remains as fallback.
-    if (Math.abs(dx) < (final ? 64 : 36) || Math.abs(dx) < Math.abs(dy) * 1.35) return
-    readerSwipeRef.current.pointerId = -1
+    // WebView can begin scroll arbitration in the mid-30 CSS px range and
+    // emit pointercancel immediately afterwards. Commit a clearly horizontal
+    // swipe before that boundary; the larger finger-up threshold remains as
+    // a guard when the full stream survives.
+    if (Math.abs(dx) < (final ? 56 : 28) || Math.abs(dx) < Math.abs(dy) * 1.4) return
+    readerSwipeRef.current = { ...gesture, pointerId: -1, committed: true }
     event.preventDefault()
     if (dx < 0 && pageNavigation.canGoNext) goToNextVisualPage()
     else if (dx > 0 && pageNavigation.canGoPrevious) goToPreviousVisualPage()
@@ -578,7 +581,7 @@ export default function App() {
   const goToPageFromUser = useCallback((page: number) => {
     flushCurrentVisualPosition()
     exitFollowAlong()
-    setHasSelectedReaderLine(false)
+      setHasSelectedReaderLine(false)
     const result = goToPage(page)
     savePosition(page, 0)
     return result
@@ -685,11 +688,91 @@ export default function App() {
       .finally(() => { settingsHydrated.current = true })
   }, []) // eslint-disable-line
 
-  const onHome = useCallback(() => {
+  const closeReader = useCallback(() => {
     exitFollowAlong()
     stopAudio()
     void flushCurrentVisualPosition().finally(() => closeBook())
   }, [closeBook, exitFollowAlong, flushCurrentVisualPosition, stopAudio])
+
+  useEffect(() => {
+    if (!isAndroidRuntime() || !activeBookId) return
+    let disposed = false
+    let listener: { unregister: () => Promise<void> } | null = null
+
+    void import('@tauri-apps/api/app')
+      .then(({ onBackButtonPress }) => onBackButtonPress(() => {
+        // Settings installs its own listener so the same component behaves
+        // correctly from both the dashboard and reader. Leave it to that
+        // listener while preventing this reader-level handler from closing
+        // the book underneath the modal.
+        if (document.querySelector('.settings-overlay')) return
+
+        const collapsePlayback = document.querySelector<HTMLButtonElement>('.pill.expanded .collapse-btn')
+        if (collapsePlayback) {
+          collapsePlayback.click()
+          return
+        }
+
+        const openSidebar = document.querySelector('.sidebar-panel.is-open')
+        const activeRailButton = document.querySelector<HTMLButtonElement>('.icon-rail .rail-btn.active')
+        if (openSidebar && activeRailButton) {
+          activeRailButton.click()
+          return
+        }
+
+        if (followAlongMode) {
+          exitFollowAlong()
+          return
+        }
+
+        closeReader()
+      }))
+      .then((nextListener) => {
+        if (disposed) void nextListener.unregister()
+        else listener = nextListener
+      })
+      .catch((error) => {
+        console.warn('Android back-button listener failed', error)
+      })
+
+    return () => {
+      disposed = true
+      if (listener) void listener.unregister()
+    }
+  }, [activeBookId, closeReader, exitFollowAlong, followAlongMode])
+
+  const onHome = useCallback(() => {
+    if (isAndroidRuntime() && window.history.state?.folioReader) {
+      window.history.back()
+      return
+    }
+    closeReader()
+  }, [closeReader])
+
+  useEffect(() => {
+    if (!isAndroidRuntime()) return
+    if (!book) {
+      if (window.history.state?.folioReader) {
+        const { folioReader: _folioReader, ...rest } = window.history.state
+        void _folioReader
+        window.history.replaceState(Object.keys(rest).length ? rest : null, '')
+      }
+      readerBackInProgressRef.current = false
+      return
+    }
+    if (readerBackInProgressRef.current) return
+    if (!window.history.state?.folioReader) {
+      window.history.pushState({ ...(window.history.state || {}), folioReader: true }, '')
+    }
+    const handleBack = () => {
+      if (!window.history.state?.folioReader) {
+        readerBackInProgressRef.current = true
+        closeReader()
+      }
+    }
+    window.addEventListener('popstate', handleBack)
+    return () => window.removeEventListener('popstate', handleBack)
+  }, [book, closeReader])
 
   const handleSearchNavigate = useCallback(async (result: SearchResult) => {
     if (!result || result.page == null) return
@@ -767,7 +850,7 @@ export default function App() {
         key="reader"
         className="app-motion-view app-motion-reader"
         custom={{ ...appTransition, view: 'reader' }}
-        variants={appViewTransition}
+        variants={isAndroidRuntime() ? androidAppViewTransition : appViewTransition}
         initial="initial"
         animate="animate"
         exit="exit"
@@ -951,10 +1034,7 @@ export default function App() {
               currentSentence={audio.currentSentence}
               sentenceCount={audio.readingSentenceCount || pageData?.sentences?.length || 0}
               subscribeAudioSpectrum={audio.subscribeAudioSpectrum}
-              // Touch playback follows Android media-control expectations:
-              // play starts at the current page/sentence without a prior text
-              // selection. Keep the desktop line-selection workflow intact.
-              playRequiresLineSelection={!isAndroidRuntime() && !audio.isPlaying && audio.readingPage == null && !hasSelectedReaderLine}
+              playRequiresLineSelection={!audio.isPlaying && !hasSelectedReaderLine}
               sleepTimer={audio.sleepTimer}
               setSleepTimer={audio.setSleepTimer}
               preloadState={audio.preloadState}
@@ -974,8 +1054,8 @@ export default function App() {
       key="loading"
       className="app-motion-view app-motion-loading"
       custom={{ ...appTransition, view: 'loading' }}
-      variants={appViewTransition}
-      initial="initial"
+      variants={isAndroidRuntime() ? androidAppViewTransition : appViewTransition}
+      initial={isAndroidRuntime() ? false : 'initial'}
       animate="animate"
       exit="exit"
     >
@@ -1002,7 +1082,7 @@ export default function App() {
       key="library"
       className="app-motion-view app-motion-library"
       custom={{ ...appTransition, view: 'library' }}
-      variants={appViewTransition}
+      variants={isAndroidRuntime() ? androidAppViewTransition : appViewTransition}
       initial="initial"
       animate="animate"
       exit="exit"

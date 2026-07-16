@@ -20,6 +20,7 @@ $script:LogcatJob = $null
 $script:EmulatorProcess = $null
 $script:DevProcess = $null
 $script:PreviewHost = $null
+$script:UsingAdbReverse = $false
 $script:LaunchGraceUntil = [DateTime]::UtcNow.AddSeconds(30)
 
 function Assert-Tool([string]$Path, [string]$Name) {
@@ -145,13 +146,42 @@ function Get-FolioPid {
 
 function Start-FolioApp {
   if (-not (Test-FolioInstalled)) { return $false }
-  & $script:AdbPath -s $script:DeviceSerial shell am start -n $activityName 2>$null | Out-Null
-  return $LASTEXITCODE -eq 0
+  # `am start` writes an informational "intent delivered to top-most instance"
+  # message to stderr when Folio is already foreground. With the script-wide
+  # Stop preference PowerShell promoted that harmless message to a terminating
+  # NativeCommandError and killed the preview/dev server.
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $script:AdbPath -s $script:DeviceSerial shell am start -n $activityName 2>$null | Out-Null
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  return $exitCode -eq 0
 }
 
 function Get-PreviewHostAddress {
   if ($env:FOLIO_ANDROID_PREVIEW_HOST) {
     return $env:FOLIO_ANDROID_PREVIEW_HOST
+  }
+
+  # Route the emulator's loopback port directly to Vite on Windows. This does
+  # not depend on Android Wi-Fi/default-route state, Windows firewall rules, or
+  # which host network adapter PowerShell happens to enumerate first.
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    & $script:AdbPath -s $script:DeviceSerial reverse tcp:5173 tcp:5173 2>$null | Out-Null
+    $reverseExitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ($reverseExitCode -eq 0) {
+    $script:UsingAdbReverse = $true
+    return '127.0.0.1'
   }
 
   $configuration = @(Get-NetIPConfiguration -ErrorAction SilentlyContinue |
@@ -216,7 +246,10 @@ function Invoke-NativeBuild {
 }
 
 function Start-TauriAndroidDev {
-  $watchFolder = Join-Path $repoRoot 'src-tauri\plugins\android'
+  # Watch Kotlin/JNI sources only. Watching the whole plugin directory also
+  # watches Gradle's build/snapshot output, so every Android build previously
+  # triggered another rebuild and reinstall in an endless Activity restart loop.
+  $watchFolder = Join-Path $repoRoot 'src-tauri\plugins\android\src\main'
   $arguments = @(
     ('"' + $nodeTools.NpmCli + '"'),
     '--prefix', ('"' + $repoRoot + '"'),
@@ -280,11 +313,22 @@ function Stop-PreviewResources {
     Stop-Process -Id $script:DevProcess.Id -Force -ErrorAction SilentlyContinue
     $script:DevProcess = $null
   }
+  if ($script:UsingAdbReverse -and $script:DeviceSerial) {
+    & $script:AdbPath -s $script:DeviceSerial reverse --remove tcp:5173 2>$null | Out-Null
+    $script:UsingAdbReverse = $false
+  }
 }
 
 try {
   Start-TargetEmulator
   Wait-ForAndroidBoot
+  # The checked-in Activity/branding sources are canonical. Tauri compiles the
+  # generated Gradle project, so synchronize it before either dev or native
+  # preview mode starts; otherwise a source edit can appear to rebuild while
+  # the emulator is still running stale Kotlin.
+  $syncScript = Join-Path $repoRoot 'scripts\sync-android-branding.ps1'
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $syncScript
+  if ($LASTEXITCODE -ne 0) { throw 'Android source synchronization failed.' }
   $script:PreviewHost = Get-PreviewHostAddress
   Write-Host "Using preview host $script:PreviewHost for the emulator dev server." -ForegroundColor DarkGray
   Start-FocusedLogcat
@@ -296,7 +340,10 @@ try {
     $restartDelay = 2
     while ($true) {
       $script:DevProcess = Start-TauriAndroidDev
-      $script:LaunchGraceUntil = [DateTime]::UtcNow.AddSeconds(30)
+      # The first Rust/Gradle build commonly takes longer than 30 seconds. Do
+      # not let the watchdog race the install/launch and falsely conclude the
+      # app died while Tauri is still building it.
+      $script:LaunchGraceUntil = [DateTime]::UtcNow.AddSeconds(180)
       $exitCode = Monitor-Preview $script:DevProcess
       if ($exitCode -eq 0) {
         Write-Host 'Tauri Android dev process exited; restarting it.' -ForegroundColor Yellow

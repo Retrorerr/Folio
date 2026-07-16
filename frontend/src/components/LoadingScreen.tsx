@@ -60,7 +60,7 @@ export default function LoadingScreen({
 }: LoadingScreenProps) {
   const androidRuntime = isAndroidRuntime()
   const useGoldLogo = theme === 'light' || theme === 'sepia'
-  const logoSrc = useGoldLogo ? '/folio-icon.png' : '/folio-monochrome-icon.png'
+  const logoSrc = useGoldLogo ? '/folio-icon-gold-splash.png' : '/folio-monochrome-icon.png'
   const downloadActive = Boolean(activeRuntime?.download_active)
   const downloadBytes = Number(activeRuntime?.download_bytes || 0)
   const downloadTotalBytes = Number(activeRuntime?.download_total_bytes || 0)
@@ -110,15 +110,29 @@ export default function LoadingScreen({
   const progressValue = downloadActive && downloadPct ? downloadPct : progress
   const progressLabel = downloadActive ? 'Voice setup progress' : headline
 
+  if (androidRuntime) {
+    return (
+      <div
+        className={`loading-screen android-uniform-splash theme-${theme}`}
+        aria-label="Starting Folio"
+        aria-busy={!ready}
+      >
+        <main className="loading-stage" data-android-scroll-fade>
+          <img className="loading-logo folio-splash-logo" src={logoSrc} alt="" draggable={false} />
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div
       className={`loading-screen theme-${theme}${motion ? ' motion-enabled' : ' motion-reduced'}`}
       aria-busy={!ready}
     >
       <TitleBar />
-      {motion && !androidRuntime && <div className="loading-aurora" aria-hidden="true" />}
+      {motion && <div className="loading-aurora" aria-hidden="true" />}
       <main className="loading-stage">
-        <m.section className="loading-card" variants={slideUp} initial={androidRuntime ? false : 'initial'} animate="animate">
+        <m.section className="loading-card" variants={slideUp} initial="initial" animate="animate">
           <div className="loading-brand-lockup">
             <img className="loading-logo" src={logoSrc} alt="" draggable={false} />
             <div>

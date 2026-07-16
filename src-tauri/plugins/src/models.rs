@@ -165,13 +165,22 @@ pub struct PlatformStatus {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemBarsRequest {
+    pub theme: Option<String>,
     pub dark_background: Option<bool>,
+    pub background_color: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemBarsResponse {
     pub dark_background: bool,
+    pub background_color: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundAppResponse {
+    pub backgrounded: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

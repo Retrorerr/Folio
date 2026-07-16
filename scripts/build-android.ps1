@@ -31,6 +31,17 @@ function Test-NonEmptyRegularFile([string]$Path) {
   return $item.Length -gt 0 -and -not (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
 }
 
+function Get-FileSha256([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Remove-OldArtifacts([string]$Directory, [string]$Extension) {
   if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return }
   foreach ($file in (Get-ChildItem -LiteralPath $Directory -Recurse -File -Filter "*.$Extension" -ErrorAction SilentlyContinue)) {
@@ -178,8 +189,8 @@ try {
     }
     Copy-Item -LiteralPath $library -Destination $jniLibrary -Force
     if (-not (Test-NonEmptyRegularFile $jniLibrary)) { throw "JNI library copy is empty or still a link: $jniLibrary" }
-    $sourceHash = (Get-FileHash -LiteralPath $library -Algorithm SHA256).Hash
-    $copiedHash = (Get-FileHash -LiteralPath $jniLibrary -Algorithm SHA256).Hash
+    $sourceHash = Get-FileSha256 $library
+    $copiedHash = Get-FileSha256 $jniLibrary
     if ($sourceHash -ne $copiedHash) { throw "JNI library copy verification failed for $target" }
   }
 
@@ -278,7 +289,7 @@ try {
     $extension = $artifact.Extension.TrimStart('.').ToLowerInvariant()
     $destination = Join-Path $deliveryRoot "Folio-$version-$flavor-$profile.$extension"
     Copy-Item -LiteralPath $artifact.FullName -Destination $destination -Force
-    if ((Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) {
+    if ((Get-FileSha256 $artifact.FullName) -ne (Get-FileSha256 $destination)) {
       throw "Delivered artifact copy verification failed: $destination"
     }
     $delivered += Get-Item -LiteralPath $destination
@@ -287,7 +298,7 @@ try {
   if ($correspondingSource) {
     $sourceDestination = Join-Path $deliveryRoot (Split-Path $correspondingSource -Leaf)
     Copy-Item -LiteralPath $correspondingSource -Destination $sourceDestination -Force
-    if ((Get-FileHash -LiteralPath $correspondingSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $sourceDestination -Algorithm SHA256).Hash) {
+    if ((Get-FileSha256 $correspondingSource) -ne (Get-FileSha256 $sourceDestination)) {
       throw "Delivered Corresponding Source copy verification failed: $sourceDestination"
     }
     $deliveredSource = Get-Item -LiteralPath $sourceDestination
@@ -337,7 +348,7 @@ try {
       @{
         file = $_.Name
         bytes = $_.Length
-        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = Get-FileSha256 $_.FullName
       }
     })
   }
@@ -345,7 +356,7 @@ try {
     $manifest['correspondingSource'] = @{
       file = $deliveredSource.Name
       bytes = $deliveredSource.Length
-      sha256 = (Get-FileHash -LiteralPath $deliveredSource.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+      sha256 = Get-FileSha256 $deliveredSource.FullName
       component = 'eSpeak NG 1.52.0 plus Folio Android JNI glue and build scripts'
     }
   }

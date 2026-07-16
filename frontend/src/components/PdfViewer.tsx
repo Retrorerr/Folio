@@ -201,13 +201,13 @@ export default function PdfViewer({
   const selectedSentence = activePageIdx === pageIdx ? currentSentence : -1
 
   return (
-    <div ref={containerRef} className="pdf-viewer" data-loading={loading || undefined}>
+    <div ref={containerRef} className="pdf-viewer" data-loading={loading || undefined} data-android-scroll-fade>
       <div ref={stageRef} className="pdf-page-stage" aria-busy={loading}>
         <canvas ref={canvasRef} className="pdf-page-canvas" aria-label={`PDF page ${pageIdx + 1} of ${pageCount}`} />
         {loading && <div className="pdf-page-status">Rendering page {pageIdx + 1}…</div>}
         {error && <div className="pdf-page-error" role="alert">{error}</div>}
       </div>
-      <section className="pdf-transcript" aria-label={`Text on PDF page ${pageIdx + 1}`}>
+      <section className="pdf-transcript" aria-label={`Text on PDF page ${pageIdx + 1}`} data-android-scroll-fade>
         <div className="pdf-transcript-heading">
           <span>Page {pageIdx + 1}</span>
           <span>{pageText?.sentences.length || 0} sentences</span>

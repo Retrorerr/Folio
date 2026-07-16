@@ -649,7 +649,7 @@
 
 .dash-hero h1 {
   font-family: var(--font-display);
-  font-size: clamp(42px, 5vw, 68px);
+  font-size: clamp(38px, 4.2vw, 58px);
   font-weight: 400;
   line-height: 0.98;
   color: var(--ink);
@@ -1156,12 +1156,12 @@
 }
 
 .dash-home-primary {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .dash-home-primary .dash-continue {
-  min-height: 232px;
-  padding: 24px;
+  min-height: 196px;
+  padding: 20px;
 }
 
 .dash-home-grid.lower {
@@ -1204,7 +1204,8 @@
 }
 
 .dash-summary-section {
-  padding-top: 4px;
+  padding-top: 0;
+  margin-bottom: 22px;
 }
 
 .dash-summary-section .dash-stat-grid {
@@ -1215,8 +1216,8 @@
 }
 
 .dash-summary-section .dash-stat {
-  min-height: 96px;
-  padding: 16px 12px;
+  min-height: 80px;
+  padding: 12px;
   border: 0;
   border-radius: 0;
   background: transparent;

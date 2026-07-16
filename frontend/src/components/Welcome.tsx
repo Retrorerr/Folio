@@ -7,6 +7,7 @@ import { SettingsPanel } from './Sidebar'
 import { apiFetch, apiJson, apiResourceUrl, isAndroidRuntime } from '../api'
 import {
   androidShellMode,
+  backgroundAndroidApp,
   installAndroidHorizontalSwipeListener,
   isAndroidPhoneMode,
   performAndroidHaptic,
@@ -122,7 +123,7 @@ function readStoredPaginationMeta(book: BookState): { total: number | null; curr
   const fallback = (totalValue: number | null) => {
     if (!totalValue) return { total: null, current: null }
     const savedVisualPage = Math.max(0, Number(book.last_position?.visual_page || 0))
-    if (savedVisualPage > 0) return { total: totalValue, current: Math.min(totalValue, savedVisualPage) }
+    if (savedVisualPage > 0) return { total: totalValue, current: Math.min(totalValue, savedVisualPage + 1) }
     if (book.progress !== undefined) {
       return {
         total: totalValue,
@@ -704,7 +705,7 @@ function EmptyLibraryWelcome({
           />
 
           <div className="dash-empty-actions">
-            <button type="button" className="dash-primary-btn" onClick={onAddBook}>
+            <button type="button" className="dash-primary-btn" onClick={onAddBook} disabled={importing} aria-busy={importing || undefined}>
               <Icons.Upload size={15} />
               {importing ? 'Opening book' : isAndroidRuntime() ? 'Add first book' : 'Choose first book'}
             </button>
@@ -860,12 +861,14 @@ export default memo(function Welcome({
   const [historyMode, setHistoryMode] = useState<'grid' | 'list'>('list')
   const [drag, setDrag] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [pickingBook, setPickingBook] = useState(false)
   const [importError, setImportError] = useState('')
   const [goalDraft, setGoalDraft] = useState('60')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [androidNavOpen, setAndroidNavOpen] = useState(false)
   const [androidMoreOpen, setAndroidMoreOpen] = useState(false)
   const androidRuntime = isAndroidRuntime()
+  const bookActionBusy = importing || pickingBook
   const [readerName, setReaderName] = useState(() => normalizeReaderName(safeLocalStorage()?.getItem(READER_NAME_KEY) || ''))
   const [readerNameDraft, setReaderNameDraft] = useState(readerName)
   const [readerNameEditing, setReaderNameEditing] = useState(false)
@@ -911,6 +914,47 @@ export default memo(function Welcome({
       removeSwipe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!androidRuntime) return
+    let disposed = false
+    let listener: { unregister: () => Promise<void> } | null = null
+
+    void import('@tauri-apps/api/app')
+      .then(({ onBackButtonPress }) => onBackButtonPress(() => {
+        // SettingsPanel owns Back while its modal is mounted.
+        if (document.querySelector('.settings-overlay')) return
+        if (androidMoreOpen) {
+          setAndroidMoreOpen(false)
+          return
+        }
+        if (androidNavOpen) {
+          setAndroidNavOpen(false)
+          return
+        }
+        if (view !== 'home') {
+          setView('home')
+          setSearchBooks(null)
+          setQuery('')
+          return
+        }
+        // Backgrounding keeps Tauri's event loop alive. Letting its default
+        // root-Back handler exit can tear down EGL after libc has begun exit.
+        void backgroundAndroidApp()
+      }))
+      .then((nextListener) => {
+        if (disposed) void nextListener.unregister()
+        else listener = nextListener
+      })
+      .catch((error) => {
+        console.warn('Android dashboard back-button listener failed', error)
+      })
+
+    return () => {
+      disposed = true
+      if (listener) void listener.unregister()
+    }
+  }, [androidMoreOpen, androidNavOpen, androidRuntime, view])
 
   useEffect(() => {
     if (readerName) return
@@ -1056,6 +1100,26 @@ export default memo(function Welcome({
     void importFile(event.target.files?.[0])
   }, [importFile])
 
+  const openBookPicker = useCallback(async () => {
+    if (importing || pickingBook) return
+    if (!androidRuntime) {
+      fileRef.current?.click()
+      return
+    }
+    setPickingBook(true)
+    setImportError('')
+    try {
+      const { pickAndroidBookFile } = await import('../mobileApi')
+      const file = await pickAndroidBookFile()
+      if (file) await importFile(file)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The Android book picker could not be opened.'
+      setImportError(message.length > 260 ? `${message.slice(0, 260)}...` : message)
+    } finally {
+      setPickingBook(false)
+    }
+  }, [androidRuntime, importFile, importing, pickingBook])
+
   const saveReaderName = useCallback((event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const next = normalizeReaderName(readerNameDraft)
@@ -1109,12 +1173,12 @@ export default memo(function Welcome({
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') {
         event.preventDefault()
-        if (!importing) fileRef.current?.click()
+        void openBookPicker()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [importing])
+  }, [openBookPicker])
 
   const commitGoal = useCallback(async () => {
     const minutes = Math.max(1, Math.min(1440, Number.parseInt(goalDraft, 10) || 60))
@@ -1157,11 +1221,11 @@ export default memo(function Welcome({
           readerName={readerName}
           readerNameDraft={readerNameDraft}
           showNameForm={showNameForm}
-          importing={importing}
+          importing={bookActionBusy}
           onReaderNameDraftChange={setReaderNameDraft}
           onSaveReaderName={saveReaderName}
           onEditReaderName={editReaderName}
-          onAddBook={() => fileRef.current?.click()}
+          onAddBook={openBookPicker}
         />
       )
     }
@@ -1184,21 +1248,6 @@ export default memo(function Welcome({
           </div>
         </section>
 
-      <div className="dash-home-primary">
-        <ContinuePanel book={continueBook} onOpen={handleOpen} />
-      </div>
-
-      <section className="dash-section dash-section-editorial">
-        <div className="dash-section-head">
-          <div>
-            <h2>Recently added</h2>
-            <p>Sorted by import time when available.</p>
-          </div>
-          <button type="button" onClick={() => setView('library')}>View all</button>
-        </div>
-        <BookGrid books={(dashboard.recently_added?.length ? dashboard.recently_added : allBooks).slice(0, 6)} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="Your shelf is empty" emptyCopy="Import an EPUB or PDF and it will appear here." />
-      </section>
-
       <section className="dash-section dash-section-editorial dash-summary-section">
         <div className="dash-section-head compact">
           <div>
@@ -1212,6 +1261,21 @@ export default memo(function Welcome({
           <StatCard icon="Bookmark" label="Pages read" value={displayPagesReadTotal} />
           <StatCard icon="Highlight" label="Highlights" value={dashboard.counts.highlights} />
         </div>
+      </section>
+
+      <div className="dash-home-primary">
+        <ContinuePanel book={continueBook} onOpen={handleOpen} />
+      </div>
+
+      <section className="dash-section dash-section-editorial">
+        <div className="dash-section-head">
+          <div>
+            <h2>Recently added</h2>
+            <p>Sorted by import time when available.</p>
+          </div>
+          <button type="button" onClick={() => setView('library')}>View all</button>
+        </div>
+        <BookGrid books={(dashboard.recently_added?.length ? dashboard.recently_added : allBooks).slice(0, 6)} onOpen={handleOpen} onDelete={handleDelete} emptyTitle="Your shelf is empty" emptyCopy="Import an EPUB or PDF and it will appear here." />
       </section>
 
       <div className="dash-home-grid lower">
@@ -1360,16 +1424,16 @@ export default memo(function Welcome({
           <span>Folio</span>
         </m.button>
 
-        <button type="button" className="dash-add-btn" onClick={() => fileRef.current?.click()} title="Add books" aria-label="Add books">
+        <button type="button" className="dash-add-btn" onClick={openBookPicker} title="Add books" aria-label="Add books" disabled={bookActionBusy} aria-busy={bookActionBusy || undefined}>
           <Icons.Upload size={16} />
-          <span className="dash-add-label">{importing ? 'Opening book' : 'Add books'}</span>
+          <span className="dash-add-label">{bookActionBusy ? 'Opening book' : 'Add books'}</span>
           <kbd>{OPEN_SHORTCUT}</kbd>
         </button>
         <AnimatePresence>
           {importError && <m.div className="dash-import-error" role="alert" variants={slideUp} initial="initial" animate="animate" exit="exit">{importError}</m.div>}
         </AnimatePresence>
 
-        <nav className="dash-nav" aria-label="Dashboard">
+        <nav className="dash-nav" aria-label="Dashboard" data-android-scroll-fade>
           {NAV_ITEMS.map((item) => {
             const Icon = Icons[item.icon]
             return (
@@ -1466,7 +1530,7 @@ export default memo(function Welcome({
           </div>
         </header>
 
-        <div className="dash-content">
+        <div className="dash-content" data-android-scroll-fade>
           <AnimatePresence mode="wait" initial={false}>
             <m.div
               className="dash-view-body"
@@ -1498,6 +1562,7 @@ export default memo(function Welcome({
               >
                 <m.section
                   className="android-more-sheet"
+                  data-android-scroll-fade
                   aria-label="More destinations"
                   variants={modalPanel}
                   onPointerDown={(event) => event.stopPropagation()}
@@ -1539,26 +1604,77 @@ export default memo(function Welcome({
           </AnimatePresence>
 
           <nav className="android-bottom-nav" aria-label="Primary destinations">
-            <button type="button" className="android-nav-add" onClick={() => fileRef.current?.click()} aria-label="Add books">
+            <m.button
+              type="button"
+              className="android-nav-add"
+              onClick={() => {
+                void performAndroidHaptic('selection')
+                openBookPicker()
+              }}
+              aria-label="Import books"
+              disabled={bookActionBusy}
+              aria-busy={bookActionBusy || undefined}
+              whileTap={buttonTap}
+            >
               <Icons.Upload size={20} />
-              <span>Add</span>
-            </button>
-            <button type="button" className={view === 'home' ? 'active' : ''} onClick={() => setView('home')} aria-current={view === 'home' ? 'page' : undefined}>
+              <span>Import</span>
+            </m.button>
+            <m.button
+              type="button"
+              className={view === 'home' ? 'active' : ''}
+              onClick={() => {
+                setView('home')
+                void performAndroidHaptic('selection')
+              }}
+              aria-current={view === 'home' ? 'page' : undefined}
+              whileTap={buttonTap}
+            >
+              {view === 'home' && <m.span className="android-bottom-active-bg" layoutId="android-dashboard-active" transition={spring.layout} aria-hidden="true" />}
               <Icons.Home size={20} />
               <span>Home</span>
-            </button>
-            <button type="button" className={view === 'library' ? 'active' : ''} onClick={() => setView('library')} aria-current={view === 'library' ? 'page' : undefined}>
+            </m.button>
+            <m.button
+              type="button"
+              className={view === 'library' ? 'active' : ''}
+              onClick={() => {
+                setView('library')
+                void performAndroidHaptic('selection')
+              }}
+              aria-current={view === 'library' ? 'page' : undefined}
+              whileTap={buttonTap}
+            >
+              {view === 'library' && <m.span className="android-bottom-active-bg" layoutId="android-dashboard-active" transition={spring.layout} aria-hidden="true" />}
               <Icons.Library size={20} />
               <span>Library</span>
-            </button>
-            <button type="button" className={view === 'highlights' ? 'active' : ''} onClick={() => setView('highlights')} aria-current={view === 'highlights' ? 'page' : undefined}>
+            </m.button>
+            <m.button
+              type="button"
+              className={view === 'highlights' ? 'active' : ''}
+              onClick={() => {
+                setView('highlights')
+                void performAndroidHaptic('selection')
+              }}
+              aria-current={view === 'highlights' ? 'page' : undefined}
+              whileTap={buttonTap}
+            >
+              {view === 'highlights' && <m.span className="android-bottom-active-bg" layoutId="android-dashboard-active" transition={spring.layout} aria-hidden="true" />}
               <Icons.Highlight size={20} />
               <span>Highlights</span>
-            </button>
-            <button type="button" className={androidMoreOpen ? 'active' : ''} onClick={() => setAndroidMoreOpen((open) => !open)} aria-expanded={androidMoreOpen}>
+            </m.button>
+            <m.button
+              type="button"
+              className={androidMoreOpen ? 'active' : ''}
+              onClick={() => {
+                setAndroidMoreOpen((open) => !open)
+                void performAndroidHaptic('selection')
+              }}
+              aria-expanded={androidMoreOpen}
+              whileTap={buttonTap}
+            >
+              {androidMoreOpen && <m.span className="android-bottom-active-bg" layoutId="android-dashboard-active" transition={spring.layout} aria-hidden="true" />}
               <Icons.Dots size={20} />
               <span>More</span>
-            </button>
+            </m.button>
           </nav>
         </>
       )}

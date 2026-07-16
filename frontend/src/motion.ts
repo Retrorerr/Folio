@@ -119,6 +119,24 @@ export const appViewTransition: Variants = {
   },
 }
 
+// Android keeps fixed navigation and playback surfaces inside each view. A
+// clip/opacity handoff gives those surfaces a clear transition without turning
+// the entire view into a transformed containing block or forcing a full layout
+// pass over the reader tree.
+export const androidAppViewTransition: Variants = {
+  initial: { opacity: 0, clipPath: 'inset(0 0 2.5% 0 round 14px)' },
+  animate: {
+    opacity: 1,
+    clipPath: 'inset(0 0 0% 0 round 0px)',
+    transition: { duration: 0.2, ease: motionEase },
+  },
+  exit: {
+    opacity: 0,
+    clipPath: 'inset(0 0 1.5% 0 round 10px)',
+    transition: { duration: 0.12, ease: motionEase },
+  },
+}
+
 export const overlayFade: Variants = {
   initial: { opacity: 0 },
   animate: { opacity: 1, transition: { duration: durations.md, ease: motionEase } },
@@ -153,7 +171,6 @@ export const pillContentContinuity: Variants = {
       opacity: state === 'is-arriving' ? 0 : 1,
       y: state === 'is-arriving' ? 6 : 0,
       scale: state === 'is-arriving' ? 0.985 : 1,
-      filter: state === 'is-arriving' ? 'blur(3px)' : 'blur(0px)',
     }
   },
   animate: (custom = '') => {
@@ -164,7 +181,6 @@ export const pillContentContinuity: Variants = {
         opacity: 0,
         y: -3,
         scale: 0.965,
-        filter: 'blur(3px)',
         transition: { duration: pillMorph.contentOut * timeScale, ease: motionEase },
       }
     }
@@ -174,7 +190,6 @@ export const pillContentContinuity: Variants = {
         opacity: 1,
         y: 0,
         scale: 1,
-        filter: 'blur(0px)',
         transition: {
           delay: pillMorph.contentDelay * timeScale,
           duration: pillMorph.contentIn * timeScale,
@@ -187,7 +202,6 @@ export const pillContentContinuity: Variants = {
       opacity: 1,
       y: 0,
       scale: 1,
-      filter: 'blur(0px)',
       transition: { duration: durations.sm, ease: motionEase },
     }
   },
@@ -197,7 +211,6 @@ export const pillContentContinuity: Variants = {
       opacity: 0,
       y: 3,
       scale: 0.97,
-      filter: 'blur(3px)',
       transition: { duration: pillMorph.contentOut * timeScale, ease: motionEase },
     }
   },

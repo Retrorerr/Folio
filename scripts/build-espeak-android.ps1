@@ -35,11 +35,22 @@ function Invoke-Checked([string]$Description, [scriptblock]$Command) {
   if ($LASTEXITCODE -ne 0) { throw "$Description failed with exit code $LASTEXITCODE" }
 }
 
+function Get-FileSha256([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Get-TreeFingerprint([string]$Root) {
   $fullRoot = Get-FullPath $Root
   $lines = foreach ($file in (Get-ChildItem -LiteralPath $fullRoot -Recurse -File | Sort-Object FullName)) {
     $relative = $file.FullName.Substring($fullRoot.Length + 1).Replace('\', '/')
-    $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-FileSha256 $file.FullName
     "$relative|$($file.Length)|$hash"
   }
   $payload = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
@@ -183,7 +194,7 @@ foreach ($sourceName in $licenseFiles.Keys) {
   if (-not (Test-NonEmptyFile $sourceLicense)) { throw "Pinned eSpeak NG license file is missing: $sourceLicense" }
   Copy-Item -LiteralPath $sourceLicense -Destination $destinationLicense -Force
   if (-not (Test-NonEmptyFile $destinationLicense)) { throw "Packaged eSpeak NG license file is missing: $destinationLicense" }
-  if ((Get-FileHash -LiteralPath $sourceLicense -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $destinationLicense -Algorithm SHA256).Hash) {
+  if ((Get-FileSha256 $sourceLicense) -ne (Get-FileSha256 $destinationLicense)) {
     throw "Packaged eSpeak NG license verification failed: $destinationLicense"
   }
 }
@@ -224,8 +235,8 @@ if (-not $assetCurrent) {
   }
 }
 
-$cmakeFingerprint = (Get-FileHash -LiteralPath (Join-Path $cppRoot 'CMakeLists.txt') -Algorithm SHA256).Hash.ToLowerInvariant()
-$bridgeFingerprint = (Get-FileHash -LiteralPath (Join-Path $cppRoot 'folio_espeak.c') -Algorithm SHA256).Hash.ToLowerInvariant()
+$cmakeFingerprint = Get-FileSha256 (Join-Path $cppRoot 'CMakeLists.txt')
+$bridgeFingerprint = Get-FileSha256 (Join-Path $cppRoot 'folio_espeak.c')
 $readelf = Join-Path $ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe'
 if (-not (Test-Path -LiteralPath $readelf -PathType Leaf)) { throw "llvm-readelf is missing: $readelf" }
 
@@ -242,7 +253,7 @@ foreach ($target in $Targets) {
   if (-not $Force -and (Test-NonEmptyFile $destination) -and (Test-Path -LiteralPath $marker -PathType Leaf)) {
     try {
       $state = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
-      $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+      $destinationHash = Get-FileSha256 $destination
       $cached = $state.fingerprint -eq $fingerprint -and $state.libraryHash -eq $destinationHash
     } catch {
       $cached = $false
@@ -271,8 +282,8 @@ foreach ($target in $Targets) {
     }
     Copy-Item -LiteralPath $library -Destination $destination -Force
     if (-not (Test-NonEmptyFile $destination)) { throw "Copied eSpeak NG bridge is missing, empty, or a link: $destination" }
-    $sourceHash = (Get-FileHash -LiteralPath $library -Algorithm SHA256).Hash.ToLowerInvariant()
-    $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sourceHash = Get-FileSha256 $library
+    $destinationHash = Get-FileSha256 $destination
     if ($sourceHash -ne $destinationHash) { throw "eSpeak NG bridge copy verification failed for $target" }
     @{
       schema = 1
