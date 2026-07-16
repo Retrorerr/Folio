@@ -32,6 +32,8 @@ export interface BookState {
   format: BookFormat
   cover_url?: string | null
   cover_source?: string | null
+  metadata_revision?: string | null
+  metadata_repair_attempted_revision?: string | null
   tts_engine: TtsEngine | string
   voice: string
   tts_voices?: Record<string, string>

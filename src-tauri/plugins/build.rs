@@ -13,6 +13,8 @@ const COMMANDS: &[&str] = &[
     "perform_haptic",
     "play_audio",
     "control_audio",
+    "update_artwork",
+    "prune_artwork_cache",
     "audio_status",
 ];
 

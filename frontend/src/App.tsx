@@ -61,6 +61,9 @@ type NativeResumeTarget = {
   sentence: number
   chunkProgress: number
   locationUri: string
+  sessionId: number
+  queueSessionIds: number[]
+  state: string
   applied: boolean
 }
 
@@ -342,19 +345,31 @@ export default function App() {
     })
   }, [backendReachable, openBook, pendingOpenFile])
 
+  const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition, applyBookSettings })
+  const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio } = audio
+  const [nativeResumeVersion, setNativeResumeVersion] = useState(0)
   const nativeResumeCheckedRef = useRef(false)
+  const nativeResumeSequenceRef = useRef(0)
+
   const requestNativeResume = useCallback((value: Record<string, unknown>) => {
     const bookId = String(value.bookId || '').trim()
     if (!bookId) return
+    const requestId = ++nativeResumeSequenceRef.current
     const target: NativeResumeTarget = {
       bookId,
       page: Math.max(0, Math.floor(Number(value.page) || 0)),
       sentence: Math.max(0, Math.floor(Number(value.sentence) || 0)),
       chunkProgress: clampNumber(value.chunkProgress, 0, 0.98, 0),
       locationUri: String(value.locationUri || '').trim(),
+      sessionId: Math.max(0, Math.floor(Number(value.sessionId) || 0)),
+      queueSessionIds: Array.isArray(value.queueSessionIds)
+        ? value.queueSessionIds.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry > 0)
+        : [],
+      state: String(value.state || 'paused'),
       applied: false,
     }
     nativeResumeTargetRef.current = target
+    setNativeResumeVersion((version) => version + 1)
     if (book?.id === bookId) {
       nativeResumeOpenRef.current = null
       return
@@ -362,19 +377,22 @@ export default function App() {
     const openKey = `${bookId}|${target.locationUri}`
     if (nativeResumeOpenRef.current === openKey) return
     nativeResumeOpenRef.current = openKey
-    void openBook(target.locationUri || bookId)
-      .then((opened) => {
-        if (opened || nativeResumeOpenRef.current !== openKey) return
-        nativeResumeTargetRef.current = null
-        nativeResumeOpenRef.current = null
-        void mobileControlAudio('stop').catch(() => {})
-      })
-      .catch(() => {
-        if (nativeResumeOpenRef.current !== openKey) return
-        nativeResumeTargetRef.current = null
-        nativeResumeOpenRef.current = null
-        void mobileControlAudio('stop').catch(() => {})
-      })
+    const open = async () => {
+      let opened = await openBook(target.locationUri || bookId)
+      if (!opened && target.locationUri && requestId === nativeResumeSequenceRef.current) {
+        opened = await openBook(bookId)
+      }
+      if (opened || requestId !== nativeResumeSequenceRef.current || nativeResumeOpenRef.current !== openKey) return
+      nativeResumeTargetRef.current = null
+      nativeResumeOpenRef.current = null
+      void mobileControlAudio('stop').catch(() => {})
+    }
+    void open().catch(() => {
+      if (requestId !== nativeResumeSequenceRef.current || nativeResumeOpenRef.current !== openKey) return
+      nativeResumeTargetRef.current = null
+      nativeResumeOpenRef.current = null
+      void mobileControlAudio('stop').catch(() => {})
+    })
   }, [book?.id, openBook])
 
   useEffect(() => {
@@ -398,10 +416,13 @@ export default function App() {
         if (!status.bookId || queueSize <= 0) return
         requestNativeResume({
           bookId: status.bookId,
-          page: status.chapterIndex || 0,
-          sentence: status.sentenceIndex || 0,
-          chunkProgress: status.chunkProgress || 0,
+          page: status.chapterIndex ?? 0,
+          sentence: status.sentenceIndex ?? 0,
+          chunkProgress: status.chunkProgress ?? 0,
           locationUri: status.locationUri || '',
+          sessionId: status.sessionId,
+          queueSessionIds: status.queueSessionIds,
+          state: status.state,
         })
       })
       .catch(() => {})
@@ -413,27 +434,33 @@ export default function App() {
     if (!isAndroidRuntime() || !book || !target || target.applied || target.bookId !== book.id) return
     target.applied = true
     let cancelled = false
-    const apply = async () => {
-      const page = Math.min(target.page, Math.max(0, book.page_count - 1))
-      const loaded = await goToPage(page)
-      if (cancelled || !loaded) {
-        if (!cancelled) nativeResumeTargetRef.current = null
-        return
-      }
-      const sentence = Math.min(target.sentence, Math.max(0, loaded.sentences.length - 1))
-      await savePosition(page, sentence, { chunk_progress: target.chunkProgress })
-      if (!cancelled && nativeResumeTargetRef.current === target) {
+    void audio.hydrateNativeSession({
+      bookId: target.bookId,
+      page: target.page,
+      sentence: target.sentence,
+      chunkProgress: target.chunkProgress,
+      sessionId: target.sessionId,
+      queueSessionIds: target.queueSessionIds,
+      state: target.state,
+    }).then((hydrated) => {
+      if (cancelled || nativeResumeTargetRef.current !== target) return
+      if (hydrated) {
         nativeResumeTargetRef.current = null
         nativeResumeOpenRef.current = null
+      } else {
+        nativeResumeTargetRef.current = null
+        nativeResumeOpenRef.current = null
+        void mobileControlAudio('stop').catch(() => {})
       }
-    }
-    void apply().catch(() => {
-      if (!cancelled && nativeResumeTargetRef.current === target) nativeResumeTargetRef.current = null
+    }).catch(() => {
+      if (!cancelled && nativeResumeTargetRef.current === target) {
+        nativeResumeTargetRef.current = null
+        void mobileControlAudio('stop').catch(() => {})
+      }
     })
     return () => { cancelled = true }
-  }, [book, goToPage, savePosition])
-  const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition, applyBookSettings })
-  const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio } = audio
+  }, [audio, book, nativeResumeVersion])
+
   const audioChunkProgressRef = useRef(0)
   const activeTtsStatus = ttsEngineStatus?.[audio.ttsEngine] || null
   const activeModelLoaded = activeTtsStatus?.model_loaded ?? modelLoaded

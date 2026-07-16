@@ -50,6 +50,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::perform_haptic,
             commands::play_audio,
             commands::control_audio,
+            commands::update_artwork,
+            commands::prune_artwork_cache,
             commands::audio_status,
         ])
         .setup(|app, api| {
