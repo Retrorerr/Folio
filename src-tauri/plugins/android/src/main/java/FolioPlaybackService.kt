@@ -44,8 +44,14 @@ class FolioPlaybackService : MediaSessionService() {
         const val EXTRA_ARTIST = "audioArtist"
         const val EXTRA_ALBUM = "audioAlbum"
         const val EXTRA_POSITION_MS = "audioPositionMs"
+        const val EXTRA_BOOK_ID = "folioBookId"
+        const val EXTRA_CHAPTER_INDEX = "folioChapterIndex"
+        const val EXTRA_SENTENCE_INDEX = "folioSentenceIndex"
+        const val EXTRA_CHUNK_PROGRESS = "folioChunkProgress"
+        const val EXTRA_LOCATION_URI = "folioLocationUri"
 
         private const val MAX_TRACK_TITLE = 120
+        private const val SESSION_ACTIVITY_REQUEST_CODE = 9173
         private const val PLAYBACK_CHANNEL_NAME = "Folio narration"
         private const val PAUSED_SERVICE_TIMEOUT_MS = 10 * 60 * 1_000L
         private const val POSITION_UPDATE_INTERVAL_MS = 100L
@@ -64,6 +70,15 @@ class FolioPlaybackService : MediaSessionService() {
             val queueSessionIds: List<Long>,
             val currentIndex: Int,
             val enqueuedSessionId: Long,
+            val bookId: String? = null,
+            val format: String? = null,
+            val chapterTitle: String? = null,
+            val chapterIndex: Int? = null,
+            val chapterCount: Int? = null,
+            val sentenceIndex: Int? = null,
+            val sentenceCount: Int? = null,
+            val chunkProgress: Float? = null,
+            val locationUri: String? = null,
         )
 
         fun enqueue(
@@ -74,15 +89,35 @@ class FolioPlaybackService : MediaSessionService() {
             album: String?,
             positionMs: Long,
             appendToActiveQueue: Boolean,
+        ): PlaybackSnapshot = enqueue(
+            context = context,
+            path = path,
+            metadata = PlaybackMetadata(
+                title = title.orEmpty(),
+                artist = artist.orEmpty(),
+                album = album.orEmpty(),
+            ),
+            positionMs = positionMs,
+            appendToActiveQueue = appendToActiveQueue,
+        )
+
+        fun enqueue(
+            context: Context,
+            path: String,
+            metadata: PlaybackMetadata,
+            positionMs: Long,
+            appendToActiveQueue: Boolean,
         ): PlaybackSnapshot {
             val appContext = context.applicationContext
             initializeSnapshot(appContext)
             val persisted = PlaybackStateStore.enqueue(
                 context = appContext,
                 sourcePath = path,
-                title = title.orEmpty().take(MAX_TRACK_TITLE).ifBlank { "Folio narration" },
-                artist = artist.orEmpty().take(MAX_TRACK_TITLE).ifBlank { "Folio" },
-                album = album.orEmpty().take(MAX_TRACK_TITLE).ifBlank { "Folio" },
+                metadata = metadata.copy(
+                    title = metadata.title.take(MAX_TRACK_TITLE).ifBlank { "Folio narration" },
+                    artist = metadata.artist.take(MAX_TRACK_TITLE).ifBlank { "Folio" },
+                    album = metadata.album.take(MAX_TRACK_TITLE).ifBlank { "Folio" },
+                ),
                 positionMs = positionMs,
                 appendToActiveQueue = appendToActiveQueue,
             )
@@ -167,7 +202,9 @@ class FolioPlaybackService : MediaSessionService() {
             }
         }
 
-        private fun PlaybackQueueState.toSnapshot(): PlaybackSnapshot = PlaybackSnapshot(
+        private fun PlaybackQueueState.toSnapshot(): PlaybackSnapshot {
+            val current = currentItem
+            return PlaybackSnapshot(
             state = state,
             positionMs = positionMs,
             durationMs = durationMs,
@@ -176,7 +213,17 @@ class FolioPlaybackService : MediaSessionService() {
             queueSessionIds = items.map { it.sessionId },
             currentIndex = currentIndex,
             enqueuedSessionId = 0L,
-        )
+                bookId = current?.bookId?.takeIf { it.isNotBlank() },
+                format = current?.format?.takeIf { it.isNotBlank() },
+                chapterTitle = current?.chapterTitle?.takeIf { it.isNotBlank() },
+                chapterIndex = current?.chapterIndex,
+                chapterCount = current?.chapterCount,
+                sentenceIndex = current?.sentenceIndex,
+                sentenceCount = current?.sentenceCount,
+                chunkProgress = current?.chunkProgress,
+                locationUri = current?.locationUri?.takeIf { it.isNotBlank() },
+            )
+        }
     }
 
     private lateinit var player: ExoPlayer
@@ -237,6 +284,7 @@ class FolioPlaybackService : MediaSessionService() {
             if (requestedPosition != null && player.currentPosition + 250L < requestedPosition) {
                 player.seekTo(requestedPosition)
             }
+            updateSessionActivity(item)
             publishPlayerState("preparing", persist = true)
         }
 
@@ -284,12 +332,7 @@ class FolioPlaybackService : MediaSessionService() {
             .also { it.addListener(playerListener) }
 
         val sessionBuilder = MediaSession.Builder(this, player)
-        packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            sessionBuilder.setSessionActivity(
-                PendingIntent.getActivity(this, 0, launchIntent, pendingIntentFlags()),
-            )
-        }
+        sessionActivityPendingIntent(null)?.let(sessionBuilder::setSessionActivity)
         DefaultMediaNotificationProvider.Builder(this)
             .setNotificationId(DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID)
             .setChannelId(DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID)
@@ -303,6 +346,7 @@ class FolioPlaybackService : MediaSessionService() {
         val restored = PlaybackStateStore.load(this)
         setSnapshot(restored.toSnapshot())
         reconcileQueue(restored, allowPlayback = false, publishAfterReconcile = false)
+        updateSessionActivity(restored.currentItem)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -395,6 +439,7 @@ class FolioPlaybackService : MediaSessionService() {
                 if (player.mediaItemCount > 0) player.clearMediaItems()
                 queueByMediaId = emptyMap()
                 setSnapshot(stored.toSnapshot())
+                updateSessionActivity(null)
                 return
             }
 
@@ -435,6 +480,7 @@ class FolioPlaybackService : MediaSessionService() {
         } finally {
             reconcilingQueue = false
         }
+        updateSessionActivity(stored.currentItem)
         if (publishAfterReconcile) {
             publishPlayerState(if (player.isPlaying) "playing" else if (player.playWhenReady) "preparing" else "paused", persist = true)
         }
@@ -476,6 +522,7 @@ class FolioPlaybackService : MediaSessionService() {
             player.clearMediaItems()
             queueByMediaId = emptyMap()
             handlingTerminalState = false
+            updateSessionActivity(null)
         }
         leaveForegroundPlayback()
         stopSelf()
@@ -491,6 +538,7 @@ class FolioPlaybackService : MediaSessionService() {
         player.clearMediaItems()
         queueByMediaId = emptyMap()
         handlingTerminalState = false
+        updateSessionActivity(null)
         leaveForegroundPlayback()
         stopSelf()
     }
@@ -505,6 +553,7 @@ class FolioPlaybackService : MediaSessionService() {
         player.clearMediaItems()
         queueByMediaId = emptyMap()
         handlingTerminalState = false
+        updateSessionActivity(null)
         leaveForegroundPlayback()
         stopSelf()
     }
@@ -575,19 +624,35 @@ class FolioPlaybackService : MediaSessionService() {
         return Triple(current?.sessionId ?: latest.sessionId, player.currentPosition.coerceAtLeast(0L), duration)
     }
 
-    private fun mediaItem(item: PlaybackQueueItem): MediaItem = MediaItem.Builder()
-        .setMediaId(item.sessionId.toString())
-        .setUri(Uri.fromFile(File(item.path)))
-        .setMimeType(MimeTypes.AUDIO_WAV)
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(item.title)
-                .setArtist(item.artist)
-                .setAlbumTitle(item.album)
-                .setIsPlayable(true)
-                .build(),
-        )
-        .build()
+    private fun mediaItem(item: PlaybackQueueItem): MediaItem {
+        val description = item.description.ifBlank {
+            listOfNotNull(
+                item.chapterTitle.takeIf { it.isNotBlank() },
+                if (item.chapterCount > 0) "Chapter ${item.chapterIndex + 1} of ${item.chapterCount}" else null,
+            ).joinToString(" · ")
+        }
+        val metadata = MediaMetadata.Builder()
+            .setTitle(item.title)
+            .setDisplayTitle(item.title)
+            .setArtist(item.artist)
+            .setAlbumTitle(item.album)
+            .setSubtitle(item.chapterTitle.takeIf { it.isNotBlank() })
+            .setDescription(description.takeIf { it.isNotBlank() })
+            .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
+            .setTrackNumber((item.chapterIndex + 1).takeIf { item.chapterCount > 0 })
+            .setTotalTrackCount(item.chapterCount.takeIf { it > 0 })
+            .setIsPlayable(true)
+        item.artworkPath?.let { path ->
+            val artwork = File(path)
+            if (artwork.isFile && artwork.length() > 0L) metadata.setArtworkUri(Uri.fromFile(artwork))
+        }
+        return MediaItem.Builder()
+            .setMediaId(item.sessionId.toString())
+            .setUri(Uri.fromFile(File(item.path)))
+            .setMimeType(MimeTypes.AUDIO_WAV)
+            .setMediaMetadata(metadata.build())
+            .build()
+    }
 
     private fun stateWhileNotPlaying(): String = when (player.playbackState) {
         Player.STATE_BUFFERING -> "preparing"
@@ -605,7 +670,30 @@ class FolioPlaybackService : MediaSessionService() {
     private fun shouldCheckpoint(): Boolean =
         android.os.SystemClock.elapsedRealtime() - lastDurableCheckpointMs >= DURABLE_CHECKPOINT_INTERVAL_MS
 
+    private fun sessionActivityIntent(item: PlaybackQueueItem?): Intent? =
+        packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            if (!item?.bookId.isNullOrBlank()) {
+                putExtra(EXTRA_BOOK_ID, item?.bookId)
+                putExtra(EXTRA_CHAPTER_INDEX, item?.chapterIndex ?: 0)
+                putExtra(EXTRA_SENTENCE_INDEX, item?.sentenceIndex ?: 0)
+                putExtra(EXTRA_CHUNK_PROGRESS, item?.chunkProgress ?: 0f)
+                putExtra(EXTRA_LOCATION_URI, item?.locationUri.orEmpty())
+            }
+        }
+
+    private fun sessionActivityPendingIntent(item: PlaybackQueueItem?): PendingIntent? =
+        sessionActivityIntent(item)?.let { launchIntent ->
+            PendingIntent.getActivity(this, SESSION_ACTIVITY_REQUEST_CODE, launchIntent, pendingIntentFlags())
+        }
+
+    private fun updateSessionActivity(item: PlaybackQueueItem?) {
+        val session = mediaSession ?: return
+        sessionActivityPendingIntent(item)?.let(session::setSessionActivity)
+    }
+
     private fun pendingIntentFlags(): Int = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(positionTicker)

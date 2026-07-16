@@ -202,6 +202,18 @@ pub struct PlayAudioRequest {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub book_id: Option<String>,
+    pub format: Option<String>,
+    pub chapter_title: Option<String>,
+    pub chapter_index: Option<u64>,
+    pub chapter_count: Option<u64>,
+    pub sentence_index: Option<u64>,
+    pub sentence_count: Option<u64>,
+    pub chunk_progress: Option<f64>,
+    pub location_uri: Option<String>,
+    pub description: Option<String>,
+    pub artwork_base64: Option<String>,
+    pub artwork_mime_type: Option<String>,
     pub position_ms: Option<u64>,
     pub mode: Option<String>,
 }
@@ -225,6 +237,15 @@ pub struct PlaybackStatus {
     pub current_index: u64,
     pub queue_size: u64,
     pub error: Option<String>,
+    pub book_id: Option<String>,
+    pub format: Option<String>,
+    pub chapter_title: Option<String>,
+    pub chapter_index: Option<u64>,
+    pub chapter_count: Option<u64>,
+    pub sentence_index: Option<u64>,
+    pub sentence_count: Option<u64>,
+    pub chunk_progress: Option<f64>,
+    pub location_uri: Option<String>,
 }
 
 #[cfg(test)]
@@ -236,11 +257,27 @@ mod tests {
         let request: PlayAudioRequest = serde_json::from_value(serde_json::json!({
           "audioBase64": "UklGRg==",
           "title": "Chapter one",
+          "bookId": "book-1",
+          "format": "epub",
+          "chapterTitle": "Chapter one",
+          "chapterIndex": 2,
+          "chapterCount": 8,
+          "sentenceIndex": 4,
+          "sentenceCount": 12,
+          "chunkProgress": 0.25,
+          "locationUri": "android://book-1/chapter-3",
+          "description": "Chapter one of eight",
+          "artworkBase64": "aGVsbG8=",
+          "artworkMimeType": "image/jpeg",
           "positionMs": 120,
           "mode": "append"
         }))
         .unwrap();
         assert_eq!(request.mode.as_deref(), Some("append"));
+        assert_eq!(request.book_id.as_deref(), Some("book-1"));
+        assert_eq!(request.chapter_index, Some(2));
+        assert_eq!(request.chunk_progress, Some(0.25));
+        assert_eq!(request.artwork_mime_type.as_deref(), Some("image/jpeg"));
 
         let status: PlaybackStatus = serde_json::from_value(serde_json::json!({
           "state": "playing",
@@ -251,12 +288,24 @@ mod tests {
           "queueSessionIds": [7, 8, 9],
           "currentIndex": 0,
           "queueSize": 3,
-          "error": null
+          "error": null,
+          "bookId": "book-1",
+          "format": "epub",
+          "chapterTitle": "Chapter one",
+          "chapterIndex": 2,
+          "chapterCount": 8,
+          "sentenceIndex": 4,
+          "sentenceCount": 12,
+          "chunkProgress": 0.25,
+          "locationUri": "android://book-1/chapter-3"
         }))
         .unwrap();
         assert_eq!(status.enqueued_session_id, 9);
         assert_eq!(status.queue_session_ids, vec![7, 8, 9]);
         assert_eq!(status.queue_size, 3);
+        assert_eq!(status.book_id.as_deref(), Some("book-1"));
+        assert_eq!(status.chapter_title.as_deref(), Some("Chapter one"));
+        assert_eq!(status.location_uri.as_deref(), Some("android://book-1/chapter-3"));
     }
 
     #[test]

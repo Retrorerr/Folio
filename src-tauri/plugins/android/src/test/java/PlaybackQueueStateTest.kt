@@ -92,4 +92,28 @@ class PlaybackQueueStateTest {
         assertEquals(0, transition.state.currentIndex)
         assertEquals(11L, transition.state.currentSessionId)
     }
+
+    @Test
+    fun metadataAndArtworkStayAttachedToTheCorrectQueueItem() {
+        val first = item(20).copy(
+            bookId = "book-a",
+            format = "epub",
+            chapterTitle = "Opening",
+            chapterIndex = 0,
+            chapterCount = 3,
+            sentenceIndex = 2,
+            sentenceCount = 8,
+            chunkProgress = 0.35f,
+            locationUri = "android://book-a/book.epub",
+            artworkPath = "/data/user/0/com.folio.reader/noBackupFiles/folio-playback/artwork-a.jpg",
+        )
+        val state = PlaybackQueueState(items = listOf(first), currentSessionId = 20, nextSessionId = 20)
+        val appended = state.enqueue(item(21).copy(bookId = "book-a", artworkPath = first.artworkPath), appendToActiveQueue = true)
+
+        assertEquals("book-a", appended.state.currentItem?.bookId)
+        assertEquals("Opening", appended.state.currentItem?.chapterTitle)
+        assertEquals(first.artworkPath, appended.state.currentItem?.artworkPath)
+        assertEquals("book-a", appended.state.items[1].bookId)
+        assertEquals(first.artworkPath, appended.state.items[1].artworkPath)
+    }
 }
