@@ -104,6 +104,18 @@ class PlayAudioArgs {
     var title: String? = null
     var artist: String? = null
     var album: String? = null
+    var bookId: String? = null
+    var format: String? = null
+    var chapterTitle: String? = null
+    var chapterIndex: Int? = null
+    var chapterCount: Int? = null
+    var sentenceIndex: Int? = null
+    var sentenceCount: Int? = null
+    var chunkProgress: Double? = null
+    var locationUri: String? = null
+    var description: String? = null
+    var artworkBase64: String? = null
+    var artworkMimeType: String? = null
     var positionMs: Long? = null
     var mode: String? = null
 }
@@ -895,12 +907,27 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 val audioFile = File.createTempFile("folio-audio-", ".wav", activity.cacheDir)
                 output = audioFile
                 FileOutputStream(audioFile).use { it.write(bytes) }
+                val artwork = args.artworkBase64?.trim()?.takeIf { it.length <= PlaybackArtworkPolicy.MAX_ENCODED_CHARS }
                 val status = FolioPlaybackService.enqueue(
                     activity.applicationContext,
                     audioFile.absolutePath,
-                    args.title,
-                    args.artist,
-                    args.album,
+                    PlaybackMetadata(
+                        title = args.title.orEmpty(),
+                        artist = args.artist.orEmpty(),
+                        album = args.album.orEmpty(),
+                        bookId = args.bookId.orEmpty(),
+                        format = args.format.orEmpty(),
+                        chapterTitle = args.chapterTitle.orEmpty(),
+                        chapterIndex = (args.chapterIndex ?: 0).coerceAtLeast(0),
+                        chapterCount = (args.chapterCount ?: 0).coerceAtLeast(0),
+                        sentenceIndex = (args.sentenceIndex ?: 0).coerceAtLeast(0),
+                        sentenceCount = (args.sentenceCount ?: 0).coerceAtLeast(0),
+                        chunkProgress = (args.chunkProgress ?: 0.0).toFloat().coerceIn(0f, 0.98f),
+                        locationUri = args.locationUri.orEmpty(),
+                        description = args.description.orEmpty(),
+                        artworkBase64 = if (mode == "replace") artwork else null,
+                        artworkMimeType = args.artworkMimeType,
+                    ),
                     args.positionMs ?: 0L,
                     appendToActiveQueue = mode == "append",
                 )
@@ -943,6 +970,15 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         result.put("currentIndex", status.currentIndex)
         result.put("queueSize", status.queueSessionIds.size)
         result.put("error", status.error ?: JSONObject.NULL)
+        result.put("bookId", status.bookId ?: JSONObject.NULL)
+        result.put("format", status.format ?: JSONObject.NULL)
+        result.put("chapterTitle", status.chapterTitle ?: JSONObject.NULL)
+        result.put("chapterIndex", status.chapterIndex ?: JSONObject.NULL)
+        result.put("chapterCount", status.chapterCount ?: JSONObject.NULL)
+        result.put("sentenceIndex", status.sentenceIndex ?: JSONObject.NULL)
+        result.put("sentenceCount", status.sentenceCount ?: JSONObject.NULL)
+        result.put("chunkProgress", status.chunkProgress ?: JSONObject.NULL)
+        result.put("locationUri", status.locationUri ?: JSONObject.NULL)
         return result
     }
 

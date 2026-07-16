@@ -1,6 +1,7 @@
 import { unzipSync } from 'fflate'
 import { clampSpeedForEngine, normalizeTtsEngine, normalizeVoiceForEngine } from './ttsVoices'
 import { applyAndroidPlatformMetrics, type AndroidPlatformMetrics } from './androidShell'
+import { chooseEpubCoverCandidate, normalizeCoverMediaType, type EpubCoverCandidate, type EpubCoverSource } from './mobileMetadata'
 import type {
   BookState,
   DashboardPayload,
@@ -690,7 +691,11 @@ function elementByLocalName(root: ParentNode, name: string): Element[] {
 }
 
 function attributeByLocalName(element: Element, name: string): string {
-  return element.getAttribute(name) || element.getAttributeNS(null, name) || ''
+  return element.getAttribute(name) ||
+    element.getAttribute(`xlink:${name}`) ||
+    element.getAttributeNS('http://www.w3.org/1999/xlink', name) ||
+    element.getAttributeNS(null, name) ||
+    ''
 }
 
 function normalizeText(text: string): string {
@@ -707,6 +712,118 @@ function resolveZipPath(base: string, value: string): string {
     else result.push(part)
   }
   return result.join('/')
+}
+
+type EpubManifestEntry = {
+  id: string
+  path: string
+  media: string
+  properties: string
+}
+
+function isRasterCoverMime(mediaType: string | null): boolean {
+  return Boolean(mediaType && mediaType !== 'image/svg+xml')
+}
+
+function isCoverDocument(entry: EpubManifestEntry): boolean {
+  return entry.media.toLowerCase() === 'application/xhtml+xml' ||
+    entry.media.toLowerCase() === 'text/html' ||
+    entry.media.toLowerCase() === 'image/svg+xml' ||
+    /\.(?:xhtml?|svg)$/i.test(entry.path)
+}
+
+function localReferencePath(basePath: string, value: string): string {
+  const reference = String(value || '').trim()
+  if (!reference || /^(?:data|https?|mailto):/i.test(reference)) return ''
+  const base = basePath.includes('/') ? basePath.slice(0, basePath.lastIndexOf('/')) : ''
+  return resolveZipPath(base, reference)
+}
+
+function coverDocumentReferences(bytes: Uint8Array, entry: EpubManifestEntry): string[] {
+  // A cover XHTML/SVG page is allowed to be selected, but parsing an
+  // untrusted multi-megabyte document just to find an image is not worth
+  // risking a renderer stall. The archive validator still protects the full
+  // EPUB; this is an additional cover-discovery bound.
+  if (!bytes.byteLength || bytes.byteLength > 2 * 1024 * 1024) return []
+  const document = new DOMParser().parseFromString(bytesToText(bytes), 'text/html')
+  const references = [
+    ...elementByLocalName(document, 'img').map((element) => attributeByLocalName(element, 'src')),
+    ...elementByLocalName(document, 'image').map((element) => attributeByLocalName(element, 'href')),
+  ]
+  return references.map((value) => localReferencePath(entry.path, value)).filter(Boolean)
+}
+
+function discoverEpubCoverCandidate(
+  opf: Document,
+  metadata: Element | undefined,
+  manifest: Map<string, EpubManifestEntry>,
+  files: Record<string, Uint8Array>,
+  opfDir: string,
+): EpubCoverCandidate | null {
+  const candidates: EpubCoverCandidate[] = []
+  const byPath = new Map(Array.from(manifest.values()).map((entry) => [entry.path, entry]))
+  const seen = new Set<string>()
+
+  const addEntry = (entry: EpubManifestEntry | undefined, source: EpubCoverSource, score: number) => {
+    if (!entry || !entry.path || seen.has(`${source}:${entry.path}`)) return
+    const bytes = files[entry.path]
+    const mime = normalizeCoverMediaType(entry.media)
+    if (!bytes || !mime || bytes.byteLength === 0 || bytes.byteLength > MAX_EPUB_COVER_BYTES) return
+    seen.add(`${source}:${entry.path}`)
+    if (isRasterCoverMime(mime)) {
+      candidates.push({ path: entry.path, mediaType: mime, source, score, byteLength: bytes.byteLength })
+      return
+    }
+    if (!isCoverDocument(entry)) return
+    const references = coverDocumentReferences(bytes, entry)
+    references.forEach((path, index) => addEntry(byPath.get(path), source, score - index))
+    // A valid standalone SVG remains a useful WebView cover even if it does
+    // not contain a raster <image> reference. Android will safely fall back
+    // when its bitmap decoder cannot consume it.
+    if (mime === 'image/svg+xml') {
+      candidates.push({ path: entry.path, mediaType: mime, source, score, byteLength: bytes.byteLength })
+    }
+  }
+
+  const manifestEntries = Array.from(manifest.values())
+  manifestEntries
+    .filter((entry) => entry.properties.toLowerCase().split(/\s+/).includes('cover-image'))
+    .forEach((entry) => addEntry(entry, 'epub3', 100))
+
+  const metaCoverId = elementByLocalName(metadata || opf, 'meta').find((element) => (
+    attributeByLocalName(element, 'name').trim().toLowerCase() === 'cover'
+  ))
+  const metaCoverEntry = metaCoverId ? manifest.get(attributeByLocalName(metaCoverId, 'content').trim()) : undefined
+  addEntry(metaCoverEntry, 'epub2', 90)
+
+  const guideReference = elementByLocalName(opf, 'reference').find((element) => (
+    attributeByLocalName(element, 'type').split(/\s+/).some((value) => value.toLowerCase() === 'cover')
+  ))
+  const guidePath = guideReference ? localReferencePath(`${opfDir}/package.opf`, attributeByLocalName(guideReference, 'href')) : ''
+  addEntry(byPath.get(guidePath), 'guide', 80)
+
+  const spineCoverEntry = elementByLocalName(opf, 'itemref')
+    .map((item) => manifest.get(attributeByLocalName(item, 'idref')))
+    .find((entry) => {
+      if (!entry) return false
+      const label = `${entry.id} ${entry.path} ${entry.properties}`.toLowerCase()
+      return /(?:cover|front|jacket|title[-_ ]?page)/.test(label)
+    })
+  addEntry(spineCoverEntry, 'cover-page', 70)
+
+  // Conservative filename/id fallback: only choose assets that look like a
+  // cover and are not common chrome such as a publisher logo or icon.
+  manifestEntries.forEach((entry) => {
+    const mime = normalizeCoverMediaType(entry.media)
+    const bytes = files[entry.path]
+    if (!mime || !bytes || bytes.byteLength < 256 || bytes.byteLength > MAX_EPUB_COVER_BYTES || !isRasterCoverMime(mime)) return
+    const label = `${entry.id} ${entry.path} ${entry.properties}`.toLowerCase()
+    if (!/(?:cover|front|jacket|dust[-_ ]?jacket|title[-_ ]?page)/.test(label)) return
+    if (/(?:logo|icon|thumb|thumbnail|sprite|ornament)/.test(label)) return
+    addEntry(entry, 'fallback', 10)
+  })
+
+  return chooseEpubCoverCandidate(candidates)
 }
 
 function splitSentences(text: string): string[] {
@@ -791,10 +908,11 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
   const metadata = elementByLocalName(opf, 'metadata')[0]
   const title = normalizeText(elementByLocalName(metadata || opf, 'title')[0]?.textContent || '') || filename.replace(/\.epub$/i, '')
   const author = normalizeText(elementByLocalName(metadata || opf, 'creator')[0]?.textContent || '') || 'Unknown'
-  const manifest = new Map<string, { path: string; media: string; properties: string }>()
+  const manifest = new Map<string, EpubManifestEntry>()
   elementByLocalName(opf, 'item').forEach((item) => {
     const id = attributeByLocalName(item, 'id')
     if (id) manifest.set(id, {
+      id,
       path: resolveZipPath(opfDir, attributeByLocalName(item, 'href')),
       media: attributeByLocalName(item, 'media-type'),
       properties: attributeByLocalName(item, 'properties'),
@@ -827,9 +945,9 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
     if (blocks.length) chapters.push({ id: chapters.length, title: chapterTitle || `Chapter ${chapterIndex + 1}`, number: null, blocks })
   })
   if (!chapters.length) throw new Error('This EPUB contains no readable chapters.')
-  const coverEntry = Array.from(manifest.values()).find((entry) => entry.properties.includes('cover-image'))
-  const coverBytes = coverEntry ? files[coverEntry.path] : undefined
-  const safeCoverMime = coverEntry?.media?.toLowerCase().match(/^image\/(?:jpeg|png|webp|gif)$/)?.[0]
+  const coverCandidate = discoverEpubCoverCandidate(opf, metadata, manifest, files, opfDir)
+  const coverBytes = coverCandidate ? files[coverCandidate.path] : undefined
+  const safeCoverMime = normalizeCoverMediaType(coverCandidate?.mediaType)
   const coverUrl = coverBytes && coverBytes.byteLength <= MAX_EPUB_COVER_BYTES && safeCoverMime
     ? `data:${safeCoverMime};base64,${decodeBase64(coverBytes)}`
     : null
@@ -852,7 +970,7 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
     toc: chapters.map((chapter, page) => ({ title: chapter.title || `Chapter ${page + 1}`, page })),
     format: 'epub',
     cover_url: coverUrl,
-    cover_source: coverUrl ? 'epub' : null,
+    cover_source: coverUrl ? `epub:${coverCandidate?.source || 'fallback'}` : null,
     tts_engine: 'supertonic',
     voice: 'M1',
     speed: 1,
@@ -1273,6 +1391,15 @@ export type MobilePlaybackStatus = {
   currentIndex?: number
   queueSize?: number
   error?: string | null
+  bookId?: string | null
+  format?: string | null
+  chapterTitle?: string | null
+  chapterIndex?: number | null
+  chapterCount?: number | null
+  sentenceIndex?: number | null
+  sentenceCount?: number | null
+  chunkProgress?: number | null
+  locationUri?: string | null
 }
 
 type NativeTreeDocument = {
@@ -1461,18 +1588,53 @@ async function audioUrlToBase64(url: string): Promise<string> {
   return decodeBase64(new Uint8Array(await response.arrayBuffer()))
 }
 
+async function artworkUrlToPayload(url: string | null | undefined): Promise<{ base64: string; mimeType: string } | null> {
+  const value = String(url || '').trim()
+  if (!value) return null
+  if (value.startsWith('data:')) {
+    const match = value.match(/^data:([^;,]+)(?:;[^,]*)?,([\s\S]*)$/i)
+    if (!match) return null
+    const mimeType = normalizeCoverMediaType(match[1])
+    return mimeType && match[2] ? { base64: match[2], mimeType } : null
+  }
+  try {
+    const response = await fetch(value)
+    if (!response.ok) return null
+    const mimeType = normalizeCoverMediaType(response.headers.get('content-type'))
+    if (!mimeType) return null
+    return { base64: decodeBase64(new Uint8Array(await response.arrayBuffer())), mimeType }
+  } catch {
+    return null
+  }
+}
+
 export async function mobileStartAudio(
   audioInfo: AudioInfo,
-  metadata: { title?: string; artist?: string; album?: string } = {},
+  metadata: { title?: string; artist?: string; album?: string; bookId?: string; format?: string; chapterTitle?: string; chapterIndex?: number; chapterCount?: number; sentenceIndex?: number; sentenceCount?: number; chunkProgress?: number; locationUri?: string; description?: string; artworkUrl?: string | null } = {},
   positionMs = 0,
   mode: 'replace' | 'append' = 'replace',
 ): Promise<MobilePlaybackStatus> {
-  const audioBase64 = await audioUrlToBase64(audioInfo.url)
+  const [audioBase64, artwork] = await Promise.all([
+    audioUrlToBase64(audioInfo.url),
+    mode === 'replace' ? artworkUrlToPayload(metadata.artworkUrl) : Promise.resolve(null),
+  ])
   return nativeInvoke<MobilePlaybackStatus>('play_audio', {
     audioBase64,
     title: metadata.title || 'Folio narration',
     artist: metadata.artist || 'Folio',
     album: metadata.album || 'Folio',
+    bookId: metadata.bookId || '',
+    format: metadata.format || '',
+    chapterTitle: metadata.chapterTitle || '',
+    chapterIndex: Number.isFinite(metadata.chapterIndex) ? metadata.chapterIndex : 0,
+    chapterCount: Number.isFinite(metadata.chapterCount) ? metadata.chapterCount : 0,
+    sentenceIndex: Number.isFinite(metadata.sentenceIndex) ? metadata.sentenceIndex : 0,
+    sentenceCount: Number.isFinite(metadata.sentenceCount) ? metadata.sentenceCount : 0,
+    chunkProgress: Number.isFinite(metadata.chunkProgress) ? metadata.chunkProgress : 0,
+    locationUri: metadata.locationUri || '',
+    description: metadata.description || '',
+    artworkBase64: artwork?.base64 || null,
+    artworkMimeType: artwork?.mimeType || null,
     positionMs: Math.max(0, Math.round(positionMs)),
     mode,
   })

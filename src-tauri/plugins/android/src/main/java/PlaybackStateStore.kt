@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
 internal data class PersistedEnqueue(
@@ -42,6 +43,20 @@ internal object PlaybackStateStore {
         album: String,
         positionMs: Long,
         appendToActiveQueue: Boolean,
+    ): PersistedEnqueue = enqueue(
+        context = context,
+        sourcePath = sourcePath,
+        metadata = PlaybackMetadata(title = title, artist = artist, album = album),
+        positionMs = positionMs,
+        appendToActiveQueue = appendToActiveQueue,
+    )
+
+    fun enqueue(
+        context: Context,
+        sourcePath: String,
+        metadata: PlaybackMetadata,
+        positionMs: Long,
+        appendToActiveQueue: Boolean,
     ): PersistedEnqueue = synchronized(lock) {
         val appContext = context.applicationContext
         val previous = readAndRepair(appContext)
@@ -63,13 +78,53 @@ internal object PlaybackStateStore {
 
         val sessionId = previous.nextSessionId + 1L
         val staged = stageAudio(appContext, source, sessionId)
+        val reusableArtworkPath = if (metadata.bookId.isNotBlank() && (appendToActiveQueue || metadata.artworkBase64.isNullOrBlank())) {
+            previous.items.firstOrNull { it.bookId == metadata.bookId && !it.artworkPath.isNullOrBlank() }?.artworkPath
+        } else null
+        val artworkPath = PlaybackArtworkStore.prepare(
+            context = appContext,
+            bookId = metadata.bookId,
+            encoded = metadata.artworkBase64,
+            mimeType = metadata.artworkMimeType,
+            reusablePath = reusableArtworkPath,
+        )
+        val safeTitle = metadata.title.take(120).ifBlank { "Folio narration" }
+        val safeArtist = metadata.artist.take(120).ifBlank { "Folio" }
+        val safeAlbum = metadata.album.take(120).ifBlank { "Folio" }
+        val safeFormat = metadata.format.take(24)
+        val safeChapterTitle = metadata.chapterTitle.take(180)
+        val safeDescription = metadata.description.take(240)
+        val chapterIndex = metadata.chapterIndex.coerceAtLeast(0)
+        val chapterCount = metadata.chapterCount.coerceAtLeast(0)
+        val sentenceIndex = metadata.sentenceIndex.coerceAtLeast(0)
+        val sentenceCount = metadata.sentenceCount.coerceAtLeast(0)
+        val chunkProgress = metadata.chunkProgress.coerceIn(0f, 0.98f)
+        val bookId = metadata.bookId.take(256)
+        val locationUri = metadata.locationUri.take(2_048)
+        val description = safeDescription.ifBlank {
+            listOfNotNull(
+                safeChapterTitle.takeIf { it.isNotBlank() },
+                if (chapterCount > 0) "Chapter ${chapterIndex + 1} of $chapterCount" else null,
+            ).joinToString(" · ")
+        }
         val item = PlaybackQueueItem(
             sessionId = sessionId,
             path = staged.absolutePath,
-            title = title,
-            artist = artist,
-            album = album,
+            title = safeTitle,
+            artist = safeArtist,
+            album = safeAlbum,
             requestedPositionMs = positionMs.coerceAtLeast(0L),
+            bookId = bookId,
+            format = safeFormat,
+            chapterTitle = safeChapterTitle,
+            chapterIndex = chapterIndex,
+            chapterCount = chapterCount,
+            sentenceIndex = sentenceIndex,
+            sentenceCount = sentenceCount,
+            chunkProgress = chunkProgress,
+            locationUri = locationUri,
+            description = description,
+            artworkPath = artworkPath,
         )
         val mutation = previous.enqueue(item, appendToActiveQueue)
         try {
@@ -78,12 +133,12 @@ internal object PlaybackStateStore {
             staged.delete()
             throw error
         }
-        cleanupOrphans(appContext, mutation.state.items.mapTo(mutableSetOf()) { it.path })
+        cleanupOrphans(appContext, referencedPaths(mutation.state.items))
         PersistedEnqueue(previous, mutation.state, item, mutation.discarded, source)
     }
 
     fun finalizeEnqueue(context: Context, enqueue: PersistedEnqueue) = synchronized(lock) {
-        deleteOwned(context.applicationContext, enqueue.discarded)
+        deleteOwned(context.applicationContext, enqueue.discarded, enqueue.newState.items)
         deletePrivateCacheSource(context.applicationContext, enqueue.source)
     }
 
@@ -93,7 +148,7 @@ internal object PlaybackStateStore {
         if (current.items.any { it.sessionId == enqueue.item.sessionId }) {
             write(appContext, enqueue.previousState)
         }
-        deleteOwned(appContext, listOf(enqueue.item))
+        deleteOwned(appContext, listOf(enqueue.item), enqueue.previousState.items)
     }
 
     fun control(context: Context, action: String, positionMs: Long?): PlaybackQueueState = synchronized(lock) {
@@ -126,7 +181,7 @@ internal object PlaybackStateStore {
             nextError = error,
         )
         write(appContext, mutation.state, synchronous)
-        deleteOwned(appContext, mutation.discarded)
+        deleteOwned(appContext, mutation.discarded, mutation.state.items)
         mutation.state
     }
 
@@ -175,13 +230,18 @@ internal object PlaybackStateStore {
 
     private fun readAndRepair(context: Context): PlaybackQueueState {
         val raw = read(context)
-        val validItems = raw.items.filter { item ->
+        val validItems = raw.items.mapNotNull { item ->
             val file = File(item.path)
-            isOwned(context, file) && file.isFile && file.length() > 0L
+            if (!isOwned(context, file) || !file.isFile || file.length() <= 0L) return@mapNotNull null
+            val artworkPath = item.artworkPath?.let { path ->
+                val artwork = File(path)
+                if (isOwned(context, artwork) && artwork.isFile && artwork.length() > 0L) artwork.absolutePath else null
+            }
+            item.copy(artworkPath = artworkPath)
         }
         val indexedCurrent = validItems.getOrNull(raw.currentIndex)
         if (
-            validItems.size == raw.items.size &&
+            validItems == raw.items &&
             (validItems.isEmpty() || indexedCurrent?.sessionId == raw.currentSessionId)
         ) return raw
 
@@ -207,7 +267,7 @@ internal object PlaybackStateStore {
             )
         }
         write(context, repaired)
-        cleanupOrphans(context, validItems.mapTo(mutableSetOf()) { it.path })
+        cleanupOrphans(context, referencedPaths(validItems))
         return repaired
     }
 
@@ -231,6 +291,17 @@ internal object PlaybackStateStore {
                             artist = item.optString("artist", "Folio"),
                             album = item.optString("album", "Folio"),
                             requestedPositionMs = item.optLong("requestedPositionMs", 0L).coerceAtLeast(0L),
+                            bookId = item.optString("bookId", ""),
+                            format = item.optString("format", ""),
+                            chapterTitle = item.optString("chapterTitle", ""),
+                            chapterIndex = item.optInt("chapterIndex", 0).coerceAtLeast(0),
+                            chapterCount = item.optInt("chapterCount", 0).coerceAtLeast(0),
+                            sentenceIndex = item.optInt("sentenceIndex", 0).coerceAtLeast(0),
+                            sentenceCount = item.optInt("sentenceCount", 0).coerceAtLeast(0),
+                            chunkProgress = item.optDouble("chunkProgress", 0.0).toFloat().coerceIn(0f, 0.98f),
+                            locationUri = item.optString("locationUri", ""),
+                            description = item.optString("description", ""),
+                            artworkPath = if (item.isNull("artworkPath")) null else item.optString("artworkPath", "").takeIf { it.isNotBlank() },
                         ),
                     )
                 }
@@ -261,7 +332,18 @@ internal object PlaybackStateStore {
                     .put("title", item.title)
                     .put("artist", item.artist)
                     .put("album", item.album)
-                    .put("requestedPositionMs", item.requestedPositionMs),
+                    .put("requestedPositionMs", item.requestedPositionMs)
+                    .put("bookId", item.bookId)
+                    .put("format", item.format)
+                    .put("chapterTitle", item.chapterTitle)
+                    .put("chapterIndex", item.chapterIndex)
+                    .put("chapterCount", item.chapterCount)
+                    .put("sentenceIndex", item.sentenceIndex)
+                    .put("sentenceCount", item.sentenceCount)
+                    .put("chunkProgress", item.chunkProgress.toDouble())
+                    .put("locationUri", item.locationUri)
+                    .put("description", item.description)
+                    .put("artworkPath", item.artworkPath ?: JSONObject.NULL),
             )
         }
         val json = JSONObject()
@@ -289,7 +371,11 @@ internal object PlaybackStateStore {
         val temporary = File(root, ".pending-$sessionId-${UUID.randomUUID()}")
         val destination = File(root, "narration-$sessionId.wav")
         source.inputStream().buffered().use { input ->
-            temporary.outputStream().buffered().use { output -> input.copyTo(output, 64 * 1024) }
+            FileOutputStream(temporary).use { output ->
+                input.copyTo(output, 64 * 1024)
+                output.flush()
+                output.fd.sync()
+            }
         }
         if (temporary.length() != source.length()) {
             temporary.delete()
@@ -315,10 +401,24 @@ internal object PlaybackStateStore {
         return runCatching { file.canonicalPath.startsWith(root) }.getOrDefault(false)
     }
 
-    private fun deleteOwned(context: Context, items: Collection<PlaybackQueueItem>) {
+    private fun deleteOwned(
+        context: Context,
+        items: Collection<PlaybackQueueItem>,
+        retained: Collection<PlaybackQueueItem> = emptyList(),
+    ) {
+        val referenced = referencedPaths(retained)
         items.forEach { item ->
-            val file = File(item.path)
-            if (isOwned(context, file)) runCatching { file.delete() }
+            listOfNotNull(item.path, item.artworkPath).forEach { path ->
+                val file = File(path)
+                if (path !in referenced && !PlaybackArtworkStore.isSharedFallback(context, path) && isOwned(context, file)) runCatching { file.delete() }
+            }
+        }
+    }
+
+    private fun referencedPaths(items: Collection<PlaybackQueueItem>): Set<String> = buildSet {
+        items.forEach { item ->
+            add(item.path)
+            item.artworkPath?.let(::add)
         }
     }
 
@@ -332,6 +432,7 @@ internal object PlaybackStateStore {
     private fun cleanupOrphans(context: Context, referencedPaths: Set<String>) {
         val cutoff = System.currentTimeMillis() - ORPHAN_MAX_AGE_MS
         playbackRoot(context).listFiles()?.forEach { file ->
+            if (file.name == "folio-fallback.jpg") return@forEach
             if (file.absolutePath !in referencedPaths && file.lastModified() < cutoff) runCatching { file.delete() }
         }
     }

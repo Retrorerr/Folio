@@ -1,4 +1,5 @@
 package com.folio.reader
+import android.content.Intent
 
 import android.content.Context
 import android.content.res.Configuration
@@ -18,6 +19,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.folio.reader.mobile.FolioPlaybackService
 import com.folio.reader.mobile.FolioSystemBarHost
 import org.json.JSONObject
 import java.util.Locale
@@ -27,6 +29,7 @@ open class MainActivity : TauriActivity(), FolioSystemBarHost {
   private var launchOverlay: View? = null
   private var launchOverlayLogo: ImageView? = null
   private var folioWebView: WebView? = null
+  private var pendingMediaLaunchIntent: Intent? = null
   private var safeTopInsetPx = 0
   private var safeRightInsetPx = 0
   private var safeBottomInsetPx = 0
@@ -34,6 +37,7 @@ open class MainActivity : TauriActivity(), FolioSystemBarHost {
   private var insetRevision = 0
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    pendingMediaLaunchIntent = intent
     // Android's pre-process window is a stable Folio brand surface. Once this
     // Activity exists, the native overlay takes over with the exact persisted
     // reader theme until the WebView has painted matching content.
@@ -57,7 +61,35 @@ open class MainActivity : TauriActivity(), FolioSystemBarHost {
     folioWebView = webView
     webView.setBackgroundColor(savedLaunchBackground())
     publishSafeInsetsToWeb(++insetRevision)
+    dispatchMediaLaunchIntent(pendingMediaLaunchIntent)
+    pendingMediaLaunchIntent = null
     releaseOverlayAfterThemedContent(webView)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    dispatchMediaLaunchIntent(intent)
+  }
+
+  private fun dispatchMediaLaunchIntent(intent: Intent?) {
+    val bookId = intent?.getStringExtra(FolioPlaybackService.EXTRA_BOOK_ID)?.trim().orEmpty()
+    if (bookId.isEmpty()) return
+    val detail = JSONObject()
+      .put("bookId", bookId)
+      .put("page", intent?.getIntExtra(FolioPlaybackService.EXTRA_CHAPTER_INDEX, 0) ?: 0)
+      .put("sentence", intent?.getIntExtra(FolioPlaybackService.EXTRA_SENTENCE_INDEX, 0) ?: 0)
+      .put("chunkProgress", (intent?.getFloatExtra(FolioPlaybackService.EXTRA_CHUNK_PROGRESS, 0f) ?: 0f).coerceIn(0f, 0.98f))
+      .put("locationUri", intent?.getStringExtra(FolioPlaybackService.EXTRA_LOCATION_URI).orEmpty())
+    val script = "window.dispatchEvent(new CustomEvent('folio:media-launch',{detail:${detail}}));"
+    val webView = folioWebView
+    if (webView == null) {
+      pendingMediaLaunchIntent = intent
+      return
+    }
+    webView.postDelayed({
+      if (!isFinishing && !isDestroyed) webView.evaluateJavascript(script, null)
+    }, 250L)
   }
 
   override fun onResume() {

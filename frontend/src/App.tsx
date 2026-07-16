@@ -42,6 +42,7 @@ import { androidAppViewTransition, appViewTransition, fadeIn, spring } from './m
 import { isFolioTheme, resolveInitialTheme } from './systemTheme'
 import { performAndroidHaptic, syncAndroidSystemBars } from './androidShell'
 import './App.css'
+import { mobileAudioStatus, mobileControlAudio } from './mobileApi'
 
 const PAGE_TOTAL_DEBOUNCE_MS = 500
 const PAGE_TOTAL_STABILITY_MS = 6000
@@ -53,6 +54,15 @@ const APP_HEARTBEAT_THROTTLE_MS = 5_000
 const BACKEND_RESTART_THROTTLE_MS = 5_000
 const STARTUP_MINIMUM_MS = 480
 const STARTUP_ASSET_TIMEOUT_MS = 2200
+
+type NativeResumeTarget = {
+  bookId: string
+  page: number
+  sentence: number
+  chunkProgress: number
+  locationUri: string
+  applied: boolean
+}
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseFloat(String(value))
@@ -314,6 +324,8 @@ export default function App() {
     openBook, uploadBook, goToPage, savePosition, applyBookSettings, addBookmark, removeBookmark, closeBook, deleteBook,
   } = bookState
   const activeBookId = book?.id ?? null
+  const nativeResumeTargetRef = useRef<NativeResumeTarget | null>(null)
+  const nativeResumeOpenRef = useRef<string | null>(null)
 
   useEffect(() => {
     setHasSelectedReaderLine(false)
@@ -330,6 +342,96 @@ export default function App() {
     })
   }, [backendReachable, openBook, pendingOpenFile])
 
+  const nativeResumeCheckedRef = useRef(false)
+  const requestNativeResume = useCallback((value: Record<string, unknown>) => {
+    const bookId = String(value.bookId || '').trim()
+    if (!bookId) return
+    const target: NativeResumeTarget = {
+      bookId,
+      page: Math.max(0, Math.floor(Number(value.page) || 0)),
+      sentence: Math.max(0, Math.floor(Number(value.sentence) || 0)),
+      chunkProgress: clampNumber(value.chunkProgress, 0, 0.98, 0),
+      locationUri: String(value.locationUri || '').trim(),
+      applied: false,
+    }
+    nativeResumeTargetRef.current = target
+    if (book?.id === bookId) {
+      nativeResumeOpenRef.current = null
+      return
+    }
+    const openKey = `${bookId}|${target.locationUri}`
+    if (nativeResumeOpenRef.current === openKey) return
+    nativeResumeOpenRef.current = openKey
+    void openBook(target.locationUri || bookId)
+      .then((opened) => {
+        if (opened || nativeResumeOpenRef.current !== openKey) return
+        nativeResumeTargetRef.current = null
+        nativeResumeOpenRef.current = null
+        void mobileControlAudio('stop').catch(() => {})
+      })
+      .catch(() => {
+        if (nativeResumeOpenRef.current !== openKey) return
+        nativeResumeTargetRef.current = null
+        nativeResumeOpenRef.current = null
+        void mobileControlAudio('stop').catch(() => {})
+      })
+  }, [book?.id, openBook])
+
+  useEffect(() => {
+    if (!isAndroidRuntime()) return
+    const onMediaLaunch = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail
+      if (detail && typeof detail === 'object') requestNativeResume(detail)
+    }
+    window.addEventListener('folio:media-launch', onMediaLaunch)
+    return () => window.removeEventListener('folio:media-launch', onMediaLaunch)
+  }, [requestNativeResume])
+
+  useEffect(() => {
+    if (!isAndroidRuntime() || !backendReachable || !recentLoaded || nativeResumeCheckedRef.current) return
+    nativeResumeCheckedRef.current = true
+    let cancelled = false
+    void mobileAudioStatus()
+      .then((status) => {
+        if (cancelled) return
+        const queueSize = Number(status.queueSize || status.queueSessionIds?.length || 0)
+        if (!status.bookId || queueSize <= 0) return
+        requestNativeResume({
+          bookId: status.bookId,
+          page: status.chapterIndex || 0,
+          sentence: status.sentenceIndex || 0,
+          chunkProgress: status.chunkProgress || 0,
+          locationUri: status.locationUri || '',
+        })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [backendReachable, recentLoaded, requestNativeResume])
+
+  useEffect(() => {
+    const target = nativeResumeTargetRef.current
+    if (!isAndroidRuntime() || !book || !target || target.applied || target.bookId !== book.id) return
+    target.applied = true
+    let cancelled = false
+    const apply = async () => {
+      const page = Math.min(target.page, Math.max(0, book.page_count - 1))
+      const loaded = await goToPage(page)
+      if (cancelled || !loaded) {
+        if (!cancelled) nativeResumeTargetRef.current = null
+        return
+      }
+      const sentence = Math.min(target.sentence, Math.max(0, loaded.sentences.length - 1))
+      await savePosition(page, sentence, { chunk_progress: target.chunkProgress })
+      if (!cancelled && nativeResumeTargetRef.current === target) {
+        nativeResumeTargetRef.current = null
+        nativeResumeOpenRef.current = null
+      }
+    }
+    void apply().catch(() => {
+      if (!cancelled && nativeResumeTargetRef.current === target) nativeResumeTargetRef.current = null
+    })
+    return () => { cancelled = true }
+  }, [book, goToPage, savePosition])
   const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition, applyBookSettings })
   const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio } = audio
   const audioChunkProgressRef = useRef(0)

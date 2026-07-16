@@ -7,6 +7,17 @@ internal data class PlaybackQueueItem(
     val artist: String,
     val album: String,
     val requestedPositionMs: Long,
+    val bookId: String = "",
+    val format: String = "",
+    val chapterTitle: String = "",
+    val chapterIndex: Int = 0,
+    val chapterCount: Int = 0,
+    val sentenceIndex: Int = 0,
+    val sentenceCount: Int = 0,
+    val chunkProgress: Float = 0f,
+    val locationUri: String = "",
+    val description: String = "",
+    val artworkPath: String? = null,
 )
 
 internal data class PlaybackQueueState(

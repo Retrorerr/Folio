@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { apiFetch, apiResourceUrl, isAndroidRuntime } from '../api'
 import { mobileAudioStatus, mobileControlAudio, mobileStartAudio } from '../mobileApi'
+import { buildNativePlaybackMetadata } from '../mobileMetadata'
 import {
   clampSpeedForEngine,
   defaultSpeed,
@@ -315,7 +316,15 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     resetAudioSpectrum()
     if (isAndroidRuntime()) {
       resetNativeQueueTracking()
-      void mobileControlAudio('stop').catch(() => {})
+      void mobileAudioStatus()
+        .catch(() => null)
+        .then((status) => {
+          // A media-widget launch opens the book represented by the active
+          // native queue. Keep that queue alive; a real book switch still
+          // clears it, including legacy queues without a book id.
+          if (status?.bookId && status.bookId === bookId) return
+          return mobileControlAudio('stop').catch(() => {})
+        })
     }
   }, [bookId, publishChunkProgress, resetAudioSpectrum, resetNativeQueueTracking])
 
@@ -1005,7 +1014,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       resetNativeQueueTracking()
       status = await mobileStartAudio(
         audioInfo,
-        { title: book?.title || 'Folio narration', artist: book?.author || 'Folio', album: 'Folio' },
+        buildNativePlaybackMetadata(book, position.page, position.sentence, pageData?.sentences?.length || 0, startProgress),
         Number(audioInfo.duration_ms || 0) * clampProgress(startProgress),
         'replace',
       )
@@ -1033,7 +1042,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       try {
         const queued = await mobileStartAudio(
           cached,
-          { title: book?.title || 'Folio narration', artist: book?.author || 'Folio', album: 'Folio' },
+          buildNativePlaybackMetadata(book, target.page, target.sentence, target.page === position.page ? (pageData?.sentences?.length || 0) : (pageTextCacheRef.current.get(target.page)?.sentences?.length || 0), 0),
           0,
           'append',
         )
@@ -1050,7 +1059,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       }
     }
     return nativeSessionId
-  }, [book, getCacheKey, resetNativeQueueTracking])
+  }, [book, pageData, getCacheKey, resetNativeQueueTracking])
 
   const playNativeAudio = useCallback((
     audioInfo: AudioInfo,
