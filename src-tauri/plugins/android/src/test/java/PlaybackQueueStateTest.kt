@@ -94,6 +94,39 @@ class PlaybackQueueStateTest {
     }
 
     @Test
+    fun durableCheckpointDerivesChunkProgressFromNativePosition() {
+        val state = PlaybackQueueState(
+            items = listOf(item(30)),
+            state = "playing",
+            currentSessionId = 30,
+            nextSessionId = 30,
+            playWhenReady = true,
+        )
+        val checkpoint = state.advance(30, "playing", 250L, 1_000L, true, null).state
+        assertEquals(0.25f, checkpoint.currentItem?.chunkProgress ?: -1f, 0.001f)
+        assertEquals(0.25f, checkpoint.authoritativeChunkProgress(), 0.001f)
+    }
+
+    @Test
+    fun transientZeroDoesNotEraseRestoredCheckpointOrUnknownDurationProgress() {
+        val restored = PlaybackQueueState(
+            items = listOf(item(31).copy(lastPositionMs = 700L, lastDurationMs = 1_000L, chunkProgress = 0.7f)),
+            state = "paused",
+            positionMs = 700L,
+            durationMs = 1_000L,
+            currentSessionId = 31,
+            nextSessionId = 31,
+        )
+        val transient = restored.advance(31, "preparing", 0L, 0L, true, null, preserveTransientZero = true).state
+        assertEquals(700L, transient.positionMs)
+        assertEquals(0.7f, transient.authoritativeChunkProgress(), 0.001f)
+
+        val unknown = restored.advance(31, "paused", 900L, 0L, false, null).state
+        assertEquals(900L, unknown.positionMs)
+        assertEquals(0.9f, unknown.authoritativeChunkProgress(), 0.001f)
+    }
+
+    @Test
     fun metadataAndArtworkStayAttachedToTheCorrectQueueItem() {
         val first = item(20).copy(
             bookId = "book-a",

@@ -18,6 +18,9 @@ internal data class PlaybackQueueItem(
     val locationUri: String = "",
     val description: String = "",
     val artworkPath: String? = null,
+    // Durable player checkpoints. Missing JSON fields safely decode to zero.
+    val lastPositionMs: Long = 0L,
+    val lastDurationMs: Long = 0L,
 )
 
 internal data class PlaybackQueueState(
@@ -68,17 +71,38 @@ internal data class PlaybackQueueState(
         nextDurationMs: Long,
         nextPlayWhenReady: Boolean,
         nextError: String?,
+        preserveTransientZero: Boolean = false,
     ): PlaybackQueueMutation {
         val index = items.indexOfFirst { it.sessionId == sessionId }
         if (index < 0) return PlaybackQueueMutation(this, emptyList())
-        val remaining = items.drop(index)
+        val current = items[index]
+        val previousPosition = if (currentSessionId == sessionId) {
+            maxOf(current.lastPositionMs, positionMs)
+        } else {
+            current.lastPositionMs
+        }
+        val previousDuration = if (currentSessionId == sessionId) durationMs else 0L
+        val safeDuration = if (nextDurationMs > 0L) nextDurationMs else maxOf(current.lastDurationMs, previousDuration)
+        val reportedPosition = nextPositionMs.coerceAtLeast(0L)
+        val safePosition = if (preserveTransientZero && reportedPosition == 0L && previousPosition > 0L) previousPosition else reportedPosition
+        val safeProgress = if (safeDuration > 0L && !(preserveTransientZero && reportedPosition == 0L && previousPosition > 0L)) {
+            (safePosition.toDouble() / safeDuration.toDouble()).toFloat().coerceIn(0f, 0.98f)
+        } else {
+            current.chunkProgress.coerceIn(0f, 0.98f)
+        }
+        val checkpointedCurrent = current.copy(
+            chunkProgress = safeProgress,
+            lastPositionMs = safePosition,
+            lastDurationMs = safeDuration,
+        )
+        val remaining = items.drop(index).let { list -> listOf(checkpointedCurrent) + list.drop(1) }
         return PlaybackQueueMutation(
             state = copy(
                 items = remaining,
                 currentIndex = 0,
                 state = nextState,
-                positionMs = nextPositionMs.coerceAtLeast(0L),
-                durationMs = nextDurationMs.coerceAtLeast(0L),
+                positionMs = safePosition,
+                durationMs = safeDuration.coerceAtLeast(0L),
                 currentSessionId = sessionId,
                 playWhenReady = nextPlayWhenReady,
                 error = nextError,
@@ -92,11 +116,33 @@ internal data class PlaybackQueueState(
         "resume" -> if (items.isEmpty()) this else copy(state = "preparing", playWhenReady = true, error = null)
         "seek" -> {
             val upperBound = durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE
-            copy(positionMs = (requestedPositionMs ?: 0L).coerceIn(0L, upperBound), error = null)
+            val position = (requestedPositionMs ?: 0L).coerceIn(0L, upperBound)
+            val updatedItems = if (currentItem == null) items else items.mapIndexed { index, item ->
+                if (index != currentIndex) item else item.copy(
+                    chunkProgress = if (durationMs > 0L) (position.toDouble() / durationMs).toFloat().coerceIn(0f, 0.98f) else item.chunkProgress,
+                    lastPositionMs = position,
+                    lastDurationMs = maxOf(item.lastDurationMs, durationMs),
+                )
+            }
+            copy(items = updatedItems, positionMs = position, error = null)
         }
         "stop" -> copy(items = emptyList(), currentIndex = 0, state = "stopped", playWhenReady = false, error = null)
         else -> this
     }
+
+    /** The progress exposed to the WebView, notification and reopen intent. */
+    fun authoritativeChunkProgress(): Float {
+        val item = currentItem ?: return 0f
+        val duration = maxOf(item.lastDurationMs, durationMs)
+        val position = if (item.lastPositionMs > 0L || positionMs <= 0L) item.lastPositionMs else positionMs
+        return if (duration > 0L) {
+            (position.toDouble() / duration.toDouble()).toFloat().coerceIn(0f, 0.98f)
+        } else {
+            item.chunkProgress.coerceIn(0f, 0.98f)
+        }
+    }
+
+    fun authoritativeCurrentItem(): PlaybackQueueItem? = currentItem?.copy(chunkProgress = authoritativeChunkProgress())
 }
 
 internal data class PlaybackQueueMutation(

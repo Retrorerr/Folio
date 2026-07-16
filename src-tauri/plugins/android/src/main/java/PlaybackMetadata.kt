@@ -22,4 +22,5 @@ data class PlaybackMetadata(
     val description: String = "",
     val artworkBase64: String? = null,
     val artworkMimeType: String? = null,
+    val artworkRevision: String? = null,
 )

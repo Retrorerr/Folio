@@ -124,6 +124,18 @@ impl<R: Runtime> MobileRuntime<R> {
             .map_err(Into::into)
     }
 
+    pub fn update_artwork(&self, payload: UpdateArtworkRequest) -> crate::Result<PlaybackStatus> {
+        self.0
+            .run_mobile_plugin("updateArtwork", payload)
+            .map_err(Into::into)
+    }
+
+    pub fn prune_artwork_cache(&self, payload: PruneArtworkCacheRequest) -> crate::Result<PlaybackStatus> {
+        self.0
+            .run_mobile_plugin("pruneArtworkCache", payload)
+            .map_err(Into::into)
+    }
+
     pub fn audio_status(&self) -> crate::Result<PlaybackStatus> {
         self.0
             .run_mobile_plugin("audioStatus", serde_json::json!({}))

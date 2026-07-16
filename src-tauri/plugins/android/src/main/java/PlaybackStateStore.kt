@@ -87,6 +87,7 @@ internal object PlaybackStateStore {
             encoded = metadata.artworkBase64,
             mimeType = metadata.artworkMimeType,
             reusablePath = reusableArtworkPath,
+            revision = metadata.artworkRevision,
         )
         val safeTitle = metadata.title.take(120).ifBlank { "Folio narration" }
         val safeArtist = metadata.artist.take(120).ifBlank { "Folio" }
@@ -160,6 +161,35 @@ internal object PlaybackStateStore {
         updated
     }
 
+    fun updateArtwork(
+        context: Context,
+        bookId: String,
+        encoded: String?,
+        mimeType: String?,
+        revision: String?,
+    ): PlaybackQueueState = synchronized(lock) {
+        val appContext = context.applicationContext
+        val previous = readAndRepair(appContext)
+        if (bookId.isBlank() || previous.items.none { it.bookId == bookId }) return previous
+        val existing = previous.items.firstOrNull { it.bookId == bookId }?.artworkPath
+        val artworkPath = PlaybackArtworkStore.prepare(appContext, bookId, encoded, mimeType, existing, revision)
+        if (artworkPath == null) return previous
+        val updated = previous.copy(items = previous.items.map { item ->
+            if (item.bookId == bookId) item.copy(artworkPath = artworkPath) else item
+        })
+        write(appContext, updated)
+        updated
+    }
+
+    fun pruneArtworkCache(context: Context, protectedBookIds: Set<String>) = synchronized(lock) {
+        val state = readAndRepair(context.applicationContext)
+        PlaybackArtworkStore.prune(
+            context.applicationContext,
+            protectedBookIds,
+            state.items.mapNotNull { it.artworkPath }.toSet(),
+        )
+    }
+
     fun updateFromPlayer(
         context: Context,
         sessionId: Long,
@@ -169,6 +199,7 @@ internal object PlaybackStateStore {
         playWhenReady: Boolean,
         error: String? = null,
         synchronous: Boolean = false,
+        preserveTransientZero: Boolean = false,
     ): PlaybackQueueState = synchronized(lock) {
         val appContext = context.applicationContext
         val previous = readAndRepair(appContext)
@@ -179,6 +210,7 @@ internal object PlaybackStateStore {
             nextDurationMs = durationMs,
             nextPlayWhenReady = playWhenReady,
             nextError = error,
+            preserveTransientZero = preserveTransientZero,
         )
         write(appContext, mutation.state, synchronous)
         deleteOwned(appContext, mutation.discarded, mutation.state.items)
@@ -233,10 +265,7 @@ internal object PlaybackStateStore {
         val validItems = raw.items.mapNotNull { item ->
             val file = File(item.path)
             if (!isOwned(context, file) || !file.isFile || file.length() <= 0L) return@mapNotNull null
-            val artworkPath = item.artworkPath?.let { path ->
-                val artwork = File(path)
-                if (isOwned(context, artwork) && artwork.isFile && artwork.length() > 0L) artwork.absolutePath else null
-            }
+            val artworkPath = PlaybackArtworkStore.normalizeStoredPath(context, item.bookId, item.artworkPath)
             item.copy(artworkPath = artworkPath)
         }
         val indexedCurrent = validItems.getOrNull(raw.currentIndex)
@@ -302,6 +331,8 @@ internal object PlaybackStateStore {
                             locationUri = item.optString("locationUri", ""),
                             description = item.optString("description", ""),
                             artworkPath = if (item.isNull("artworkPath")) null else item.optString("artworkPath", "").takeIf { it.isNotBlank() },
+                            lastPositionMs = item.optLong("lastPositionMs", 0L).coerceAtLeast(0L),
+                            lastDurationMs = item.optLong("lastDurationMs", 0L).coerceAtLeast(0L),
                         ),
                     )
                 }
@@ -343,7 +374,9 @@ internal object PlaybackStateStore {
                     .put("chunkProgress", item.chunkProgress.toDouble())
                     .put("locationUri", item.locationUri)
                     .put("description", item.description)
-                    .put("artworkPath", item.artworkPath ?: JSONObject.NULL),
+                    .put("artworkPath", item.artworkPath ?: JSONObject.NULL)
+                    .put("lastPositionMs", item.lastPositionMs)
+                    .put("lastDurationMs", item.lastDurationMs),
             )
         }
         val json = JSONObject()
@@ -408,18 +441,15 @@ internal object PlaybackStateStore {
     ) {
         val referenced = referencedPaths(retained)
         items.forEach { item ->
-            listOfNotNull(item.path, item.artworkPath).forEach { path ->
+            listOfNotNull(item.path).forEach { path ->
                 val file = File(path)
-                if (path !in referenced && !PlaybackArtworkStore.isSharedFallback(context, path) && isOwned(context, file)) runCatching { file.delete() }
+                if (path !in referenced && isOwned(context, file)) runCatching { file.delete() }
             }
         }
     }
 
     private fun referencedPaths(items: Collection<PlaybackQueueItem>): Set<String> = buildSet {
-        items.forEach { item ->
-            add(item.path)
-            item.artworkPath?.let(::add)
-        }
+        items.forEach { item -> add(item.path) }
     }
 
     private fun deletePrivateCacheSource(context: Context, source: File) {

@@ -116,8 +116,22 @@ class PlayAudioArgs {
     var description: String? = null
     var artworkBase64: String? = null
     var artworkMimeType: String? = null
+    var artworkRevision: String? = null
     var positionMs: Long? = null
     var mode: String? = null
+}
+
+@InvokeArg
+class UpdateArtworkArgs {
+    var bookId: String? = null
+    var artworkBase64: String? = null
+    var artworkMimeType: String? = null
+    var artworkRevision: String? = null
+}
+
+@InvokeArg
+class PruneArtworkCacheArgs {
+    var bookIds: Array<String>? = null
 }
 
 @InvokeArg
@@ -927,6 +941,7 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
                         description = args.description.orEmpty(),
                         artworkBase64 = if (mode == "replace") artwork else null,
                         artworkMimeType = args.artworkMimeType,
+                        artworkRevision = args.artworkRevision,
                     ),
                     args.positionMs ?: 0L,
                     appendToActiveQueue = mode == "append",
@@ -952,6 +967,54 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         }
         FolioPlaybackService.control(activity.applicationContext, action, args.positionMs)
         invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+    }
+
+    @Command
+    fun updateArtwork(invoke: Invoke) {
+        val args = invoke.parseArgs(UpdateArtworkArgs::class.java)
+        val bookId = args.bookId?.trim().orEmpty()
+        val encoded = args.artworkBase64?.trim().orEmpty()
+        if (bookId.isEmpty() || encoded.isEmpty()) {
+            invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+            return
+        }
+        try {
+            playbackExecutor.execute {
+                try {
+                    val state = PlaybackStateStore.updateArtwork(
+                        activity.applicationContext,
+                        bookId,
+                        encoded.takeIf { it.length <= PlaybackArtworkPolicy.MAX_ENCODED_CHARS },
+                        args.artworkMimeType,
+                        args.artworkRevision,
+                    )
+                    FolioPlaybackService.refreshArtwork(state)
+                    invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+                } catch (error: Throwable) {
+                    // Artwork is deliberately best effort. The audio session
+                    // remains authoritative even when conversion fails.
+                    invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+        }
+    }
+
+    @Command
+    fun pruneArtworkCache(invoke: Invoke) {
+        val args = invoke.parseArgs(PruneArtworkCacheArgs::class.java)
+        try {
+            playbackExecutor.execute {
+                PlaybackStateStore.pruneArtworkCache(
+                    activity.applicationContext,
+                    args.bookIds.orEmpty().map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
+                )
+                invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+            }
+        } catch (_: RejectedExecutionException) {
+            invoke.resolve(playbackStatusObject(FolioPlaybackService.snapshot()))
+        }
     }
 
     @Command

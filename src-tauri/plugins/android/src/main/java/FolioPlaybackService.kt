@@ -165,6 +165,11 @@ class FolioPlaybackService : MediaSessionService() {
 
         fun snapshot(): PlaybackSnapshot = synchronized(lock) { snapshotValue }
 
+        internal fun refreshArtwork(state: PlaybackQueueState) {
+            val running = synchronized(lock) { service } ?: return
+            running.mainHandler.post { running.applyArtworkState(state) }
+        }
+
         internal fun initializeSnapshot(context: Context) {
             if (synchronized(lock) { snapshotInitialized }) return
             val restored = runCatching { PlaybackStateStore.load(context.applicationContext).toSnapshot() }
@@ -220,7 +225,7 @@ class FolioPlaybackService : MediaSessionService() {
                 chapterCount = current?.chapterCount,
                 sentenceIndex = current?.sentenceIndex,
                 sentenceCount = current?.sentenceCount,
-                chunkProgress = current?.chunkProgress,
+                chunkProgress = if (current != null) authoritativeChunkProgress() else null,
                 locationUri = current?.locationUri?.takeIf { it.isNotBlank() },
             )
         }
@@ -346,7 +351,7 @@ class FolioPlaybackService : MediaSessionService() {
         val restored = PlaybackStateStore.load(this)
         setSnapshot(restored.toSnapshot())
         reconcileQueue(restored, allowPlayback = false, publishAfterReconcile = false)
-        updateSessionActivity(restored.currentItem)
+        updateSessionActivity(restored.authoritativeCurrentItem())
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -480,7 +485,7 @@ class FolioPlaybackService : MediaSessionService() {
         } finally {
             reconcilingQueue = false
         }
-        updateSessionActivity(stored.currentItem)
+        updateSessionActivity(stored.authoritativeCurrentItem())
         if (publishAfterReconcile) {
             publishPlayerState(if (player.isPlaying) "playing" else if (player.playWhenReady) "preparing" else "paused", persist = true)
         }
@@ -593,11 +598,18 @@ class FolioPlaybackService : MediaSessionService() {
                 durationMs = duration,
                 playWhenReady = player.playWhenReady,
                 synchronous = state == "paused",
+                preserveTransientZero = pendingRestorePositionMs != null || state == "preparing",
             )
             setSnapshot(stored.toSnapshot())
+            updateSessionActivity(stored.authoritativeCurrentItem())
             lastDurableCheckpointMs = android.os.SystemClock.elapsedRealtime()
         } else {
             val latest = snapshot()
+            val progress = if (duration > 0L) {
+                (position.toDouble() / duration.toDouble()).toFloat().coerceIn(0f, 0.98f)
+            } else {
+                latest.chunkProgress?.coerceIn(0f, 0.98f) ?: 0f
+            }
             setSnapshot(
                 latest.copy(
                     state = state,
@@ -605,8 +617,10 @@ class FolioPlaybackService : MediaSessionService() {
                     durationMs = duration,
                     sessionId = current.sessionId,
                     error = null,
+                    chunkProgress = progress,
                 ),
             )
+            updateSessionActivity(current.copy(chunkProgress = progress))
         }
         mainHandler.removeCallbacks(pausedServiceTimeout)
         if (state == "paused") mainHandler.postDelayed(pausedServiceTimeout, PAUSED_SERVICE_TIMEOUT_MS)
@@ -615,6 +629,20 @@ class FolioPlaybackService : MediaSessionService() {
     private fun currentQueueItem(): PlaybackQueueItem? {
         val mediaId = player.currentMediaItem?.mediaId ?: return null
         return queueByMediaId[mediaId]
+    }
+
+    private fun applyArtworkState(state: PlaybackQueueState) {
+        if (!::player.isInitialized || state.items.isEmpty()) return
+        val byId = state.items.associateBy { it.sessionId.toString() }
+        queueByMediaId = byId
+        val limit = minOf(player.mediaItemCount, state.items.size)
+        for (index in 0 until limit) {
+            val mediaId = player.getMediaItemAt(index).mediaId
+            val item = byId[mediaId] ?: continue
+            player.replaceMediaItem(index, mediaItem(item))
+        }
+        setSnapshot(state.toSnapshot())
+        updateSessionActivity(state.authoritativeCurrentItem())
     }
 
     private fun terminalPlayerValues(): Triple<Long, Long, Long> {

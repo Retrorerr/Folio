@@ -39,6 +39,15 @@ const AUDIO_SPECTRUM_INTERVAL_MS = 40
 type LeadPosition = { page: number; sentence: number }
 type AudioPlaybackResult = 'done' | 'error' | 'paused' | 'cancelled'
 type SeekOptions = { progress?: number; preserveView?: boolean; pageData?: PageText | null }
+export type NativeSessionHydration = {
+  bookId: string
+  page?: number
+  sentence?: number
+  chunkProgress?: number
+  sessionId?: number
+  queueSessionIds?: number[]
+  state?: string
+}
 export type AudioSpectrumSubscriber = (levels: Float32Array) => void
 type BufferState = {
   state: 'idle' | 'warming' | 'prebuffering' | 'playing'
@@ -191,6 +200,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const activeBookIdRef = useRef(bookId)
   const nativeQueueByPositionRef = useRef(new Map<string, number>())
   const nativePositionBySessionRef = useRef(new Map<number, LeadPosition>())
+  const nativeHydrationRequestRef = useRef(0)
+  const nativeBookChangeGenerationRef = useRef(0)
 
   const resetNativeQueueTracking = useCallback(() => {
     nativeQueueByPositionRef.current.clear()
@@ -286,6 +297,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [])
 
   useEffect(() => {
+    const generation = ++nativeBookChangeGenerationRef.current
     if (activeBookIdRef.current === bookId) return
     activeBookIdRef.current = bookId
     playbackSessionRef.current += 1
@@ -319,6 +331,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       void mobileAudioStatus()
         .catch(() => null)
         .then((status) => {
+          if (nativeBookChangeGenerationRef.current !== generation || activeBookIdRef.current !== bookId) return
           // A media-widget launch opens the book represented by the active
           // native queue. Keep that queue alive; a real book switch still
           // clears it, including legacy queues without a book id.
@@ -830,6 +843,50 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     }
     return await fetchPageText(page)
   }, [fetchPageText])
+
+  /** Hydrates the live playback hook from the authoritative native queue. */
+  const hydrateNativeSession = useCallback(async (target: NativeSessionHydration): Promise<boolean> => {
+    if (!book || book.id !== target.bookId) return false
+    const requestId = ++nativeHydrationRequestRef.current
+    const page = Math.min(
+      Math.max(0, Math.floor(Number(target.page) || 0)),
+      Math.max(0, book.page_count - 1),
+    )
+    const loaded = page === currentPageRef.current && pageDataRef.current
+      ? pageDataRef.current
+      : await goToPage(page)
+    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId || !loaded) return false
+    const sentenceCount = loaded.sentences?.length || 0
+    const sentence = Math.min(Math.max(0, Math.floor(Number(target.sentence) || 0)), Math.max(0, sentenceCount - 1))
+    const progress = clampProgress(target.chunkProgress)
+    currentSentenceRef.current = sentence
+    setCurrentSentence(sentence)
+    readingPageRef.current = page
+    setReadingPage(page)
+    setReadingSentenceCount(sentenceCount)
+    pendingStartProgressRef.current = progress
+    publishChunkProgress(progress, true)
+    if (target.sessionId && target.sessionId > 0) {
+      const key = getCacheKey(page, sentence)
+      const activeIds = new Set((target.queueSessionIds || []).map((value) => Number(value)).filter((value) => value > 0))
+      nativeQueueByPositionRef.current.forEach((sessionId, positionKey) => {
+        if (activeIds.size > 0 && !activeIds.has(sessionId)) nativeQueueByPositionRef.current.delete(positionKey)
+      })
+      nativePositionBySessionRef.current.forEach((_position, sessionId) => {
+        if (activeIds.size > 0 && !activeIds.has(sessionId)) nativePositionBySessionRef.current.delete(sessionId)
+      })
+      nativeQueueByPositionRef.current.set(key, Number(target.sessionId))
+      nativePositionBySessionRef.current.set(Number(target.sessionId), { page, sentence })
+    }
+    const nativePlaying = target.state === 'playing' || target.state === 'preparing'
+    isPlayingRef.current = nativePlaying
+    setIsPlaying(nativePlaying)
+    setIsGenerating(false)
+    setBufferState(nativePlaying ? { ...idleBufferState(), state: 'playing', current: { page, sentence }, updatedAt: Date.now() } : idleBufferState())
+    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId) return false
+    await savePosition(page, sentence, { chunk_progress: progress })
+    return requestId === nativeHydrationRequestRef.current && activeBookIdRef.current === target.bookId
+  }, [book, getCacheKey, goToPage, publishChunkProgress, savePosition])
 
   const findNextReadablePosition = useCallback(async (page, sentence) => {
     if (!book) return null
@@ -1806,5 +1863,6 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     stop,
     seekToSentence,
     skipSentence,
+    hydrateNativeSession,
   }
 }

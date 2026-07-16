@@ -12,11 +12,16 @@ import android.util.Base64
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 /** Durable, bounded artwork conversion for Media3 metadata. */
 internal object PlaybackArtworkStore {
     private const val SHARED_FALLBACK_FILE = "folio-fallback.jpg"
+    private const val CACHE_DIRECTORY = "folio-artwork"
+    private const val LEGACY_DIRECTORY = "folio-playback"
+    private const val MAX_CACHE_BYTES = 32L * 1024L * 1024L
 
     fun prepare(
         context: android.content.Context,
@@ -24,18 +29,30 @@ internal object PlaybackArtworkStore {
         encoded: String?,
         mimeType: String?,
         reusablePath: String? = null,
+        revision: String? = null,
     ): String? {
         return try {
             val appContext = context.applicationContext
             val root = artworkRoot(appContext)
-            val reusable = reusablePath?.let { File(it) }
-            if (reusable != null && isOwned(appContext, reusable) && isValidArtwork(reusable)) return reusable.absolutePath
-
             val fallback = { sharedFallback(root) }
             val normalizedBookId = bookId.trim()
             if (normalizedBookId.isEmpty()) return fallback()
             val target = File(root, "artwork-${PlaybackArtworkPolicy.artworkKey(normalizedBookId)}.jpg")
             val input = encoded?.trim().orEmpty()
+            val reusable = reusablePath?.let { File(it) }
+            if (reusable != null && isValidArtwork(reusable)) {
+                val fallbackPath = isSharedFallback(appContext, reusable.absolutePath)
+                if (isCacheFile(appContext, reusable) && !fallbackPath &&
+                    (input.isEmpty() || revisionMatches(reusable, revision))) {
+                    return reusable.canonicalPath
+                }
+                if (isLegacyFile(appContext, reusable) && input.isEmpty()) {
+                    copyAtomic(reusable, target)
+                    writeRevision(target, revision)
+                    return target.absolutePath
+                }
+            }
+            if (isValidArtwork(target) && revisionMatches(target, revision)) return target.absolutePath
             if (input.isEmpty()) {
                 if (isValidArtwork(target)) return target.absolutePath
                 return fallback()
@@ -62,6 +79,7 @@ internal object PlaybackArtworkStore {
             val bitmap = decode(bytes) ?: return if (isValidArtwork(target)) target.absolutePath else fallback()
             return try {
                 writeAtomic(target, bitmap)
+                writeRevision(target, revision)
                 target.absolutePath
             } finally {
                 bitmap.recycle()
@@ -141,8 +159,7 @@ internal object PlaybackArtworkStore {
             if (!temporary.isFile || temporary.length() <= 0L || temporary.length() > PlaybackArtworkPolicy.MAX_OUTPUT_BYTES) {
                 throw IllegalStateException("Artwork output is invalid")
             }
-            if (target.exists() && !target.delete()) throw IllegalStateException("Artwork could not be replaced")
-            if (!temporary.renameTo(target)) throw IllegalStateException("Artwork could not be committed")
+            commitAtomic(temporary, target)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
@@ -173,13 +190,112 @@ internal object PlaybackArtworkStore {
         }
     }
 
-    private fun artworkRoot(context: android.content.Context): File = File(context.noBackupFilesDir, "folio-playback").apply {
+    private fun artworkRoot(context: android.content.Context): File = File(context.noBackupFilesDir, CACHE_DIRECTORY).apply {
         if ((!exists() && !mkdirs()) || !isDirectory) throw IllegalStateException("Artwork storage is unavailable")
     }.canonicalFile
 
+    private fun legacyRoot(context: android.content.Context): File = File(context.noBackupFilesDir, LEGACY_DIRECTORY).canonicalFile
+
+    private fun isCacheFile(context: android.content.Context, file: File): Boolean =
+        runCatching { file.canonicalPath.startsWith(artworkRoot(context).path + File.separator) }.getOrDefault(false)
+
+    private fun isLegacyFile(context: android.content.Context, file: File): Boolean =
+        runCatching { file.canonicalPath.startsWith(legacyRoot(context).path + File.separator) }.getOrDefault(false)
+
+    internal fun migrateLegacyPath(context: android.content.Context, bookId: String, path: String?): String? {
+        val source = path?.let { File(it) } ?: return null
+        if (!isLegacyFile(context, source) || !isValidArtwork(source)) return null
+        val root = runCatching { artworkRoot(context) }.getOrNull() ?: return null
+        val target = File(root, "artwork-${PlaybackArtworkPolicy.artworkKey(bookId)}.jpg")
+        return runCatching {
+            if (!isValidArtwork(target)) copyAtomic(source, target)
+            target.absolutePath
+        }.getOrNull()
+    }
+
+    internal fun normalizeStoredPath(context: android.content.Context, bookId: String, path: String?): String? {
+        val value = path?.trim().orEmpty()
+        if (value.isEmpty()) return null
+        if (isSharedFallback(context, value)) return runCatching { sharedFallback(artworkRoot(context)) }.getOrNull()
+        val file = File(value)
+        if (isCacheFile(context, file) && isValidArtwork(file)) return file.canonicalPath
+        return migrateLegacyPath(context, bookId, value)
+    }
+
+    internal fun prune(context: android.content.Context, protectedBookIds: Set<String>, referencedPaths: Set<String>) {
+        val root = runCatching { artworkRoot(context) }.getOrNull() ?: return
+        val protectedKeys = protectedBookIds.map { PlaybackArtworkPolicy.artworkKey(it) }.toSet()
+        val candidates = root.listFiles()?.filter { file ->
+            file.name.startsWith("artwork-") && file.extension == "jpg" && file.absolutePath !in referencedPaths &&
+                file.nameWithoutExtension.removePrefix("artwork-") !in protectedKeys
+        }?.sortedWith(compareBy<File> { it.lastModified() }.thenBy { it.name }).orEmpty()
+        var total = root.listFiles()?.filter { it.isFile && it.extension == "jpg" }?.sumOf { it.length() } ?: 0L
+        candidates.forEach { file ->
+            if (total <= MAX_CACHE_BYTES) return@forEach
+            val bytes = file.length()
+            if (file.delete()) {
+                total -= bytes
+                File(file.parentFile, "${file.name}.meta").delete()
+            }
+        }
+    }
+
+    private fun revisionFile(target: File): File = File(target.parentFile, "${target.name}.meta")
+
+    private fun revisionMatches(target: File, revision: String?): Boolean {
+        val requested = revision?.trim().orEmpty()
+        if (requested.isEmpty()) return true
+        return runCatching { revisionFile(target).readText(Charsets.UTF_8) == requested }.getOrDefault(false)
+    }
+
+    private fun writeRevision(target: File, revision: String?) {
+        val value = revision?.trim().orEmpty()
+        if (value.isEmpty()) return
+        val metadata = revisionFile(target)
+        val temporary = File(target.parentFile, ".pending-${UUID.randomUUID()}.meta")
+        try {
+            temporary.writeText(value, Charsets.UTF_8)
+            commitAtomic(temporary, metadata)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun copyAtomic(source: File, target: File) {
+        val temporary = File(target.parentFile, ".pending-artwork-${UUID.randomUUID()}.jpg")
+        try {
+            Files.copy(source.toPath(), temporary.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            if (temporary.length() <= 0L || temporary.length() > PlaybackArtworkPolicy.MAX_OUTPUT_BYTES) {
+                throw IllegalStateException("Artwork output is invalid")
+            }
+            commitAtomic(temporary, target)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun commitAtomic(temporary: File, target: File) {
+        try {
+            Files.move(
+                temporary.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (_: Throwable) {
+            // Same-directory rename is still atomic on Android filesystems. Do
+            // not delete the existing target if the replacement cannot commit.
+            if (!temporary.renameTo(target)) throw IllegalStateException("Artwork could not be committed")
+        }
+    }
+
     internal fun isSharedFallback(context: android.content.Context, path: String): Boolean {
         val root = runCatching { artworkRoot(context) }.getOrNull() ?: return false
-        return runCatching { File(path).canonicalFile == File(root, SHARED_FALLBACK_FILE).canonicalFile }.getOrDefault(false)
+        val legacy = runCatching { File(context.noBackupFilesDir, LEGACY_DIRECTORY).canonicalFile }.getOrNull()
+        return runCatching {
+            File(path).canonicalFile == File(root, SHARED_FALLBACK_FILE).canonicalFile ||
+                (legacy != null && File(path).canonicalFile == File(legacy, SHARED_FALLBACK_FILE).canonicalFile)
+        }.getOrDefault(false)
     }
 
     private fun sharedFallback(root: File): String? {

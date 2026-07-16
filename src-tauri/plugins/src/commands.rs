@@ -113,6 +113,22 @@ pub(crate) async fn control_audio<R: Runtime>(
 }
 
 #[command]
+pub(crate) async fn update_artwork<R: Runtime>(
+    app: AppHandle<R>,
+    payload: UpdateArtworkRequest,
+) -> Result<PlaybackStatus> {
+    app.mobile_runtime().update_artwork(payload)
+}
+
+#[command]
+pub(crate) async fn prune_artwork_cache<R: Runtime>(
+    app: AppHandle<R>,
+    payload: PruneArtworkCacheRequest,
+) -> Result<PlaybackStatus> {
+    app.mobile_runtime().prune_artwork_cache(payload)
+}
+
+#[command]
 pub(crate) async fn audio_status<R: Runtime>(app: AppHandle<R>) -> Result<PlaybackStatus> {
     app.mobile_runtime().audio_status()
 }

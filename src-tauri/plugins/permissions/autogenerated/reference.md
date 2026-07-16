@@ -318,6 +318,32 @@ Denies the play_audio command without any pre-configured scope.
 <tr>
 <td>
 
+`mobile-runtime:allow-prune-artwork-cache`
+
+</td>
+<td>
+
+Enables the prune_artwork_cache command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:deny-prune-artwork-cache`
+
+</td>
+<td>
+
+Denies the prune_artwork_cache command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `mobile-runtime:allow-read-document-chunk`
 
 </td>
@@ -415,6 +441,32 @@ Enables the synthesize command without any pre-configured scope.
 <td>
 
 Denies the synthesize command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:allow-update-artwork`
+
+</td>
+<td>
+
+Enables the update_artwork command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`mobile-runtime:deny-update-artwork`
+
+</td>
+<td>
+
+Denies the update_artwork command without any pre-configured scope.
 
 </td>
 </tr>

@@ -15,7 +15,6 @@ internal object PlaybackArtworkPolicy {
         "image/png",
         "image/webp",
         "image/gif",
-        "image/svg+xml",
     )
 
     fun normalizeMimeType(value: String?): String? {

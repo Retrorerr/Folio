@@ -214,8 +214,24 @@ pub struct PlayAudioRequest {
     pub description: Option<String>,
     pub artwork_base64: Option<String>,
     pub artwork_mime_type: Option<String>,
+    pub artwork_revision: Option<String>,
     pub position_ms: Option<u64>,
     pub mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateArtworkRequest {
+    pub book_id: String,
+    pub artwork_base64: Option<String>,
+    pub artwork_mime_type: Option<String>,
+    pub artwork_revision: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneArtworkCacheRequest {
+    pub book_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

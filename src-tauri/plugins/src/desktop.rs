@@ -88,6 +88,14 @@ impl<R: Runtime> MobileRuntime<R> {
         Err(crate::Error::Unsupported)
     }
 
+    pub fn update_artwork(&self, _payload: UpdateArtworkRequest) -> crate::Result<PlaybackStatus> {
+        Err(crate::Error::Unsupported)
+    }
+
+    pub fn prune_artwork_cache(&self, _payload: PruneArtworkCacheRequest) -> crate::Result<PlaybackStatus> {
+        Err(crate::Error::Unsupported)
+    }
+
     pub fn audio_status(&self) -> crate::Result<PlaybackStatus> {
         Err(crate::Error::Unsupported)
     }

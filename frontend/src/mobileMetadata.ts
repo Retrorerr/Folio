@@ -28,6 +28,15 @@ export function normalizeCoverMediaType(value: string | null | undefined): strin
   return null
 }
 
+/** URI decoding must not turn a malformed EPUB filename into an import failure. */
+export function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
 /**
  * Selects an EPUB cover using the specification's conservative precedence.
  * The parser supplies only candidates whose bytes are present and within its

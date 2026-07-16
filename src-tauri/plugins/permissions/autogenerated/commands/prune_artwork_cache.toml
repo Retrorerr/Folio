@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-prune-artwork-cache"
+description = "Enables the prune_artwork_cache command without any pre-configured scope."
+commands.allow = ["prune_artwork_cache"]
+
+[[permission]]
+identifier = "deny-prune-artwork-cache"
+description = "Denies the prune_artwork_cache command without any pre-configured scope."
+commands.deny = ["prune_artwork_cache"]

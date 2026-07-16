@@ -19,6 +19,7 @@ const {
   buildNativePlaybackMetadata,
   chooseEpubCoverCandidate,
   normalizeCoverMediaType,
+  safeDecodeURIComponent,
 } = await loadTypeScriptModule('../src/mobileMetadata.ts')
 
 test('cover selection gives EPUB3 metadata precedence over legacy and filename guesses', () => {
@@ -76,4 +77,9 @@ test('metadata clamps stale queue positions and supplies safe defaults', () => {
   assert.equal(metadata.sentenceCount, 0)
   assert.equal(metadata.chunkProgress, 0.98)
   assert.equal(metadata.description, 'Chapter 1 · EPUB')
+})
+
+test('malformed EPUB path encoding falls back to the original path', () => {
+  assert.equal(safeDecodeURIComponent('images%2Fcover.jpg'), 'images/cover.jpg')
+  assert.equal(safeDecodeURIComponent('images%2Fcover%ZZ.jpg'), 'images%2Fcover%ZZ.jpg')
 })

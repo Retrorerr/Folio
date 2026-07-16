@@ -10,7 +10,7 @@ class PlaybackArtworkPolicyTest {
     fun normalizesOnlySupportedArtworkTypes() {
         assertEquals("image/jpeg", PlaybackArtworkPolicy.normalizeMimeType(" IMAGE/JPG "))
         assertEquals("image/png", PlaybackArtworkPolicy.normalizeMimeType("image/png"))
-        assertEquals("image/svg+xml", PlaybackArtworkPolicy.normalizeMimeType("image/svg+xml"))
+        assertEquals(null, PlaybackArtworkPolicy.normalizeMimeType("image/svg+xml"))
         assertEquals(null, PlaybackArtworkPolicy.normalizeMimeType("image/bmp"))
     }
 
