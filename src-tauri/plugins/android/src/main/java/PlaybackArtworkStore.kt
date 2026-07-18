@@ -44,17 +44,17 @@ internal object PlaybackArtworkStore {
                 val fallbackPath = isSharedFallback(appContext, reusable.absolutePath)
                 if (isCacheFile(appContext, reusable) && !fallbackPath &&
                     (input.isEmpty() || revisionMatches(reusable, revision))) {
-                    return reusable.canonicalPath
+                    return touch(reusable)
                 }
                 if (isLegacyFile(appContext, reusable) && input.isEmpty()) {
                     copyAtomic(reusable, target)
                     writeRevision(target, revision)
-                    return target.absolutePath
+                    return touch(target)
                 }
             }
-            if (isValidArtwork(target) && revisionMatches(target, revision)) return target.absolutePath
+            if (isValidArtwork(target) && revisionMatches(target, revision)) return touch(target)
             if (input.isEmpty()) {
-                if (isValidArtwork(target)) return target.absolutePath
+                if (isValidArtwork(target)) return touch(target)
                 return fallback()
             }
 
@@ -64,7 +64,7 @@ internal object PlaybackArtworkStore {
                 input.length > PlaybackArtworkPolicy.MAX_ENCODED_CHARS ||
                 PlaybackArtworkPolicy.approximateDecodedBytes(input) > PlaybackArtworkPolicy.MAX_INPUT_BYTES
             ) {
-                return if (isValidArtwork(target)) target.absolutePath else fallback()
+                return if (isValidArtwork(target)) touch(target) else fallback()
             }
 
             val bytes = try {
@@ -73,14 +73,14 @@ internal object PlaybackArtworkStore {
                 null
             }
             if (bytes == null || bytes.isEmpty() || bytes.size.toLong() > PlaybackArtworkPolicy.MAX_INPUT_BYTES) {
-                return if (isValidArtwork(target)) target.absolutePath else fallback()
+                return if (isValidArtwork(target)) touch(target) else fallback()
             }
 
-            val bitmap = decode(bytes) ?: return if (isValidArtwork(target)) target.absolutePath else fallback()
+            val bitmap = decode(bytes) ?: return if (isValidArtwork(target)) touch(target) else fallback()
             return try {
                 writeAtomic(target, bitmap)
                 writeRevision(target, revision)
-                target.absolutePath
+                touch(target)
             } finally {
                 bitmap.recycle()
             }
@@ -209,7 +209,7 @@ internal object PlaybackArtworkStore {
         val target = File(root, "artwork-${PlaybackArtworkPolicy.artworkKey(bookId)}.jpg")
         return runCatching {
             if (!isValidArtwork(target)) copyAtomic(source, target)
-            target.absolutePath
+            touch(target)
         }.getOrNull()
     }
 
@@ -218,7 +218,7 @@ internal object PlaybackArtworkStore {
         if (value.isEmpty()) return null
         if (isSharedFallback(context, value)) return runCatching { sharedFallback(artworkRoot(context)) }.getOrNull()
         val file = File(value)
-        if (isCacheFile(context, file) && isValidArtwork(file)) return file.canonicalPath
+        if (isCacheFile(context, file) && isValidArtwork(file)) return touch(file)
         return migrateLegacyPath(context, bookId, value)
     }
 
@@ -301,6 +301,11 @@ internal object PlaybackArtworkStore {
     private fun sharedFallback(root: File): String? {
         val target = File(root, SHARED_FALLBACK_FILE)
         return if (isValidArtwork(target)) target.absolutePath else writeFallback(target)
+    }
+
+    private fun touch(target: File): String {
+        target.setLastModified(System.currentTimeMillis())
+        return target.canonicalPath
     }
 
     private fun isOwned(context: android.content.Context, file: File): Boolean {

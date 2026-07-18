@@ -1030,6 +1030,15 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
         result.put("sessionId", status.sessionId)
         result.put("enqueuedSessionId", status.enqueuedSessionId)
         result.put("queueSessionIds", JSONArray(status.queueSessionIds))
+        result.put("queueLocations", JSONArray().apply {
+            status.queueLocations.forEach { location ->
+                put(JSONObject()
+                    .put("sessionId", location.sessionId)
+                    .put("bookId", location.bookId)
+                    .put("chapterIndex", location.chapterIndex)
+                    .put("sentenceIndex", location.sentenceIndex))
+            }
+        })
         result.put("currentIndex", status.currentIndex)
         result.put("queueSize", status.queueSessionIds.size)
         result.put("error", status.error ?: JSONObject.NULL)

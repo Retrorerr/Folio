@@ -19,6 +19,8 @@ const {
   buildNativePlaybackMetadata,
   chooseEpubCoverCandidate,
   normalizeCoverMediaType,
+  metadataRepairEligible,
+  safeRepairedToc,
   safeDecodeURIComponent,
 } = await loadTypeScriptModule('../src/mobileMetadata.ts')
 
@@ -82,4 +84,19 @@ test('metadata clamps stale queue positions and supplies safe defaults', () => {
 test('malformed EPUB path encoding falls back to the original path', () => {
   assert.equal(safeDecodeURIComponent('images%2Fcover.jpg'), 'images/cover.jpg')
   assert.equal(safeDecodeURIComponent('images%2Fcover%ZZ.jpg'), 'images%2Fcover%ZZ.jpg')
+})
+
+test('explicit re-import retries an attempted repair while successful revisions remain idempotent', () => {
+  const attempted = { format: 'epub', metadata_revision: '0', metadata_repair_attempted_revision: '2' }
+  assert.equal(metadataRepairEligible(attempted, '2', false), false)
+  assert.equal(metadataRepairEligible(attempted, '2', true), true)
+  assert.equal(metadataRepairEligible({ format: 'epub', metadata_revision: '2' }, '2', true), false)
+})
+
+test('repaired TOC is accepted only when every readable chapter maps inside page_count', () => {
+  assert.deepEqual(safeRepairedToc([{ title: 'One', page: 0 }, { title: 'Two', page: 1 }], 2), [
+    { title: 'One', page: 0 }, { title: 'Two', page: 1 },
+  ])
+  assert.equal(safeRepairedToc([{ title: 'One', page: 0 }, { title: 'Ghost', page: 2 }], 2), null)
+  assert.equal(safeRepairedToc([{ title: 'Only', page: 0 }], 2), null)
 })

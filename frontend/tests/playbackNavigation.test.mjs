@@ -20,6 +20,7 @@ const {
   classifyNativeQueueProgress,
   formatPlaybackTime,
   findAdjacentReadablePosition,
+  isSpeakableText,
   rememberBoundedSetEntry,
   setBoundedMapEntry,
 } = await loadTypeScriptModule('../src/hooks/audioPlaybackState.ts')
@@ -41,6 +42,12 @@ test('sentence skipping crosses empty pages in both directions', async () => {
 
   const previous = await findAdjacentReadablePosition(getPage, 2, 0, -1, pages.length)
   assert.deepEqual({ page: previous.page, sentence: previous.sentence }, { page: 0, sentence: 0 })
+})
+
+test('punctuation-only layout separators are never sent to native TTS', () => {
+  assert.equal(isSpeakableText('. . .'), false)
+  assert.equal(isSpeakableText('—'), false)
+  assert.equal(isSpeakableText('Chapter 2'), true)
 })
 
 test('bounded playback caches evict the least-recently-used entry', () => {

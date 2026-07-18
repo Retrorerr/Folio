@@ -149,4 +149,29 @@ class PlaybackQueueStateTest {
         assertEquals("book-a", appended.state.items[1].bookId)
         assertEquals(first.artworkPath, appended.state.items[1].artworkPath)
     }
+
+    @Test
+    fun queueLocationsExposeEveryPersistedBookChapterAndSentence() {
+        val first = item(40).copy(bookId = "book-a", chapterIndex = 3, sentenceIndex = 8)
+        val second = item(41).copy(bookId = "book-a", chapterIndex = 4, sentenceIndex = 1)
+        val state = PlaybackQueueState(
+            items = listOf(first, second),
+            currentSessionId = 40,
+            nextSessionId = 41,
+        )
+
+        assertEquals(
+            listOf(
+                PlaybackQueueLocation(40, "book-a", 3, 8),
+                PlaybackQueueLocation(41, "book-a", 4, 1),
+            ),
+            state.queueLocations(),
+        )
+    }
+
+    @Test
+    fun legacyQueueItemsProduceSafeLocationDefaults() {
+        val state = PlaybackQueueState(items = listOf(item(42)), currentSessionId = 42, nextSessionId = 42)
+        assertEquals(PlaybackQueueLocation(42, "", 0, 0), state.queueLocations().single())
+    }
 }

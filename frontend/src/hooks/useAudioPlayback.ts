@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { apiFetch, apiResourceUrl, isAndroidRuntime } from '../api'
-import { mobileAudioStatus, mobileControlAudio, mobileStartAudio } from '../mobileApi'
+import { mobileAudioStatus, mobileControlAudio, mobileStartAudio, type NativeQueueLocation } from '../mobileApi'
 import { buildNativePlaybackMetadata } from '../mobileMetadata'
 import {
   clampSpeedForEngine,
@@ -12,7 +12,8 @@ import {
   normalizeVoiceForEngine,
 } from '../ttsVoices'
 import type { AudioInfo, BookState, PageText, Position, PreloadState, TtsGenerateResponse } from '../types'
-import { classifyNativeQueueProgress, fillSpectrumLevels, findAdjacentReadablePosition, rememberBoundedSetEntry, setBoundedMapEntry } from './audioPlaybackState'
+import { fillSpectrumLevels, findAdjacentReadablePosition, isSpeakableText, rememberBoundedSetEntry, setBoundedMapEntry } from './audioPlaybackState'
+import { createNativePlaybackObserver, type NativePlaybackObservation, type NativePlaybackObserver } from '../nativePlaybackObserver'
 
 function dispatchModelRequired(engine, install) {
   if (typeof window === 'undefined') return
@@ -46,6 +47,7 @@ export type NativeSessionHydration = {
   chunkProgress?: number
   sessionId?: number
   queueSessionIds?: number[]
+  queueLocations?: NativeQueueLocation[]
   state?: string
 }
 export type AudioSpectrumSubscriber = (levels: Float32Array) => void
@@ -201,11 +203,25 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const nativeQueueByPositionRef = useRef(new Map<string, number>())
   const nativePositionBySessionRef = useRef(new Map<number, LeadPosition>())
   const nativeHydrationRequestRef = useRef(0)
+  const nativeHydrationOwnerRef = useRef<{ requestId: number; bookId: string } | null>(null)
   const nativeBookChangeGenerationRef = useRef(0)
+  const nativeObserverRef = useRef<NativePlaybackObserver | null>(null)
+  const restoredNativeAttachmentRef = useRef<{ bookId: string; sessionId: number } | null>(null)
+  const restoredContinuationEnabledRef = useRef(false)
+  const continueRestoredPlaybackRef = useRef<(location: NativePlaybackObservation['location']) => void>(() => {})
 
   const resetNativeQueueTracking = useCallback(() => {
     nativeQueueByPositionRef.current.clear()
     nativePositionBySessionRef.current.clear()
+  }, [])
+
+  const stopNativeObserver = useCallback((clearAttachment = true) => {
+    nativeObserverRef.current?.stop()
+    nativeObserverRef.current = null
+    if (clearAttachment) {
+      restoredNativeAttachmentRef.current = null
+      restoredContinuationEnabledRef.current = false
+    }
   }, [])
 
   const notifyAudioSpectrum = useCallback(() => {
@@ -300,6 +316,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     const generation = ++nativeBookChangeGenerationRef.current
     if (activeBookIdRef.current === bookId) return
     activeBookIdRef.current = bookId
+    stopNativeObserver()
     playbackSessionRef.current += 1
     audioCompletionRef.current?.settle('cancelled')
     metadataListenerCleanupRef.current?.()
@@ -339,7 +356,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
           return mobileControlAudio('stop').catch(() => {})
         })
     }
-  }, [bookId, publishChunkProgress, resetAudioSpectrum, resetNativeQueueTracking])
+  }, [bookId, publishChunkProgress, resetAudioSpectrum, resetNativeQueueTracking, stopNativeObserver])
 
   const setTtsEngine = useCallback((nextEngine) => {
     const normalized = normalizeTtsEngine(nextEngine)
@@ -426,6 +443,16 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       : null
     const previousSettings = lastAudioSettingsRef.current
     lastAudioSettingsRef.current = nextSettings
+    const applyingStoredSettings = Boolean(
+      !settingsReady &&
+      nextSettings &&
+      bookAudioSettings &&
+      nextSettings.bookId === bookId &&
+      nextSettings.engine === bookAudioSettings.engine &&
+      nextSettings.voice === bookAudioSettings.voice &&
+      Math.abs(nextSettings.speed - bookAudioSettings.speed) < 0.0001,
+    )
+    const restoringNativeSession = nativeHydrationOwnerRef.current?.bookId === bookId
 
     audioCacheRef.current.clear()
     readAheadAbortRef.current?.abort()
@@ -434,6 +461,8 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     setGenerationError('')
 
     if (
+      !applyingStoredSettings &&
+      !restoringNativeSession &&
       previousSettings &&
       nextSettings &&
       previousSettings.bookId === nextSettings.bookId &&
@@ -457,11 +486,12 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         cache: 'no-store',
       }).catch(() => {})
       if (isAndroidRuntime()) {
+        stopNativeObserver()
         resetNativeQueueTracking()
         void mobileControlAudio('stop').catch(() => {})
       }
     }
-  }, [book?.id, ttsEngine, voice, speed, resetNativeQueueTracking])
+  }, [book?.id, bookAudioSettings, bookId, settingsReady, ttsEngine, voice, speed, resetNativeQueueTracking, stopNativeObserver])
 
   useEffect(() => {
     const onAudioCacheCleared = () => {
@@ -844,19 +874,84 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     return await fetchPageText(page)
   }, [fetchPageText])
 
+  const rebuildNativeQueueTracking = useCallback((locations: NativeQueueLocation[] | null | undefined) => {
+    if (!Array.isArray(locations) || locations.length === 0) return
+    resetNativeQueueTracking()
+    locations.slice(0, LEAD_PREFETCH_SENTENCES + 4).forEach((location) => {
+      const sessionId = Math.max(0, Number(location.sessionId || 0))
+      if (!sessionId || (location.bookId && location.bookId !== activeBookIdRef.current)) return
+      const position = {
+        page: Math.max(0, Math.floor(Number(location.chapterIndex) || 0)),
+        sentence: Math.max(0, Math.floor(Number(location.sentenceIndex) || 0)),
+      }
+      nativeQueueByPositionRef.current.set(getCacheKey(position.page, position.sentence), sessionId)
+      nativePositionBySessionRef.current.set(sessionId, position)
+    })
+  }, [getCacheKey, resetNativeQueueTracking])
+
+  const applyRestoredNativeObservation = useCallback(async (
+    observation: NativePlaybackObservation,
+    ownerSessionId: number,
+    expectedBookId: string,
+  ): Promise<void> => {
+    if (playbackSessionRef.current !== ownerSessionId || activeBookIdRef.current !== expectedBookId) return
+    rebuildNativeQueueTracking(observation.status.queueLocations)
+    const mapped = observation.location || nativePositionBySessionRef.current.get(observation.sessionId)
+    if (!book || !mapped || ('bookId' in mapped && mapped.bookId && mapped.bookId !== expectedBookId)) return
+    const mappedPage = 'page' in mapped ? mapped.page : mapped.chapterIndex
+    const page = Math.min(Math.max(0, mappedPage), Math.max(0, book.page_count - 1))
+    const loaded = page === currentPageRef.current && pageDataRef.current
+      ? pageDataRef.current
+      : await goToPage(page) || await getPageData(page)
+    if (playbackSessionRef.current !== ownerSessionId || activeBookIdRef.current !== expectedBookId || !loaded) return
+    const sentenceCount = loaded.sentences?.length || 0
+    const rawSentence = 'sentence' in mapped ? mapped.sentence : mapped.sentenceIndex
+    const sentence = Math.min(Math.max(0, Math.floor(Number(rawSentence) || 0)), Math.max(0, sentenceCount - 1))
+    const locationChanged = readingPageRef.current !== page || currentSentenceRef.current !== sentence
+    currentSentenceRef.current = sentence
+    setCurrentSentence(sentence)
+    readingPageRef.current = page
+    setReadingPage(page)
+    setReadingSentenceCount(sentenceCount)
+    pendingStartProgressRef.current = observation.progress
+    publishChunkProgress(observation.progress, locationChanged)
+    const nativePlaying = observation.status.state === 'playing' || observation.status.state === 'preparing'
+    if (nativePlaying && restoredNativeAttachmentRef.current?.bookId === expectedBookId) {
+      restoredContinuationEnabledRef.current = true
+    }
+    isPlayingRef.current = nativePlaying
+    setIsPlaying(nativePlaying)
+    setIsGenerating(false)
+    setBufferState(nativePlaying
+      ? { ...idleBufferState(), state: 'playing', current: { page, sentence }, updatedAt: Date.now() }
+      : idleBufferState())
+    if (locationChanged) {
+      void Promise.resolve(savePosition(page, sentence, { chunk_progress: observation.progress })).catch(() => {})
+    }
+  }, [book, getPageData, goToPage, publishChunkProgress, rebuildNativeQueueTracking, savePosition])
+
   /** Hydrates the live playback hook from the authoritative native queue. */
   const hydrateNativeSession = useCallback(async (target: NativeSessionHydration): Promise<boolean> => {
-    if (!book || book.id !== target.bookId) return false
+    if (!book || book.id !== target.bookId) {
+      return false
+    }
     const requestId = ++nativeHydrationRequestRef.current
+    nativeHydrationOwnerRef.current = { requestId, bookId: target.bookId }
+    try {
     const page = Math.min(
       Math.max(0, Math.floor(Number(target.page) || 0)),
       Math.max(0, book.page_count - 1),
     )
     const loaded = page === currentPageRef.current && pageDataRef.current
       ? pageDataRef.current
-      : await goToPage(page)
-    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId || !loaded) return false
-    const sentenceCount = loaded.sentences?.length || 0
+      : await goToPage(page) || await getPageData(page)
+    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId) {
+      return false
+    }
+    // Page text can still be opening from IndexedDB on a cold WebView. Attach
+    // to Media3 now; the observer retries this same lightweight page read and
+    // publishes the exact sentence as soon as text becomes available.
+    const sentenceCount = loaded?.sentences?.length || Math.max(1, Math.floor(Number(target.sentence) || 0) + 1)
     const sentence = Math.min(Math.max(0, Math.floor(Number(target.sentence) || 0)), Math.max(0, sentenceCount - 1))
     const progress = clampProgress(target.chunkProgress)
     currentSentenceRef.current = sentence
@@ -866,6 +961,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     setReadingSentenceCount(sentenceCount)
     pendingStartProgressRef.current = progress
     publishChunkProgress(progress, true)
+    rebuildNativeQueueTracking(target.queueLocations)
     if (target.sessionId && target.sessionId > 0) {
       const key = getCacheKey(page, sentence)
       const activeIds = new Set((target.queueSessionIds || []).map((value) => Number(value)).filter((value) => value > 0))
@@ -879,14 +975,74 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       nativePositionBySessionRef.current.set(Number(target.sessionId), { page, sentence })
     }
     const nativePlaying = target.state === 'playing' || target.state === 'preparing'
+    playbackSettingsKeyRef.current = `${target.bookId}|${ttsEngine}|${voice}|${speed}`
     isPlayingRef.current = nativePlaying
     setIsPlaying(nativePlaying)
     setIsGenerating(false)
     setBufferState(nativePlaying ? { ...idleBufferState(), state: 'playing', current: { page, sentence }, updatedAt: Date.now() } : idleBufferState())
-    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId) return false
+    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId) {
+      return false
+    }
     await savePosition(page, sentence, { chunk_progress: progress })
-    return requestId === nativeHydrationRequestRef.current && activeBookIdRef.current === target.bookId
-  }, [book, getCacheKey, goToPage, publishChunkProgress, savePosition])
+    if (requestId !== nativeHydrationRequestRef.current || activeBookIdRef.current !== target.bookId) {
+      return false
+    }
+
+    // A notification can be tapped while this WebView already owns the same
+    // native session. Its existing observer is already authoritative; turning
+    // that into a restored attachment would strand startPlayback's promise.
+    if (
+      nativeObserverRef.current &&
+      audioCompletionRef.current &&
+      Number(target.sessionId || 0) > 0 &&
+      nativePositionBySessionRef.current.has(Number(target.sessionId))
+    ) {
+      return true
+    }
+
+    stopNativeObserver()
+    restoredContinuationEnabledRef.current = nativePlaying
+    const ownerSessionId = ++playbackSessionRef.current
+    restoredNativeAttachmentRef.current = { bookId: target.bookId, sessionId: Number(target.sessionId || 0) }
+    const observer: NativePlaybackObserver = createNativePlaybackObserver({
+      readStatus: mobileAudioStatus,
+      initialSessionId: Number(target.sessionId || 0),
+      initialProgress: progress,
+      expectedBookId: target.bookId,
+      keepPaused: true,
+      stopOnSessionChange: false,
+      onObservation: (observation) => applyRestoredNativeObservation(observation, ownerSessionId, target.bookId),
+      onProgress: (nextProgress) => {
+        if (playbackSessionRef.current === ownerSessionId && activeBookIdRef.current === target.bookId) {
+          publishChunkProgress(nextProgress)
+        }
+      },
+      onTerminal: (terminal, observation, error) => {
+        if (nativeObserverRef.current !== observer || playbackSessionRef.current !== ownerSessionId) return
+        nativeObserverRef.current = null
+        restoredNativeAttachmentRef.current = null
+        resetNativeQueueTracking()
+        if (terminal === 'finished' && restoredContinuationEnabledRef.current) {
+          restoredContinuationEnabledRef.current = false
+          continueRestoredPlaybackRef.current(observation?.location || null)
+          return
+        }
+        isPlayingRef.current = false
+        setIsPlaying(false)
+        setIsGenerating(false)
+        setBufferState(idleBufferState())
+        if (terminal === 'error') setGenerationError(error instanceof Error ? error.message : 'Android audio playback failed.')
+      },
+    })
+    nativeObserverRef.current = observer
+    observer.start()
+    return true
+    } finally {
+      if (nativeHydrationOwnerRef.current?.requestId === requestId) {
+        nativeHydrationOwnerRef.current = null
+      }
+    }
+  }, [applyRestoredNativeObservation, book, getCacheKey, getPageData, goToPage, publishChunkProgress, rebuildNativeQueueTracking, resetNativeQueueTracking, savePosition, speed, stopNativeObserver, ttsEngine, voice])
 
   const findNextReadablePosition = useCallback(async (page, sentence) => {
     if (!book) return null
@@ -900,8 +1056,10 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         sentenceIdx = 0
         continue
       }
-      if (sentenceIdx < data.sentences.length) {
-        return { page: pageNum, sentence: sentenceIdx, pageData: data }
+      while (sentenceIdx < data.sentences.length) {
+        const text = data.sentences[sentenceIdx]?.text || ''
+        if (isSpeakableText(text)) return { page: pageNum, sentence: sentenceIdx, pageData: data }
+        sentenceIdx += 1
       }
       pageNum += 1
       sentenceIdx = 0
@@ -930,7 +1088,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       }
 
       while (sentenceIdx < data.sentences.length && positions.length < count) {
-        if (data.sentences[sentenceIdx]?.text?.trim()) {
+        if (isSpeakableText(data.sentences[sentenceIdx]?.text)) {
           positions.push({ page: pageNum, sentence: sentenceIdx })
         }
         sentenceIdx += 1
@@ -1127,31 +1285,13 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   ) => {
     return new Promise<AudioPlaybackResult>((resolve) => {
       let settled = false
-      let pollTimer: ReturnType<typeof setTimeout> | null = null
-      let progressFrame: number | null = null
-      let nativeSessionId = 0
-      let nativeSample = {
-        current: false,
-        positionMs: Math.max(0, startProgress * Number(audioInfo.duration_ms || 0)),
-        durationMs: Number(audioInfo.duration_ms || 0),
-        sampledAt: typeof performance !== 'undefined' ? performance.now() : Date.now(),
-      }
-
-      const paintProgress = () => {
-        if (settled) return
-        if (nativeSample.current && nativeSample.durationMs > 0) {
-          const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
-          const estimatedPosition = nativeSample.positionMs + Math.max(0, now - nativeSample.sampledAt)
-          publishChunkProgress(clampProgress(estimatedPosition / nativeSample.durationMs))
-        }
-        progressFrame = requestAnimationFrame(paintProgress)
-      }
+      let observer: NativePlaybackObserver | null = null
 
       const finish = (result: AudioPlaybackResult) => {
         if (settled) return
         settled = true
-        if (pollTimer) clearTimeout(pollTimer)
-        if (progressFrame != null) cancelAnimationFrame(progressFrame)
+        observer?.stop()
+        if (nativeObserverRef.current === observer) nativeObserverRef.current = null
         if (audioCompletionRef.current?.sessionId === sessionId) audioCompletionRef.current = null
         resolve(result)
       }
@@ -1163,64 +1303,53 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       }
       audioCompletionRef.current = { sessionId, settle }
 
-      const poll = async () => {
-        if (settled) return
-        if (playbackSessionRef.current !== sessionId || !isPlayingRef.current) {
-          settle('cancelled')
-          return
-        }
-        try {
-          const status = await mobileAudioStatus()
-          const transition = classifyNativeQueueProgress(status.state, Number(status.sessionId || 0), nativeSessionId)
-          if (transition === 'current') {
-            const duration = Number(status.durationMs || audioInfo.duration_ms || 0)
-            const progress = duration > 0
-              ? clampProgress(Number(status.positionMs || 0) / duration)
-              : startProgress
-            nativeSample = {
-              current: status.state === 'playing',
-              positionMs: Math.max(0, Number(status.positionMs || 0)),
-              durationMs: duration,
-              sampledAt: typeof performance !== 'undefined' ? performance.now() : Date.now(),
-            }
-            publishChunkProgress(progress)
-          }
-          if (transition === 'advanced' || transition === 'finished') {
-            publishChunkProgress(1, true)
-            finish('done')
-            return
-          }
-          if (transition === 'error') {
-            setGenerationError(status.error || 'Android audio playback failed.')
-            finish('error')
-            return
-          }
-          if (transition === 'paused' || transition === 'stopped') {
-            finish(transition === 'paused' ? 'paused' : 'cancelled')
-            return
-          }
-          // Native playback owns timing. Sample it at a modest cadence and
-          // interpolate visual progress on requestAnimationFrame so the bridge
-          // is not hammered at 20Hz while the cursor still tracks smoothly.
-          pollTimer = setTimeout(() => { void poll() }, 160)
-        } catch (error) {
-          setGenerationError(error?.message || 'Android audio playback failed.')
-          finish('error')
-        }
-      }
-
       void prepareNativeQueue(audioInfo, position, leadPositions, sessionId, startProgress).then((preparedSessionId) => {
         if (settled) return
-        nativeSessionId = preparedSessionId
+        restoredNativeAttachmentRef.current = null
+        nativeObserverRef.current?.stop()
         publishChunkProgress(startProgress, true)
-        progressFrame = requestAnimationFrame(paintProgress)
-        pollTimer = setTimeout(() => { void poll() }, 20)
+        observer = createNativePlaybackObserver({
+          readStatus: mobileAudioStatus,
+          initialSessionId: preparedSessionId,
+          initialProgress: startProgress,
+          fallbackDurationMs: Number(audioInfo.duration_ms || 0),
+          expectedBookId: book?.id,
+          keepPaused: true,
+          stopOnSessionChange: true,
+          onObservation: (observation) => {
+            if (playbackSessionRef.current !== sessionId) {
+              settle('cancelled')
+              return
+            }
+            rebuildNativeQueueTracking(observation.status.queueLocations)
+            const nativePlaying = observation.status.state === 'playing' || observation.status.state === 'preparing'
+            isPlayingRef.current = nativePlaying
+            setIsPlaying(nativePlaying)
+            if (!nativePlaying) setBufferState(idleBufferState())
+          },
+          onProgress: (nextProgress) => publishChunkProgress(nextProgress),
+          onTerminal: (terminal, observation, error) => {
+            if (terminal === 'advanced' || terminal === 'finished') {
+              publishChunkProgress(1, true)
+              finish('done')
+            } else if (terminal === 'paused') {
+              finish('paused')
+            } else if (terminal === 'error') {
+              setGenerationError(observation?.status.error || (error instanceof Error ? error.message : 'Android audio playback failed.'))
+              finish('error')
+            } else {
+              finish('cancelled')
+            }
+          },
+        })
+        nativeObserverRef.current = observer
+        observer.start()
       }).catch((error) => {
         setGenerationError(error?.message || 'Android audio playback failed.')
         finish('error')
       })
     })
-  }, [prepareNativeQueue, publishChunkProgress, resetNativeQueueTracking])
+  }, [book?.id, prepareNativeQueue, publishChunkProgress, rebuildNativeQueueTracking, resetNativeQueueTracking])
 
   const playAudio = useCallback((audioInfo: AudioInfo, sessionId: number, startProgress = 0) => {
     return new Promise<AudioPlaybackResult>((resolve) => {
@@ -1459,12 +1588,16 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [attachAudioAnalysis, publishChunkProgress, resetAudioSpectrum, sampleAudioSpectrum])
 
   const startPlayback = useCallback(async (startPage, startSentence, startProgress = 0) => {
-    if (!book) return
+    if (!book) {
+      return
+    }
 
     // Keep model/install checks outside the active playback state machine. This
     // prevents a stale model response from presenting an import prompt or
     // turning a normal first-play failure into a bogus runtime interruption.
-    if (!(await ensureAndroidModelReady())) return
+    if (!(await ensureAndroidModelReady())) {
+      return
+    }
 
     const sessionId = ++playbackSessionRef.current
     let firstChunkProgress = clampProgress(startProgress)
@@ -1617,7 +1750,33 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [startPlayback])
 
   useEffect(() => {
+    continueRestoredPlaybackRef.current = (location) => {
+      if (!location) return
+      const page = location.chapterIndex
+      const sentence = location.sentenceIndex
+      void findNextReadablePosition(page, sentence + 1).then((next) => {
+        if (!next || activeBookIdRef.current !== bookId) {
+          isPlayingRef.current = false
+          setIsPlaying(false)
+          setBufferState(idleBufferState())
+          return
+        }
+        runPlayback(next.page, next.sentence)
+      })
+    }
+    return () => { continueRestoredPlaybackRef.current = () => {} }
+  }, [bookId, findNextReadablePosition, runPlayback])
+
+  useEffect(() => {
     if (!bookId || !settingsHydratedRef.current) return
+
+    // Hydration and the restored observer own the existing Media3 queue. The
+    // state updates they publish (including page/settings hydration) are not a
+    // new Play action and must never enter the settings-restart path below.
+    if (
+      nativeHydrationOwnerRef.current?.bookId === bookId ||
+      restoredNativeAttachmentRef.current?.bookId === bookId
+    ) return
 
     const settingsKey = `${bookId}|${ttsEngine}|${voice}|${speed}`
     if (playbackSettingsKeyRef.current === null || playbackSettingsKeyRef.current === settingsKey) {
@@ -1663,7 +1822,33 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [bookId, ttsEngine, voice, speed, readingPage, runPlayback, resetNativeQueueTracking])
 
   const play = useCallback(() => {
-    if (isPlayingRef.current) return
+    if (isPlayingRef.current) {
+      return
+    }
+    const attached = restoredNativeAttachmentRef.current
+    const ownsNativeSession = Boolean(
+      nativeObserverRef.current && (
+        (attached && attached.bookId === activeBookIdRef.current) || audioCompletionRef.current
+      ),
+    )
+    if (isAndroidRuntime() && ownsNativeSession) {
+      if (attached) restoredContinuationEnabledRef.current = true
+      isPlayingRef.current = true
+      setIsPlaying(true)
+      setBufferState({
+        ...idleBufferState(),
+        state: 'playing',
+        current: { page: readingPageRef.current ?? currentPageRef.current, sentence: currentSentenceRef.current },
+        updatedAt: Date.now(),
+      })
+      void mobileControlAudio('resume').catch((error) => {
+        isPlayingRef.current = false
+        setIsPlaying(false)
+        setBufferState(idleBufferState())
+        setGenerationError(error instanceof Error ? error.message : 'Android audio playback could not resume.')
+      })
+      return
+    }
     activateAudioAnalysis()
     const startProgress = pendingStartProgressRef.current || chunkProgressPublishRef.current.value || 0
     pendingStartProgressRef.current = 0
@@ -1677,6 +1862,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     const startProgress = clampProgress(options?.progress)
 
     cancelReadAhead(page, sentence)
+    stopNativeObserver()
     playbackSessionRef.current += 1
     isPlayingRef.current = false
     audioCompletionRef.current?.settle('cancelled')
@@ -1717,9 +1903,26 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     } else {
       queueReadAhead(page, sentence)
     }
-  }, [book, getPageData, goToPage, savePosition, runPlayback, publishChunkProgress, cancelReadAhead, queueReadAhead, resetNativeQueueTracking])
+  }, [book, getPageData, goToPage, savePosition, runPlayback, publishChunkProgress, cancelReadAhead, queueReadAhead, resetNativeQueueTracking, stopNativeObserver])
 
   const pause = useCallback(() => {
+    const attached = restoredNativeAttachmentRef.current
+    const ownsNativeSession = Boolean(
+      nativeObserverRef.current && (
+        (attached && attached.bookId === activeBookIdRef.current) || audioCompletionRef.current
+      ),
+    )
+    if (isAndroidRuntime() && ownsNativeSession) {
+      if (attached) restoredContinuationEnabledRef.current = false
+      isPlayingRef.current = false
+      setIsPlaying(false)
+      setIsGenerating(false)
+      setBufferState(idleBufferState())
+      pendingStartProgressRef.current = chunkProgressPublishRef.current.value || 0
+      void mobileControlAudio('pause').catch(() => {})
+      if (book) savePosition(readingPageRef.current ?? currentPageRef.current, currentSentenceRef.current, { chunk_progress: pendingStartProgressRef.current })
+      return
+    }
     playbackSessionRef.current += 1
     isPlayingRef.current = false
     audioCompletionRef.current?.settle('paused')
@@ -1744,6 +1947,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   }, [pause])
 
   const stop = useCallback(() => {
+    stopNativeObserver()
     pause()
     if (isAndroidRuntime()) {
       resetNativeQueueTracking()
@@ -1753,7 +1957,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     setCurrentSentence(0)
     pendingStartProgressRef.current = 0
     publishChunkProgress(0, true)
-  }, [pause, publishChunkProgress, resetNativeQueueTracking])
+  }, [pause, publishChunkProgress, resetNativeQueueTracking, stopNativeObserver])
 
   const skipSentence = useCallback(async (delta: number) => {
     if (!book || delta === 0) return
@@ -1784,6 +1988,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     // timers, not the (null) values captured at mount.
     return () => {
       playbackSessionRef.current += 1
+      stopNativeObserver()
       audioCompletionRef.current?.settle('cancelled')
       metadataListenerCleanupRef.current?.()
       metadataListenerCleanupRef.current = null
@@ -1808,7 +2013,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       spectrumSubscribers.clear()
       void audioGraph.context?.close().catch(() => {})
     }
-  }, [resetAudioSpectrum])
+  }, [resetAudioSpectrum, stopNativeObserver])
 
   useEffect(() => {
     if (typeof document === 'undefined' || document.documentElement.dataset.platform !== 'android') return
