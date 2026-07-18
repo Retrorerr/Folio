@@ -81,7 +81,10 @@ open class MainActivity : TauriActivity(), FolioSystemBarHost {
       .put("sentence", intent?.getIntExtra(FolioPlaybackService.EXTRA_SENTENCE_INDEX, 0) ?: 0)
       .put("chunkProgress", (intent?.getFloatExtra(FolioPlaybackService.EXTRA_CHUNK_PROGRESS, 0f) ?: 0f).coerceIn(0f, 0.98f))
       .put("locationUri", intent?.getStringExtra(FolioPlaybackService.EXTRA_LOCATION_URI).orEmpty())
-    val script = "window.dispatchEvent(new CustomEvent('folio:media-launch',{detail:${detail}}));"
+    // WebView creation precedes React mounting on a cold launch. Retain the
+    // newest launch hint on window as well as dispatching it so the frontend
+    // coordinator can consume it after its listener is installed.
+    val script = "window.__folioPendingMediaLaunch=${detail};window.dispatchEvent(new CustomEvent('folio:media-launch',{detail:${detail}}));"
     val webView = folioWebView
     if (webView == null) {
       pendingMediaLaunchIntent = intent

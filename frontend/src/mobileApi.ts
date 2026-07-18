@@ -1,7 +1,8 @@
 import { unzipSync } from 'fflate'
 import { clampSpeedForEngine, normalizeTtsEngine, normalizeVoiceForEngine } from './ttsVoices'
 import { applyAndroidPlatformMetrics, type AndroidPlatformMetrics } from './androidShell'
-import { chooseEpubCoverCandidate, normalizeCoverMediaType, safeDecodeURIComponent, type EpubCoverCandidate, type EpubCoverSource } from './mobileMetadata'
+import { chooseEpubCoverCandidate, metadataRepairEligible, normalizeCoverMediaType, safeDecodeURIComponent, safeRepairedToc, type EpubCoverCandidate, type EpubCoverSource } from './mobileMetadata'
+import { readResponseBytesBounded, recentArtworkBookIds } from './artworkPayload'
 import type {
   BookState,
   DashboardPayload,
@@ -225,7 +226,7 @@ async function getAllBooks(): Promise<BookState[]> {
   }
   try {
     booksCache = await booksLoadPromise
-    void mobilePruneArtworkCache(booksCache.map((entry) => entry.id)).catch(() => {})
+    void mobilePruneArtworkCache(recentArtworkBookIds(booksCache)).catch(() => {})
     scheduleMetadataRepair(booksCache)
     return booksCache
   } finally {
@@ -308,7 +309,7 @@ async function putBookStateCache(book: BookState): Promise<void> {
 }
 
 function metadataNeedsRepair(book: BookState): boolean {
-  return book.format === 'epub' && book.metadata_revision !== MOBILE_METADATA_REVISION && book.metadata_repair_attempted_revision !== MOBILE_METADATA_REVISION
+  return metadataRepairEligible(book, MOBILE_METADATA_REVISION, false)
 }
 
 function metadataTitleIsInferior(book: BookState, filename: string): boolean {
@@ -317,19 +318,25 @@ function metadataTitleIsInferior(book: BookState, filename: string): boolean {
   return !title || /^unknown(?: title)?$/i.test(title) || title === fallback
 }
 
-async function repairBookMetadata(book: BookState, bytes: Uint8Array, filename: string): Promise<BookState> {
-  if (!metadataNeedsRepair(book)) return book
+async function repairBookMetadata(
+  book: BookState,
+  bytes: Uint8Array,
+  filename: string,
+  options: { explicit?: boolean } = {},
+): Promise<BookState> {
+  if (!metadataRepairEligible(book, MOBILE_METADATA_REVISION, Boolean(options.explicit))) return book
   try {
     const metadata = extractEpubMetadata(bytes, filename)
     const existingSource = String(book.cover_source || '').toLowerCase()
     const useCover = Boolean(metadata.coverUrl) && (
       !book.cover_url || !existingSource || /fallback|cover-page/.test(existingSource)
     )
+    const repairedToc = safeRepairedToc(metadata.toc, book.page_count)
     const repaired: BookState = {
       ...book,
       title: metadataTitleIsInferior(book, filename) ? metadata.title : book.title,
       author: !normalizeText(book.author || '') || /^unknown$/i.test(book.author) ? metadata.author : book.author,
-      toc: (!Array.isArray(book.toc) || book.toc.length < 2) && metadata.toc.length > 0 ? metadata.toc : book.toc,
+      toc: (!Array.isArray(book.toc) || book.toc.length < 2) && repairedToc ? repairedToc : book.toc,
       cover_url: useCover ? metadata.coverUrl : book.cover_url,
       cover_source: useCover ? metadata.coverSource : book.cover_source,
       metadata_revision: MOBILE_METADATA_REVISION,
@@ -338,6 +345,7 @@ async function repairBookMetadata(book: BookState, bytes: Uint8Array, filename: 
     await putBookState(repaired)
     return repaired
   } catch {
+    if (options.explicit) return book
     // A revoked SAF grant or corrupt source must not make a usable book vanish.
     const attempted = { ...book, metadata_repair_attempted_revision: MOBILE_METADATA_REVISION }
     await putBookState(attempted).catch(() => {})
@@ -996,15 +1004,18 @@ function extractEpubMetadata(bytes: Uint8Array, filename: string): RepairedBookM
       properties: attributeByLocalName(item, 'properties'),
     })
   })
-  const toc = elementByLocalName(opf, 'itemref').map((item, page) => {
+  const toc: Array<{ title: string; page: number }> = []
+  elementByLocalName(opf, 'itemref').forEach((item, spineIndex) => {
     const entry = manifest.get(attributeByLocalName(item, 'idref'))
     const document = entry?.path && files[entry.path]
       ? new DOMParser().parseFromString(bytesToText(files[entry.path].subarray(0, Math.min(files[entry.path].byteLength, 2 * 1024 * 1024))), 'text/html')
       : null
+    const body = document?.body || document?.documentElement
+    if (!body || collectBlocks(body).length === 0) return
     const heading = document ? elementByLocalName(document, 'h1').concat(elementByLocalName(document, 'h2'))[0] : null
     const label = normalizeText(heading?.textContent || '') || normalizeText(document?.querySelector('title')?.textContent || '')
-    return { title: label || `Chapter ${page + 1}`, page }
-  }).filter((entry) => entry.title)
+    toc.push({ title: label || `Chapter ${spineIndex + 1}`, page: toc.length })
+  })
   const coverCandidate = discoverEpubCoverCandidate(opf, metadata, manifest, files, opfDir)
   const coverBytes = coverCandidate ? files[coverCandidate.path] : undefined
   const safeCoverMime = normalizeCoverMediaType(coverCandidate?.mediaType)
@@ -1508,6 +1519,13 @@ async function startChapterPreload(
   return { total: refs.length, queued: pending.length }
 }
 
+export type NativeQueueLocation = {
+  sessionId: number
+  bookId: string
+  chapterIndex: number
+  sentenceIndex: number
+}
+
 export type MobilePlaybackStatus = {
   state: 'idle' | 'preparing' | 'playing' | 'paused' | 'finished' | 'stopped' | 'error' | string
   positionMs: number
@@ -1515,6 +1533,7 @@ export type MobilePlaybackStatus = {
   sessionId: number
   enqueuedSessionId?: number
   queueSessionIds?: number[]
+  queueLocations?: NativeQueueLocation[]
   currentIndex?: number
   queueSize?: number
   error?: string | null
@@ -1632,7 +1651,7 @@ async function importBookBytes(
   const books = await getAllBooks()
   const existing = books.find((entry) => entry.id === id)
   if (existing) {
-    const repaired = await repairBookMetadata(existing, bytes, filename)
+    const repaired = await repairBookMetadata(existing, bytes, filename, { explicit: true })
     if (options.touchExisting) {
       repaired.last_opened_at = Date.now()
       await putBookState(repaired)
@@ -1749,8 +1768,8 @@ async function artworkUrlToPayload(url: string | null | undefined): Promise<{ ba
       if (!response.ok) return null
       const mimeType = normalizeCoverMediaType(response.headers.get('content-type'))
       if (!mimeType || mimeType === 'image/svg+xml') return null
-      const bytes = new Uint8Array(await response.arrayBuffer())
-      if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return null
+      const bytes = await readResponseBytesBounded(response, controller, 8 * 1024 * 1024)
+      if (bytes.byteLength === 0) return null
       const base64 = decodeBase64(bytes)
       return { base64, mimeType, revision: await artworkFingerprint(base64, mimeType) }
     } finally {
@@ -2010,6 +2029,7 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
     if (!book) return notFound('Book is no longer in the local library.')
     book.last_opened_at = Date.now()
     await putBookState(book)
+    void mobilePruneArtworkCache(recentArtworkBookIds(books, book.id)).catch(() => {})
     return jsonResponse(book)
   }
   if (url.pathname === '/api/cache/info') {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { AnimatePresence, MotionConfig, motion as m } from 'motion/react'
 import type {
@@ -43,6 +43,14 @@ import { isFolioTheme, resolveInitialTheme } from './systemTheme'
 import { performAndroidHaptic, syncAndroidSystemBars } from './androidShell'
 import './App.css'
 import { mobileAudioStatus, mobileControlAudio } from './mobileApi'
+import {
+  initialNativeResumeState,
+  NativeBookOpenRegistry,
+  nativeResumeReducer,
+  nativeResumeTargetFromStatus,
+  notificationResumeTarget,
+  type NativeResumeTarget,
+} from './nativeResumeCoordinator'
 
 const PAGE_TOTAL_DEBOUNCE_MS = 500
 const PAGE_TOTAL_STABILITY_MS = 6000
@@ -54,18 +62,6 @@ const APP_HEARTBEAT_THROTTLE_MS = 5_000
 const BACKEND_RESTART_THROTTLE_MS = 5_000
 const STARTUP_MINIMUM_MS = 480
 const STARTUP_ASSET_TIMEOUT_MS = 2200
-
-type NativeResumeTarget = {
-  bookId: string
-  page: number
-  sentence: number
-  chunkProgress: number
-  locationUri: string
-  sessionId: number
-  queueSessionIds: number[]
-  state: string
-  applied: boolean
-}
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number.parseFloat(String(value))
@@ -327,8 +323,6 @@ export default function App() {
     openBook, uploadBook, goToPage, savePosition, applyBookSettings, addBookmark, removeBookmark, closeBook, deleteBook,
   } = bookState
   const activeBookId = book?.id ?? null
-  const nativeResumeTargetRef = useRef<NativeResumeTarget | null>(null)
-  const nativeResumeOpenRef = useRef<string | null>(null)
 
   useEffect(() => {
     setHasSelectedReaderLine(false)
@@ -346,120 +340,117 @@ export default function App() {
   }, [backendReachable, openBook, pendingOpenFile])
 
   const audio = useAudioPlayback({ book, pageData, currentPage, goToPage, savePosition, applyBookSettings })
-  const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio } = audio
-  const [nativeResumeVersion, setNativeResumeVersion] = useState(0)
+  const { setVolume: setAudioVolume, seekToSentence, stop: stopAudio, hydrateNativeSession } = audio
+  const [nativeResume, dispatchNativeResume] = useReducer(nativeResumeReducer, initialNativeResumeState)
+  const nativeResumeRef = useRef(nativeResume)
+  const nativeOpenRegistryRef = useRef(new NativeBookOpenRegistry())
   const nativeResumeCheckedRef = useRef(false)
   const nativeResumeSequenceRef = useRef(0)
+  const nativeHydrationInFlightRef = useRef<number | null>(null)
 
-  const requestNativeResume = useCallback((value: Record<string, unknown>) => {
-    const bookId = String(value.bookId || '').trim()
-    if (!bookId) return
-    const requestId = ++nativeResumeSequenceRef.current
-    const target: NativeResumeTarget = {
-      bookId,
-      page: Math.max(0, Math.floor(Number(value.page) || 0)),
-      sentence: Math.max(0, Math.floor(Number(value.sentence) || 0)),
-      chunkProgress: clampNumber(value.chunkProgress, 0, 0.98, 0),
-      locationUri: String(value.locationUri || '').trim(),
-      sessionId: Math.max(0, Math.floor(Number(value.sessionId) || 0)),
-      queueSessionIds: Array.isArray(value.queueSessionIds)
-        ? value.queueSessionIds.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry > 0)
-        : [],
-      state: String(value.state || 'paused'),
-      applied: false,
+  useEffect(() => { nativeResumeRef.current = nativeResume }, [nativeResume])
+
+  const requestNativeResume = useCallback((target: NativeResumeTarget | null) => {
+    if (!target) return
+    dispatchNativeResume({ type: 'request', target, bookAlreadyOpen: activeBookId === target.bookId })
+  }, [activeBookId])
+
+  const stopNativeQueueIfStillStale = useCallback(async (target: NativeResumeTarget) => {
+    const status = await mobileAudioStatus().catch(() => null)
+    if (status?.bookId === target.bookId && Number(status.queueSize || status.queueSessionIds?.length || 0) > 0) {
+      await mobileControlAudio('stop').catch(() => {})
     }
-    nativeResumeTargetRef.current = target
-    setNativeResumeVersion((version) => version + 1)
-    if (book?.id === bookId) {
-      nativeResumeOpenRef.current = null
-      return
-    }
-    const openKey = `${bookId}|${target.locationUri}`
-    if (nativeResumeOpenRef.current === openKey) return
-    nativeResumeOpenRef.current = openKey
-    const open = async () => {
-      let opened = await openBook(target.locationUri || bookId)
-      if (!opened && target.locationUri && requestId === nativeResumeSequenceRef.current) {
-        opened = await openBook(bookId)
-      }
-      if (opened || requestId !== nativeResumeSequenceRef.current || nativeResumeOpenRef.current !== openKey) return
-      nativeResumeTargetRef.current = null
-      nativeResumeOpenRef.current = null
-      void mobileControlAudio('stop').catch(() => {})
-    }
-    void open().catch(() => {
-      if (requestId !== nativeResumeSequenceRef.current || nativeResumeOpenRef.current !== openKey) return
-      nativeResumeTargetRef.current = null
-      nativeResumeOpenRef.current = null
-      void mobileControlAudio('stop').catch(() => {})
-    })
-  }, [book?.id, openBook])
+  }, [])
 
   useEffect(() => {
     if (!isAndroidRuntime()) return
+    const launchWindow = window as Window & { __folioPendingMediaLaunch?: Record<string, unknown> }
+    const processMediaLaunch = (detail: Record<string, unknown> | undefined) => {
+      if (!detail || typeof detail !== 'object') return
+      void mobileAudioStatus().catch(() => null).then((status) => {
+        const requestId = ++nativeResumeSequenceRef.current
+        requestNativeResume(notificationResumeTarget(detail, status, requestId))
+      })
+    }
     const onMediaLaunch = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, unknown>>).detail
-      if (detail && typeof detail === 'object') requestNativeResume(detail)
+      launchWindow.__folioPendingMediaLaunch = undefined
+      processMediaLaunch(detail)
     }
     window.addEventListener('folio:media-launch', onMediaLaunch)
+    const pendingLaunch = launchWindow.__folioPendingMediaLaunch
+    launchWindow.__folioPendingMediaLaunch = undefined
+    processMediaLaunch(pendingLaunch)
     return () => window.removeEventListener('folio:media-launch', onMediaLaunch)
   }, [requestNativeResume])
 
   useEffect(() => {
     if (!isAndroidRuntime() || !backendReachable || !recentLoaded || nativeResumeCheckedRef.current) return
     nativeResumeCheckedRef.current = true
-    let cancelled = false
     void mobileAudioStatus()
       .then((status) => {
-        if (cancelled) return
-        const queueSize = Number(status.queueSize || status.queueSessionIds?.length || 0)
-        if (!status.bookId || queueSize <= 0) return
-        requestNativeResume({
-          bookId: status.bookId,
-          page: status.chapterIndex ?? 0,
-          sentence: status.sentenceIndex ?? 0,
-          chunkProgress: status.chunkProgress ?? 0,
-          locationUri: status.locationUri || '',
-          sessionId: status.sessionId,
-          queueSessionIds: status.queueSessionIds,
-          state: status.state,
-        })
+        const requestId = ++nativeResumeSequenceRef.current
+        requestNativeResume(nativeResumeTargetFromStatus(status, requestId, 'startup-status'))
       })
       .catch(() => {})
-    return () => { cancelled = true }
   }, [backendReachable, recentLoaded, requestNativeResume])
 
   useEffect(() => {
-    const target = nativeResumeTargetRef.current
-    if (!isAndroidRuntime() || !book || !target || target.applied || target.bookId !== book.id) return
-    target.applied = true
-    let cancelled = false
-    void audio.hydrateNativeSession({
+    const target = nativeResume.target
+    if (!isAndroidRuntime() || nativeResume.phase !== 'opening-book' || !target) return
+    void nativeOpenRegistryRef.current.open(
+      target,
+      () => nativeResumeRef.current.target,
+      openBook,
+    ).then((opened) => {
+      const current = nativeResumeRef.current
+      if (!current.target || current.target.bookId !== target.bookId) return
+      if (opened) {
+        dispatchNativeResume({ type: 'book-opened', requestId: current.target.requestId })
+        return
+      }
+      dispatchNativeResume({ type: 'failed', requestId: current.target.requestId, error: 'The saved book is no longer available.' })
+      void stopNativeQueueIfStillStale(current.target)
+    })
+  }, [nativeResume.phase, nativeResume.target, openBook, stopNativeQueueIfStillStale])
+
+  useEffect(() => {
+    const target = nativeResume.target
+    if (!isAndroidRuntime() || nativeResume.phase !== 'attaching-session' || !target || activeBookId !== target.bookId) return
+    const requestId = target.requestId
+    if (nativeHydrationInFlightRef.current === requestId) return
+    nativeHydrationInFlightRef.current = requestId
+    void hydrateNativeSession({
       bookId: target.bookId,
       page: target.page,
       sentence: target.sentence,
       chunkProgress: target.chunkProgress,
       sessionId: target.sessionId,
       queueSessionIds: target.queueSessionIds,
+      queueLocations: target.queueLocations,
       state: target.state,
     }).then((hydrated) => {
-      if (cancelled || nativeResumeTargetRef.current !== target) return
+      if (nativeResumeRef.current.target?.requestId !== requestId) return
       if (hydrated) {
-        nativeResumeTargetRef.current = null
-        nativeResumeOpenRef.current = null
+        dispatchNativeResume({ type: 'attached', requestId })
       } else {
-        nativeResumeTargetRef.current = null
-        nativeResumeOpenRef.current = null
-        void mobileControlAudio('stop').catch(() => {})
+        dispatchNativeResume({ type: 'failed', requestId, error: 'The saved narration location could not be restored.' })
+        void stopNativeQueueIfStillStale(target)
       }
     }).catch(() => {
-      if (!cancelled && nativeResumeTargetRef.current === target) {
-        nativeResumeTargetRef.current = null
-        void mobileControlAudio('stop').catch(() => {})
-      }
+      if (nativeResumeRef.current.target?.requestId !== requestId) return
+      dispatchNativeResume({ type: 'failed', requestId, error: 'The saved narration session could not be attached.' })
+      void stopNativeQueueIfStillStale(target)
+    }).finally(() => {
+      if (nativeHydrationInFlightRef.current === requestId) nativeHydrationInFlightRef.current = null
     })
-    return () => { cancelled = true }
-  }, [audio, book, nativeResumeVersion])
+  }, [activeBookId, hydrateNativeSession, nativeResume.phase, nativeResume.target, stopNativeQueueIfStillStale])
+
+  useEffect(() => {
+    if (nativeResume.phase === 'monitoring' && nativeResume.target && activeBookId && activeBookId !== nativeResume.target.bookId) {
+      dispatchNativeResume({ type: 'reset' })
+    }
+  }, [activeBookId, nativeResume.phase, nativeResume.target])
 
   const audioChunkProgressRef = useRef(0)
   const activeTtsStatus = ttsEngineStatus?.[audio.ttsEngine] || null

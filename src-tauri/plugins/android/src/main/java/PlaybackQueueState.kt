@@ -1,5 +1,12 @@
 package com.folio.reader.mobile
 
+data class PlaybackQueueLocation(
+    val sessionId: Long,
+    val bookId: String,
+    val chapterIndex: Int,
+    val sentenceIndex: Int,
+)
+
 internal data class PlaybackQueueItem(
     val sessionId: Long,
     val path: String,
@@ -143,6 +150,15 @@ internal data class PlaybackQueueState(
     }
 
     fun authoritativeCurrentItem(): PlaybackQueueItem? = currentItem?.copy(chunkProgress = authoritativeChunkProgress())
+
+    fun queueLocations(): List<PlaybackQueueLocation> = items.map { item ->
+        PlaybackQueueLocation(
+            sessionId = item.sessionId,
+            bookId = item.bookId,
+            chapterIndex = item.chapterIndex,
+            sentenceIndex = item.sentenceIndex,
+        )
+    }
 }
 
 internal data class PlaybackQueueMutation(

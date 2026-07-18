@@ -250,6 +250,8 @@ pub struct PlaybackStatus {
     pub session_id: u64,
     pub enqueued_session_id: u64,
     pub queue_session_ids: Vec<u64>,
+    #[serde(default)]
+    pub queue_locations: Vec<PlaybackQueueLocation>,
     pub current_index: u64,
     pub queue_size: u64,
     pub error: Option<String>,
@@ -262,6 +264,15 @@ pub struct PlaybackStatus {
     pub sentence_count: Option<u64>,
     pub chunk_progress: Option<f64>,
     pub location_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackQueueLocation {
+    pub session_id: u64,
+    pub book_id: String,
+    pub chapter_index: u64,
+    pub sentence_index: u64,
 }
 
 #[cfg(test)]
@@ -318,10 +329,30 @@ mod tests {
         .unwrap();
         assert_eq!(status.enqueued_session_id, 9);
         assert_eq!(status.queue_session_ids, vec![7, 8, 9]);
+        assert!(status.queue_locations.is_empty());
         assert_eq!(status.queue_size, 3);
         assert_eq!(status.book_id.as_deref(), Some("book-1"));
         assert_eq!(status.chapter_title.as_deref(), Some("Chapter one"));
         assert_eq!(status.location_uri.as_deref(), Some("android://book-1/chapter-3"));
+    }
+
+    #[test]
+    fn playback_queue_locations_use_camel_case_and_legacy_status_defaults_empty() {
+        let status: PlaybackStatus = serde_json::from_value(serde_json::json!({
+          "state": "playing", "positionMs": 25, "durationMs": 400,
+          "sessionId": 7, "enqueuedSessionId": 8, "queueSessionIds": [7, 8],
+          "queueLocations": [
+            { "sessionId": 7, "bookId": "book-1", "chapterIndex": 2, "sentenceIndex": 4 },
+            { "sessionId": 8, "bookId": "book-1", "chapterIndex": 3, "sentenceIndex": 0 }
+          ],
+          "currentIndex": 0, "queueSize": 2, "error": null
+        })).unwrap();
+        assert_eq!(status.queue_locations[1], PlaybackQueueLocation {
+            session_id: 8,
+            book_id: "book-1".into(),
+            chapter_index: 3,
+            sentence_index: 0,
+        });
     }
 
     #[test]

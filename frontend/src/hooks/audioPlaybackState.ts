@@ -35,8 +35,12 @@ export function formatPlaybackTime(seconds: number): string {
   return `${minutes}:${String(remainder).padStart(2, '0')}`
 }
 
+export function isSpeakableText(text: string | null | undefined): boolean {
+  return /[\p{L}\p{N}]/u.test(String(text || ''))
+}
+
 function sentenceIsReadable(pageData: PageText, sentence: number): boolean {
-  return Boolean(pageData.sentences?.[sentence]?.text?.trim())
+  return isSpeakableText(pageData.sentences?.[sentence]?.text)
 }
 
 export async function findAdjacentReadablePosition(

@@ -37,6 +37,26 @@ export function safeDecodeURIComponent(value: string): string {
   }
 }
 
+export function metadataRepairEligible(
+  book: { format?: string; metadata_revision?: string | null; metadata_repair_attempted_revision?: string | null },
+  revision: string,
+  explicit = false,
+): boolean {
+  if (book.format !== 'epub' || book.metadata_revision === revision) return false
+  return explicit || book.metadata_repair_attempted_revision !== revision
+}
+
+export function safeRepairedToc(
+  toc: Array<{ title: string; page: number }>,
+  pageCount: number,
+): Array<{ title: string; page: number }> | null {
+  const count = Math.max(0, Math.floor(Number(pageCount) || 0))
+  if (!count || toc.length !== count) return null
+  const normalized = toc.map((entry) => ({ title: String(entry.title || '').trim(), page: Math.floor(Number(entry.page)) }))
+  if (normalized.some((entry, index) => !entry.title || entry.page !== index || entry.page < 0 || entry.page >= count)) return null
+  return normalized
+}
+
 /**
  * Selects an EPUB cover using the specification's conservative precedence.
  * The parser supplies only candidates whose bytes are present and within its
