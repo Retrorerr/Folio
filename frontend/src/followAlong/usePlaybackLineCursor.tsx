@@ -171,37 +171,41 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
   }, [trace])
 
   const performRebuild = useCallback(() => {
-    rebuildFrameRef.current = null
-    const root = rootRef.current
-    if (!root || !bookId) return
+    function attemptBuild() {
+      rebuildFrameRef.current = null
+      const root = rootRef.current
+      if (!root || !bookId) return
 
-    const generation = generationRef.current + 1
-    generationRef.current = generation
-    const map = buildVisualLineMap({
-      root,
-      bookId,
-      chapterIndex,
-      generation,
-      pagesPerView,
-      pageStride,
-      layoutIdentity,
-    })
+      const generation = generationRef.current + 1
+      generationRef.current = generation
+      const map = buildVisualLineMap({
+        root,
+        bookId,
+        chapterIndex,
+        generation,
+        pagesPerView,
+        pageStride,
+        layoutIdentity,
+      })
 
-    if (map) {
-      commitMap(map)
-      return
+      if (map) {
+        commitMap(map)
+        return
+      }
+
+      rebuildAttemptRef.current += 1
+      trace('layout-build-failed', {
+        reason: rebuildReasonRef.current,
+        attempt: rebuildAttemptRef.current,
+      })
+      if (rebuildAttemptRef.current < MAX_BUILD_ATTEMPTS) {
+        rebuildFrameRef.current = requestAnimationFrame(attemptBuild)
+        return
+      }
+      dispatch({ type: 'UNAVAILABLE', reason: `layout:${rebuildReasonRef.current}` })
     }
 
-    rebuildAttemptRef.current += 1
-    trace('layout-build-failed', {
-      reason: rebuildReasonRef.current,
-      attempt: rebuildAttemptRef.current,
-    })
-    if (rebuildAttemptRef.current < MAX_BUILD_ATTEMPTS) {
-      rebuildFrameRef.current = requestAnimationFrame(performRebuild)
-      return
-    }
-    dispatch({ type: 'UNAVAILABLE', reason: `layout:${rebuildReasonRef.current}` })
+    attemptBuild()
   }, [bookId, chapterIndex, commitMap, layoutIdentity, pageStride, pagesPerView, rootRef, trace])
 
   const scheduleRebuild = useCallback((reason: string) => {
