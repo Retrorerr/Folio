@@ -1,0 +1,68 @@
+name: Apply follow-along cursor polish
+
+on:
+  push:
+    branches:
+      - agent/rebuild-follow-along-cursor
+    paths:
+      - .github/workflows/apply-follow-along-polish.yml
+      - scripts/apply-follow-along-polish.py
+
+permissions:
+  contents: write
+
+jobs:
+  polish-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out cursor branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/rebuild-follow-along-cursor
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Apply guarded polish
+        run: python scripts/apply-follow-along-polish.py
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Frontend tests
+        run: npm --prefix frontend test
+
+      - name: Typecheck
+        run: npm --prefix frontend run typecheck
+
+      - name: Lint
+        run: npm --prefix frontend run lint
+
+      - name: Production build
+        run: npm --prefix frontend run build
+
+      - name: Check patch whitespace
+        run: git diff --check
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name "folio-refactor-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add frontend/src/followAlong/playbackModel.ts \
+                  frontend/src/followAlong/visualLineMap.ts \
+                  frontend/src/followAlong/usePlaybackLineCursor.tsx \
+                  frontend/src/styles/reader.css \
+                  frontend/tests/followAlongPlayback.test.mjs
+          git commit -m "Polish follow-along cursor geometry and motion"
+          git push origin HEAD:agent/rebuild-follow-along-cursor
