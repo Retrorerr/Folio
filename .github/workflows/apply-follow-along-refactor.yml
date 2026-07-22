@@ -41,7 +41,6 @@ jobs:
             frontend/package-lock.json
 
       - name: Apply guarded migration
-        id: migrate
         shell: bash
         run: |
           set -o pipefail
@@ -49,23 +48,49 @@ jobs:
           python scripts/apply-follow-along-refactor.py 2>&1 | tee -a cursor-refactor-ci.log
 
       - name: Install dependencies
-        id: install
         shell: bash
         run: |
           set -o pipefail
           npm ci 2>&1 | tee -a cursor-refactor-ci.log
           npm --prefix frontend ci 2>&1 | tee -a cursor-refactor-ci.log
 
-      - name: Run focused and frontend validation
-        id: validate
+      - name: Frontend tests
         shell: bash
         run: |
           set -o pipefail
           npm --prefix frontend test 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Typecheck
+        shell: bash
+        run: |
+          set -o pipefail
           npm --prefix frontend run typecheck 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Lint
+        shell: bash
+        run: |
+          set -o pipefail
           npm --prefix frontend run lint 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Production build
+        shell: bash
+        run: |
+          set -o pipefail
           npm --prefix frontend run build 2>&1 | tee -a cursor-refactor-ci.log
           git diff --check 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Publish diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: follow-along-refactor-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            cursor-refactor-ci.log
+            frontend/src/components/ReflowViewer.tsx
+            frontend/src/followAlong
+            frontend/tests/followAlongPlayback.test.mjs
 
       - name: Commit validated implementation
         if: success()
@@ -79,14 +104,3 @@ jobs:
           git add -A
           git commit -m "Rebuild follow-along cursor architecture"
           git push origin HEAD:agent/rebuild-follow-along-cursor
-
-      - name: Publish failure log
-        if: failure()
-        shell: bash
-        run: |
-          git config user.name "folio-refactor-bot"
-          git config user.email "actions@users.noreply.github.com"
-          printf '\nWorkflow failed at %s\n' "$(date -u +%FT%TZ)" >> cursor-refactor-ci.log
-          git add cursor-refactor-ci.log
-          git commit -m "Record follow-along refactor validation failure" || true
-          git push origin HEAD:agent/rebuild-follow-along-cursor || true
