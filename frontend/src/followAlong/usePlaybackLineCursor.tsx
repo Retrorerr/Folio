@@ -54,7 +54,6 @@ const MAX_BUILD_ATTEMPTS = 2
 const STALE_CURSOR_GRACE_MS = 520
 const DOUBLE_TAP_MS = 340
 const DOUBLE_TAP_DISTANCE = 22
-const COLUMN_SNAP_DISTANCE = 96
 
 function debugEnabled(name: string, storageKey: string) {
   if (typeof window === 'undefined') return false
@@ -490,7 +489,7 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     dispatch({ type: 'CLEAR_HOVER' })
   }, [])
 
-  const handleLineDoubleClick = useCallback((event: ReactMouseEvent) => {
+  const handleLineClick = useCallback((event: ReactMouseEvent) => {
     if (androidRuntime || event.button !== 0 || isPageTurning) return
     event.preventDefault()
     selectLine(event.clientX, event.clientY)
@@ -559,13 +558,13 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     }
 
     const previous = lastPresentationRef.current
-    const discontinuous = cursorTransitionKind(previous, {
+    const movement = cursorTransitionKind(previous, {
       x: anchor.placement.x,
       generation: anchor.generation,
       column: anchor.placement.column,
       viewIndex: anchor.viewIndex,
-    }, COLUMN_SNAP_DISTANCE) === 'snap'
-    cursor.dataset.cursorPosition = discontinuous ? 'horizontal-snap' : 'smooth'
+    })
+    cursor.dataset.cursorPosition = movement
     cursor.dataset.cursorMode = mode === 'paused' || mode === 'waiting' ? 'playback' : mode
     cursor.style.transform = `translate3d(${anchor.placement.x}px, ${anchor.placement.y}px, 0)`
     cursor.style.width = `${anchor.placement.width}px`
@@ -580,13 +579,6 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
       generation: anchor.generation,
       column: anchor.placement.column,
       viewIndex: anchor.viewIndex,
-    }
-    if (discontinuous) {
-      requestAnimationFrame(() => {
-        if (cursor.isConnected && cursor.dataset.cursorPosition === 'horizontal-snap') {
-          cursor.dataset.cursorPosition = 'smooth'
-        }
-      })
     }
   }, [followState, isPageTurning])
 
@@ -669,7 +661,7 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     state: followState,
     handleLinePointerMove,
     handleLinePointerLeave,
-    handleLineDoubleClick,
+    handleLineClick,
     handleAndroidLinePointerDown,
     handleAndroidLinePointerUp,
     cancelAndroidLineTap,

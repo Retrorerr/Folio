@@ -31,6 +31,8 @@ type MutableLine = {
   left: number
   right: number
   tokenWeights: Map<number, number>
+  cursorTop?: number
+  cursorBottom?: number
 }
 
 export type BuildVisualLineMapOptions = {
@@ -236,7 +238,59 @@ function measureCanonicalParagraphLines(
   }
 }
 
-function applyDropCapGeometry(
+function applyLeadingGlyphGeometry(
+  sentence: Element,
+  tokens: WeightedToken[],
+  lines: MutableLine[],
+  flowRect: DOMRect,
+  scaleX: number,
+  scaleY: number,
+  pageStride: number,
+) {
+  for (const line of lines) {
+    const leadingFragment = [...line.fragments].sort((a, b) => a.left - b.left)[0]
+    const token = leadingFragment ? tokens[leadingFragment.tokenIndex] : null
+    if (!token) continue
+
+    const range = rangeForOffsets(sentence, token.start, token.end)
+    if (!range) continue
+    const candidates = Array.from(range.getClientRects()).map(rect => {
+      const localLeft = (rect.left - flowRect.left) / scaleX
+      const localRight = (rect.right - flowRect.left) / scaleX
+      const localTop = (rect.top - flowRect.top) / scaleY
+      const localBottom = (rect.bottom - flowRect.top) / scaleY
+      const centerX = (localLeft + localRight) / 2
+      const contentPage = Math.max(0, Math.floor((centerX + 0.01) / pageStride))
+      return {
+        contentPage,
+        left: localLeft - contentPage * pageStride,
+        top: localTop,
+        bottom: localBottom,
+        height: Math.max(0, localBottom - localTop),
+      }
+    }).filter(candidate => (
+      candidate.height > 0 &&
+      candidate.contentPage === line.contentPage &&
+      candidate.bottom >= line.top - 1 &&
+      candidate.top <= line.bottom + Math.max(2, line.bottom - line.top)
+    ))
+    range.detach?.()
+    if (!candidates.length) continue
+
+    // A drop cap can split the first token into a tall initial and a normal
+    // remainder. Choosing the tallest overlapping leading-glyph fragment lets
+    // the cursor breathe to the actual letter height. The same rule naturally
+    // handles chapter titles, subtitles, small caps, and mixed inline styles.
+    const leadingGlyph = candidates.reduce((best, candidate) => (
+      candidate.height > best.height ? candidate : best
+    ))
+    line.left = Math.min(line.left, leadingGlyph.left)
+    line.cursorTop = leadingGlyph.top
+    line.cursorBottom = leadingGlyph.bottom
+  }
+}
+
+function applyDropCapCursorGeometry(
   sentence: Element,
   lines: MutableLine[],
   flowRect: DOMRect,
@@ -245,22 +299,33 @@ function applyDropCapGeometry(
   pageStride: number,
 ) {
   const dropCap = sentence.querySelector('.drop-cap')
-  if (!dropCap || !lines.length) return
+  if (!dropCap) return
   const rect = dropCap.getBoundingClientRect()
   if (!rect.width || !rect.height) return
 
   const localLeft = (rect.left - flowRect.left) / scaleX
+  const localRight = (rect.right - flowRect.left) / scaleX
   const localTop = (rect.top - flowRect.top) / scaleY
   const localBottom = (rect.bottom - flowRect.top) / scaleY
-  const contentPage = Math.max(0, Math.floor((localLeft + 0.01) / pageStride))
-  const firstLine = lines.find(line => line.contentPage === contentPage && (
-    line.bottom >= localTop && line.top <= localBottom + (line.bottom - line.top)
-  ))
-  if (!firstLine) return
+  const centerX = (localLeft + localRight) / 2
+  const contentPage = Math.max(0, Math.floor((centerX + 0.01) / pageStride))
+  const pageLeft = localLeft - contentPage * pageStride
 
-  firstLine.left = Math.min(firstLine.left, localLeft - contentPage * pageStride)
-  firstLine.top = Math.min(firstLine.top, localTop)
-  firstLine.bottom = Math.max(firstLine.bottom, localBottom)
+  // The DOM Range around a floated initial includes its font line box, which
+  // can be considerably taller than the visible drop-cap element. Preserve
+  // ordinary line bounds for hit testing, but give every fragment of token 0
+  // the exact element box so selection and playback agree on its true height.
+  lines.forEach((line) => {
+    if (
+      line.contentPage !== contentPage ||
+      !line.tokenWeights.has(0) ||
+      line.bottom < localTop ||
+      line.top > localBottom
+    ) return
+    line.left = Math.min(line.left, pageLeft)
+    line.cursorTop = localTop
+    line.cursorBottom = localBottom
+  })
 }
 
 function computedLayoutKey(
@@ -333,7 +398,8 @@ export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLi
       }
       grouped = grouped.map(line => mergeWithCanonicalLineGeometry(line, canonicalLines || []))
     }
-    applyDropCapGeometry(sentence, grouped, flowRect, scaleX, scaleY, pageStride)
+    applyLeadingGlyphGeometry(sentence, tokens, grouped, flowRect, scaleX, scaleY, pageStride)
+    applyDropCapCursorGeometry(sentence, grouped, flowRect, scaleX, scaleY, pageStride)
 
     const weightedLines = assignVisualLineProgress(grouped.map(line => ({
       line,
@@ -360,6 +426,10 @@ export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLi
         pageY: line.top,
         lineWidth: Math.max(2, line.right - line.left),
         lineHeight: Math.max(2, line.bottom - line.top),
+        cursorPageY: line.cursorTop,
+        cursorLineHeight: line.cursorTop != null && line.cursorBottom != null
+          ? Math.max(2, line.cursorBottom - line.cursorTop)
+          : undefined,
         generation: options.generation,
       }
       lines.push(visualLine)

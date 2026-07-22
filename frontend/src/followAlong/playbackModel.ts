@@ -47,6 +47,8 @@ export type VisualLine = {
   pageY: number
   lineWidth: number
   lineHeight: number
+  cursorPageY?: number
+  cursorLineHeight?: number
   generation: number
 }
 
@@ -251,13 +253,12 @@ export function mergeWithCanonicalLineGeometry<T extends PhysicalLineGeometry>(
 export function cursorTransitionKind(
   previous: CursorPresentationSnapshot | null,
   next: CursorPresentationSnapshot,
-  maxHorizontalDistance = 96,
-): 'smooth' | 'snap' {
-  if (!previous) return 'snap'
-  if (previous.generation !== next.generation) return 'snap'
-  if (previous.viewIndex !== next.viewIndex) return 'snap'
-  if (previous.column !== next.column) return 'snap'
-  if (Math.abs(previous.x - next.x) > maxHorizontalDistance) return 'snap'
+): 'smooth' {
+  void previous
+  void next
+  // Every cursor relocation now uses the same continuous motion contract.
+  // Page turns still hide the cursor while the paper animation owns the view,
+  // but columns, headings, layout rebuilds, and resumed playback never snap.
   return 'smooth'
 }
 
@@ -275,8 +276,11 @@ export function placementForLine(
 
   const { rootContentX, rootContentY, scaleX, scaleY, pageStride } = map.metrics
   const x = rootContentX + (slot * pageStride + line.pageX - gutter) * scaleX
-  const y = rootContentY + (line.pageY - 2) * scaleY
-  const height = Math.max(18, (line.lineHeight + 4) * scaleY)
+  const usesMeasuredGlyph = Number.isFinite(line.cursorPageY) && Number.isFinite(line.cursorLineHeight)
+  const cursorPageY = usesMeasuredGlyph ? line.cursorPageY! : line.pageY - 2
+  const cursorLineHeight = usesMeasuredGlyph ? line.cursorLineHeight! : line.lineHeight + 4
+  const y = rootContentY + cursorPageY * scaleY
+  const height = Math.max(18, cursorLineHeight * scaleY)
 
   return {
     x: Math.max(0, x),

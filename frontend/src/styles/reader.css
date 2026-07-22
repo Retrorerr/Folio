@@ -2045,43 +2045,32 @@
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--paper) 35%, transparent),
     0 0 18px color-mix(in srgb, var(--ember-soft) 28%, transparent);
-  transition: opacity 110ms ease-out;
+  transition:
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 100ms ease-out;
   will-change: transform, height, opacity;
 }
 
 .reader-line-cursor[data-cursor-mode="playback"] {
   transition:
-    transform 235ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
     height 260ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 90ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="selected"] {
   transition:
-    transform 210ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 100ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="hover"] {
   transition:
-    transform 165ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 190ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 100ms ease-out;
-}
-
-.reader-line-cursor[data-cursor-mode="instant"] {
-  transition: opacity 90ms ease-out;
-}
-
-/* Horizontal gutter changes must never sweep across glyphs. Snap only the
-   transform while still letting the marker height breathe into/out of a drop
-   cap. The attribute is cleared on the next animation frame. */
-.reader-line-cursor[data-cursor-position="horizontal-snap"] {
-  transition:
-    transform 0ms linear,
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
     height 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 90ms ease-out;
+    opacity 100ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="turn-suppressed"],

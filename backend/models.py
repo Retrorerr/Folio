@@ -20,6 +20,7 @@ class BookMeta(BaseModel):
 class Position(BaseModel):
     page: int
     sentence_idx: int
+    narration_index_version: int | None = None
     content_page: int | None = None
     visual_page: int | None = None
     pages_per_view: int | None = None
@@ -32,6 +33,7 @@ class Bookmark(BaseModel):
     sentence_idx: int
     label: str = ""
     visual_page: int | None = None
+    narration_index_version: int | None = None
 
 class BookState(BaseModel):
     id: str
@@ -71,6 +73,9 @@ class SentenceInfo(BaseModel):
     words: list[WordInfo]
     audio_path: str | None = None
     duration_ms: float = 0
+    kind: str | None = None
+    pause_after_ms: int = 500
+    global_sentence_idx: int | None = None
 
 class PageText(BaseModel):
     page_number: int

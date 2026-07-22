@@ -24,6 +24,10 @@ import text_chunker
 
 logger = logging.getLogger(__name__)
 REFLOW_VERSION = f"reflow-v2.3-2026-05-12|chunker:{text_chunker.CHUNKER_VERSION}"
+NARRATION_INDEX_VERSION = 2
+DEFAULT_NARRATION_PAUSE_MS = 500
+HEADING_NARRATION_PAUSE_MS = 700
+SECTION_BREAK_NARRATION_PAUSE_MS = 900
 
 
 def get_book_id(filepath: str) -> str:
@@ -471,6 +475,103 @@ def _chunk_chapter_blocks(blocks: list[dict], start_chunk_idx: int) -> tuple[lis
         else:
             new_blocks.append(block)
     return new_blocks, chunk_idx
+
+
+def _spoken_heading_text(text: str) -> str:
+    """Give short display headings a sentence-ending cue for natural TTS."""
+    normalized = re.sub(r"\s+", " ", (text or "").strip())
+    if normalized and normalized[-1] not in ".!?…;:":
+        normalized += "."
+    return normalized
+
+
+def chapter_narration_units(chapter: dict) -> list[dict]:
+    """Return every speakable chapter item in the same order as the reader.
+
+    Chapter labels/titles and in-flow headings used to sit outside the page
+    sentence list, which made them impossible to select, follow, search, or
+    narrate.  This derived view keeps the stored reflow schema compatible while
+    making every visible textual block part of one authoritative audio order.
+    """
+    units: list[dict] = []
+
+    def append_unit(
+        text: str,
+        kind: str,
+        pause_after_ms: int = DEFAULT_NARRATION_PAUSE_MS,
+        global_sentence_idx: int | None = None,
+        legacy_sentence_idx: int | None = None,
+        heading: bool = False,
+    ) -> bool:
+        normalized = _spoken_heading_text(text) if heading else re.sub(r"\s+", " ", (text or "").strip())
+        if not normalized:
+            return False
+        units.append({
+            "text": normalized,
+            "kind": kind,
+            "pause_after_ms": pause_after_ms,
+            "global_sentence_idx": global_sentence_idx,
+            "legacy_sentence_idx": legacy_sentence_idx,
+        })
+        return True
+
+    chapter_number = str(chapter.get("number") or "").strip()
+    chapter_title = str(chapter.get("title") or "").strip()
+    chapter_label = f"Chapter {chapter_number}" if chapter_number else ""
+    if chapter_label:
+        append_unit(chapter_label, "chapter-label", DEFAULT_NARRATION_PAUSE_MS, heading=True)
+    if chapter_title and chapter_title.casefold().rstrip(".") != chapter_label.casefold():
+        append_unit(chapter_title, "chapter-title", HEADING_NARRATION_PAUSE_MS, heading=True)
+
+    legacy_sentence_idx = 0
+    for block in chapter.get("blocks", []):
+        block_type = block.get("type")
+        if block_type == "heading":
+            try:
+                heading_level = int(block.get("level") or 2)
+            except (TypeError, ValueError):
+                heading_level = 2
+            append_unit(
+                block.get("text", ""),
+                f"heading-{max(1, min(6, heading_level))}",
+                HEADING_NARRATION_PAUSE_MS,
+                block.get("idx"),
+                heading=True,
+            )
+        elif block_type == "paragraph":
+            role = block.get("role", "prose")
+            for sentence in block.get("sentences", []):
+                if append_unit(
+                    sentence.get("text", ""),
+                    sentence.get("kind") or role,
+                    DEFAULT_NARRATION_PAUSE_MS,
+                    sentence.get("idx"),
+                    legacy_sentence_idx,
+                ):
+                    legacy_sentence_idx += 1
+        elif block_type == "dinkus" and units:
+            units[-1]["pause_after_ms"] = max(
+                int(units[-1].get("pause_after_ms") or 0),
+                SECTION_BREAK_NARRATION_PAUSE_MS,
+            )
+
+    return units
+
+
+def migrate_legacy_sentence_index(chapter: dict, sentence_idx: int) -> int:
+    """Map a body-only saved index to the all-content narration sequence."""
+    mappings = [
+        (int(unit["legacy_sentence_idx"]), narration_idx)
+        for narration_idx, unit in enumerate(chapter_narration_units(chapter))
+        if unit.get("legacy_sentence_idx") is not None
+    ]
+    if not mappings:
+        return 0
+    target = max(0, int(sentence_idx or 0))
+    for legacy_idx, narration_idx in mappings:
+        if legacy_idx == target:
+            return narration_idx
+    return mappings[-1][1] if target > mappings[-1][0] else mappings[0][1]
 
 
 def build_reflow(filepath: str) -> dict:

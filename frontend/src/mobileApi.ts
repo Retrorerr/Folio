@@ -3,16 +3,18 @@ import { clampSpeedForEngine, normalizeTtsEngine, normalizeVoiceForEngine } from
 import { applyAndroidPlatformMetrics, type AndroidPlatformMetrics } from './androidShell'
 import { chooseEpubCoverCandidate, metadataRepairEligible, normalizeCoverMediaType, safeDecodeURIComponent, safeRepairedToc, type EpubCoverCandidate, type EpubCoverSource } from './mobileMetadata'
 import { readResponseBytesBounded, recentArtworkBookIds } from './artworkPayload'
-import type {
-  BookState,
-  DashboardPayload,
-  AudioInfo,
-  ModelInstallInfo,
-  PageText,
-  ReflowDocument,
-  ReflowSentence,
-  SearchResponse,
-  TtsGenerateResponse,
+import {
+  NARRATION_INDEX_VERSION,
+  type BookState,
+  type DashboardPayload,
+  type AudioInfo,
+  type ModelInstallInfo,
+  type PageText,
+  type ReflowChapter,
+  type ReflowDocument,
+  type ReflowSentence,
+  type SearchResponse,
+  type TtsGenerateResponse,
 } from './types'
 
 type MobileRecord = {
@@ -105,7 +107,8 @@ const MAX_AUDIO_RECORD_BYTES = 32 * 1024 * 1024
 const MAX_PRELOAD_SENTENCES = 128
 const MAX_BUFFER_SENTENCES = 24
 const MAX_TRACKED_PRELOAD_JOBS = 32
-const MOBILE_TTS_CACHE_REVISION = 'android-native-misaki-fba1236595f2-v2'
+const INTER_CHUNK_PAUSE_MS = 500
+const MOBILE_TTS_CACHE_REVISION = 'android-native-misaki-fba1236595f2-v4-narration-pauses'
 const MOBILE_METADATA_REVISION = 'android-book-metadata-v3'
 const resourceCache = new Map<string, string>()
 const resourceCacheSizes = new Map<string, number>()
@@ -710,6 +713,30 @@ function decodeNativeWavBase64(value: string): { audio: Blob; sampleRate: number
   return { audio: new Blob([buffer], { type: 'audio/wav' }), ...metadata }
 }
 
+async function appendPcmSilence(audio: Blob, pauseMs = INTER_CHUNK_PAUSE_MS) {
+  if (pauseMs <= 0) return { audio, ...inspectNativeWav(new Uint8Array(await audio.arrayBuffer())) }
+  const source = new Uint8Array(await audio.arrayBuffer())
+  inspectNativeWav(source)
+  const sourceView = new DataView(source.buffer, source.byteOffset, source.byteLength)
+  const byteRate = sourceView.getUint32(28, true)
+  const blockAlign = sourceView.getUint16(32, true)
+  const silenceBytes = Math.max(
+    blockAlign,
+    Math.floor((byteRate * pauseMs) / 1000 / blockAlign) * blockAlign,
+  )
+  if (source.byteLength + silenceBytes > MAX_AUDIO_RECORD_BYTES) {
+    throw new Error('Native TTS audio plus its narration pause is too large to cache safely.')
+  }
+
+  const output = new Uint8Array(source.byteLength + silenceBytes)
+  output.set(source)
+  const outputView = new DataView(output.buffer)
+  outputView.setUint32(4, output.byteLength - 8, true)
+  outputView.setUint32(40, output.byteLength - 44, true)
+  const metadata = inspectNativeWav(output)
+  return { audio: new Blob([output.buffer], { type: 'audio/wav' }), ...metadata }
+}
+
 function validateEpubArchive(bytes: Uint8Array): void {
   if (bytes.byteLength < 22) throw new Error('This EPUB is not a valid ZIP archive.')
   if (bytes.byteLength > MAX_EPUB_BYTES) throw new Error('This EPUB is too large to import safely on this device.')
@@ -965,12 +992,57 @@ function wordInfo(text: string, index: number) {
 
 function buildPages(chapters: ReflowDocument['chapters']): PageText[] {
   return chapters.map((chapter, pageNumber) => {
-    const sentences = chapter.blocks
-      .filter((block): block is { type: 'paragraph'; sentences: ReflowSentence[] } => block.type === 'paragraph')
-      .flatMap((block) => block.sentences)
-      .map((sentence, index) => ({ text: sentence.text, words: wordInfo(sentence.text, index) }))
+    const sentences = chapterNarrationSentences(chapter)
     return { page_number: pageNumber, sentences, render_width: 1, render_height: 1 }
   })
+}
+
+function spokenHeadingText(text: string): string {
+  const normalized = normalizeText(text)
+  return normalized && !/[.!?…;:]$/.test(normalized) ? `${normalized}.` : normalized
+}
+
+function chapterNarrationSentences(chapter: ReflowChapter): PageText['sentences'] {
+  const sentences: PageText['sentences'] = []
+  const add = (
+    text: string,
+    kind: string,
+    pauseAfterMs = INTER_CHUNK_PAUSE_MS,
+    globalSentenceIdx: number | null = null,
+    heading = false,
+  ) => {
+    const spoken = heading ? spokenHeadingText(text) : normalizeText(text)
+    if (!spoken) return
+    sentences.push({
+      text: spoken,
+      words: wordInfo(spoken, sentences.length),
+      kind,
+      pause_after_ms: pauseAfterMs,
+      global_sentence_idx: globalSentenceIdx,
+    })
+  }
+
+  const number = String(chapter.number || '').trim()
+  const title = String(chapter.title || '').trim()
+  const label = number ? `Chapter ${number}` : ''
+  if (label) add(label, 'chapter-label', INTER_CHUNK_PAUSE_MS, chapter.number_idx ?? null, true)
+  if (title && title.toLowerCase().replace(/\.$/, '') !== label.toLowerCase()) {
+    add(title, 'chapter-title', 700, chapter.title_idx ?? null, true)
+  }
+
+  chapter.blocks.forEach((block) => {
+    if (block.type === 'heading') {
+      add(String(block.text || ''), `heading-${Number(block.level) || 2}`, 700, Number.isFinite(Number(block.idx)) ? Number(block.idx) : null, true)
+    } else if (block.type === 'paragraph') {
+      const paragraph = block as { sentences?: ReflowSentence[]; role?: string }
+      ;(paragraph.sentences || []).forEach((sentence) => {
+        add(sentence.text, sentence.kind || String(paragraph.role || 'prose'), INTER_CHUNK_PAUSE_MS, sentence.idx ?? null)
+      })
+    } else if (block.type === 'dinkus' && sentences.length) {
+      sentences[sentences.length - 1].pause_after_ms = 900
+    }
+  })
+  return sentences
 }
 
 type RepairedBookMetadata = {
@@ -1064,11 +1136,19 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
     const body = document.body || document.documentElement
     const rawBlocks = collectBlocks(body)
     const blocks: ReflowDocument['chapters'][number]['blocks'] = []
-    let chapterTitle = ''
+    const firstHeading = rawBlocks.find((raw) => raw.type === 'heading' && raw.text)
+    const chapterTitle = firstHeading?.text || `Chapter ${chapterIndex + 1}`
+    const chapterTitleIdx = sentenceIndex
+    sentenceIndex += 1
+    let consumedChapterHeading = false
     rawBlocks.forEach((raw) => {
       if (raw.type === 'heading') {
-        if (!chapterTitle) chapterTitle = raw.text || ''
-        blocks.push({ type: 'heading', level: raw.level || 1, text: raw.text || '' })
+        if (!consumedChapterHeading && raw === firstHeading) {
+          consumedChapterHeading = true
+          return
+        }
+        blocks.push({ type: 'heading', level: raw.level || 1, text: raw.text || '', idx: sentenceIndex, kind: 'heading' })
+        sentenceIndex += 1
         return
       }
       const sentences: ReflowSentence[] = []
@@ -1078,7 +1158,7 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
       })
       if (sentences.length) blocks.push({ type: 'paragraph', sentences })
     })
-    if (blocks.length) chapters.push({ id: chapters.length, title: chapterTitle || `Chapter ${chapterIndex + 1}`, number: null, blocks })
+    if (blocks.length) chapters.push({ id: chapters.length, title: chapterTitle, title_idx: chapterTitleIdx, number: null, blocks })
   })
   if (!chapters.length) throw new Error('This EPUB contains no readable chapters.')
   const coverCandidate = discoverEpubCoverCandidate(opf, metadata, manifest, files, opfDir)
@@ -1111,7 +1191,7 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
     tts_engine: 'supertonic',
     voice: 'M1',
     speed: 1,
-    last_position: { page: 0, sentence_idx: 0, content_page: 0, visual_page: 0, pages_per_view: 1, chunk_progress: 0, saved_at: now },
+    last_position: { page: 0, sentence_idx: 0, narration_index_version: NARRATION_INDEX_VERSION, content_page: 0, visual_page: 0, pages_per_view: 1, chunk_progress: 0, saved_at: now },
     bookmarks: [],
     imported_at: now,
     last_opened_at: now,
@@ -1223,7 +1303,7 @@ async function parsePdf(bytes: Uint8Array, filename: string, id: string): Promis
       tts_engine: 'supertonic',
       voice: 'M1',
       speed: 1,
-      last_position: { page: 0, sentence_idx: 0, content_page: 0, visual_page: 0, pages_per_view: 1, chunk_progress: 0, saved_at: now },
+      last_position: { page: 0, sentence_idx: 0, narration_index_version: NARRATION_INDEX_VERSION, content_page: 0, visual_page: 0, pages_per_view: 1, chunk_progress: 0, saved_at: now },
       bookmarks: [],
       imported_at: now,
       last_opened_at: now,
@@ -1333,7 +1413,11 @@ async function nativeModelRequirement(engine: 'supertonic' | 'kokoro'): Promise<
   return jsonResponse({ error: 'model_required', detail, engine, install }, install.installed || bridgeError ? 423 : 409)
 }
 
-async function getOrGenerateAudioRecord(identity: AudioRequestIdentity, text: string): Promise<MobileAudioRecord> {
+async function getOrGenerateAudioRecord(
+  identity: AudioRequestIdentity,
+  text: string,
+  pauseAfterMs = INTER_CHUNK_PAUSE_MS,
+): Promise<MobileAudioRecord> {
   const key = audioCacheKey(identity)
   const existingJob = audioGenerationJobs.get(key)
   if (existingJob) return existingJob
@@ -1366,14 +1450,15 @@ async function getOrGenerateAudioRecord(identity: AudioRequestIdentity, text: st
       || Math.abs(nativeDuration - decoded.durationMs) > Math.max(250, decoded.durationMs * 0.1)) {
       throw new Error('Native TTS returned inconsistent duration metadata.')
     }
+    const paused = await appendPcmSilence(decoded.audio, Math.max(0, Math.min(1_500, pauseAfterMs)))
     const now = Date.now()
     const record: MobileAudioRecord = {
       key,
       filename: await audioFilenameForKey(key),
       ...identity,
-      audio: decoded.audio,
-      durationMs: decoded.durationMs,
-      sampleRate: decoded.sampleRate,
+      audio: paused.audio,
+      durationMs: paused.durationMs,
+      sampleRate: paused.sampleRate,
       createdAt: now,
       lastAccessedAt: now,
     }
@@ -1411,12 +1496,13 @@ function chapterSentenceRefs(
   engine: unknown,
   voice: unknown,
   speed: unknown,
-): Array<{ identity: AudioRequestIdentity; text: string }> {
+): Array<{ identity: AudioRequestIdentity; text: string; pauseAfterMs: number }> {
   if (!Number.isInteger(page) || page < 0 || page >= record.pages.length) return []
   return (record.pages[page]?.sentences || [])
     .map((sentence, index) => ({
       identity: normalizeAudioIdentity(record.book.id, page, index, engine, voice, speed),
       text: String(sentence.text || '').trim(),
+      pauseAfterMs: Number(sentence.pause_after_ms ?? INTER_CHUNK_PAUSE_MS),
     }))
     .filter((entry) => Boolean(entry.text))
     .slice(0, MAX_PRELOAD_SENTENCES)
@@ -1427,15 +1513,20 @@ function sentenceWindowRefs(
   page: number,
   sentence: number,
   count: number,
-): Array<{ page: number; sentence: number; text: string }> {
-  const refs: Array<{ page: number; sentence: number; text: string }> = []
+): Array<{ page: number; sentence: number; text: string; pauseAfterMs: number }> {
+  const refs: Array<{ page: number; sentence: number; text: string; pauseAfterMs: number }> = []
   let pageIndex = Math.max(0, page)
   let sentenceIndex = Math.max(0, sentence + 1)
   while (pageIndex < record.pages.length && refs.length < count) {
     const sentences = record.pages[pageIndex]?.sentences || []
     while (sentenceIndex < sentences.length && refs.length < count) {
       const text = String(sentences[sentenceIndex]?.text || '').trim()
-      if (text) refs.push({ page: pageIndex, sentence: sentenceIndex, text })
+      if (text) refs.push({
+        page: pageIndex,
+        sentence: sentenceIndex,
+        text,
+        pauseAfterMs: Number(sentences[sentenceIndex]?.pause_after_ms ?? INTER_CHUNK_PAUSE_MS),
+      })
       sentenceIndex += 1
     }
     pageIndex += 1
@@ -1506,7 +1597,7 @@ async function startChapterPreload(
   const promise = (async () => {
     for (const entry of pending) {
       try {
-        await getOrGenerateAudioRecord(entry.identity, entry.text)
+        await getOrGenerateAudioRecord(entry.identity, entry.text, entry.pauseAfterMs)
       } catch {
         if (!job.failed.includes(entry.identity.sentence)) job.failed.push(entry.identity.sentence)
       }
@@ -2079,7 +2170,16 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
     const record = await getRecord(searchMatch[1])
     if (!record) return notFound('Book not found')
     const query = normalizeText(url.searchParams.get('q') || '').toLowerCase()
-    const results = record.reflow.chapters.flatMap((chapter, page) => chapter.blocks.filter((block) => block.type === 'paragraph').flatMap((block) => (block as { sentences: ReflowSentence[] }).sentences.map((sentence) => ({ page, sentence_idx: sentence.idx || 0, global_sentence_idx: sentence.idx || 0, location_label: chapter.title || `Chapter ${page + 1}`, text: sentence.text, snippet: sentence.text })).filter((result) => !query || result.text.toLowerCase().includes(query))))
+    const results = record.reflow.chapters.flatMap((chapter, page) => (
+      chapterNarrationSentences(chapter).map((sentence, sentenceIdx) => ({
+        page,
+        sentence_idx: sentenceIdx,
+        global_sentence_idx: sentence.global_sentence_idx ?? null,
+        location_label: chapter.title || `Chapter ${page + 1}`,
+        text: sentence.text,
+        snippet: sentence.text,
+      })).filter((result) => !query || result.text.toLowerCase().includes(query))
+    ))
     const response: SearchResponse = { query, format: record.book.format, total: results.length, results }
     return jsonResponse(response)
   }
@@ -2087,7 +2187,12 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
   if (positionMatch && method === 'POST') {
     const book = getBookState(positionMatch[1])
     if (!book) return notFound('Book not found')
-    book.last_position = { ...book.last_position, ...body, saved_at: Date.now() }
+    book.last_position = {
+      ...book.last_position,
+      ...body,
+      narration_index_version: NARRATION_INDEX_VERSION,
+      saved_at: Date.now(),
+    }
     book.has_reading_progress = true
     book.progress = Math.max(0, Math.min(1, (book.last_position.page + 1) / Math.max(1, book.page_count)))
     await putBookState(book)
@@ -2097,7 +2202,9 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
   if (bookmarkMatch) {
     const book = getBookState(bookmarkMatch[1])
     if (!book) return notFound('Book not found')
-    if (method === 'POST') book.bookmarks = [...book.bookmarks, body as never]
+    if (method === 'POST') {
+      book.bookmarks = [...book.bookmarks, { ...body, narration_index_version: NARRATION_INDEX_VERSION } as never]
+    }
     else if (method === 'DELETE') book.bookmarks = book.bookmarks.filter((_, index) => index !== Number(bookmarkMatch[2]))
     await putBookState(book)
     return jsonResponse({ ok: true, bookmarks: book.bookmarks })
@@ -2209,7 +2316,7 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
         for (const entry of work) {
           if (window.cancelled) break
           if (available.has(audioCacheKey(entry.identity))) continue
-          await getOrGenerateAudioRecord(entry.identity, entry.text).catch(() => null)
+          await getOrGenerateAudioRecord(entry.identity, entry.text, entry.pauseAfterMs).catch(() => null)
         }
       } finally {
         if (bufferWindows.get(windowKey) === window) bufferWindows.delete(windowKey)
@@ -2227,13 +2334,18 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
     if (!Number.isInteger(page) || !Number.isInteger(sentence)) {
       return jsonResponse({ detail: 'The narration position is invalid.' }, 400)
     }
-    const text = record.pages[page]?.sentences?.[sentence]?.text?.trim() || ''
+    const sentenceInfo = record.pages[page]?.sentences?.[sentence]
+    const text = sentenceInfo?.text?.trim() || ''
     if (!text) return notFound('No readable sentence exists at this position.')
     const identity = normalizeAudioIdentity(bookId, page, sentence, url.searchParams.get('engine'), url.searchParams.get('voice'), url.searchParams.get('speed'))
     const requirement = await nativeModelRequirement(identity.engine)
     if (requirement) return requirement
     try {
-      const audio = await getOrGenerateAudioRecord(identity, text)
+      const audio = await getOrGenerateAudioRecord(
+        identity,
+        text,
+        Number(sentenceInfo?.pause_after_ms ?? INTER_CHUNK_PAUSE_MS),
+      )
       const resource = materializeAudioResource(audio)
       const result: TtsGenerateResponse & { audio_url: string } = {
         filename: resource.filename,
