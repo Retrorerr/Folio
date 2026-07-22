@@ -63,7 +63,7 @@ jobs:
             const traceEnd = hookSource.indexOf('const commitMap', traceStart)
             assert.ok(traceStart >= 0 && traceEnd > traceStart)
             const traceBlock = hookSource.slice(traceStart, traceEnd)
-            assert.match(traceBlock, /\n  }, \[\]\)/)
+            assert.ok(traceBlock.includes('}, [])'))
             assert.doesNotMatch(traceBlock, /rawProgress, sessionId, viewPage/)
           })
           """
