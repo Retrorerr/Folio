@@ -7,12 +7,14 @@ on:
     paths:
       - .github/workflows/apply-follow-along-refactor.yml
       - scripts/apply-follow-along-refactor.py
+      - scripts/fix-follow-along-lint.py
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/apply-follow-along-refactor.yml
       - scripts/apply-follow-along-refactor.py
+      - scripts/fix-follow-along-lint.py
       - frontend/src/followAlong/**
       - frontend/tests/followAlongPlayback.test.mjs
 
@@ -46,6 +48,7 @@ jobs:
           set -o pipefail
           : > cursor-refactor-ci.log
           python scripts/apply-follow-along-refactor.py 2>&1 | tee -a cursor-refactor-ci.log
+          python scripts/fix-follow-along-lint.py 2>&1 | tee -a cursor-refactor-ci.log
 
       - name: Install dependencies
         shell: bash
@@ -97,6 +100,7 @@ jobs:
         shell: bash
         run: |
           rm -f scripts/apply-follow-along-refactor.py
+          rm -f scripts/fix-follow-along-lint.py
           rm -f .github/workflows/apply-follow-along-refactor.yml
           rm -f cursor-refactor-ci.log
           git config user.name "folio-refactor-bot"
