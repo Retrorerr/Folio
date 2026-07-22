@@ -1,5 +1,6 @@
 import {
   assignVisualLineProgress,
+  mergeWithCanonicalLineGeometry,
   placementForLine,
   tokenizeWeighted,
   type PlaybackAnchor,
@@ -196,6 +197,45 @@ function groupFragments(fragments: MeasuredFragment[]) {
   ))
 }
 
+function measureCanonicalParagraphLines(
+  paragraph: Element,
+  flowRect: DOMRect,
+  scaleX: number,
+  scaleY: number,
+  pageStride: number,
+) {
+  const range = document.createRange()
+  try {
+    range.selectNodeContents(paragraph)
+    const rects = usefulRects(range)
+    const fragments: MeasuredFragment[] = rects.map((rect, index) => {
+      const localLeft = (rect.left - flowRect.left) / scaleX
+      const localRight = (rect.right - flowRect.left) / scaleX
+      const localTop = (rect.top - flowRect.top) / scaleY
+      const localBottom = (rect.bottom - flowRect.top) / scaleY
+      const centerX = (localLeft + localRight) / 2
+      const contentPage = Math.max(0, Math.floor((centerX + 0.01) / pageStride))
+      const pageOffset = contentPage * pageStride
+      return {
+        tokenIndex: index,
+        tokenWeight: 0.001,
+        contentPage,
+        pageX: localLeft - pageOffset,
+        pageY: localTop,
+        left: localLeft - pageOffset,
+        right: localRight - pageOffset,
+        top: localTop,
+        bottom: localBottom,
+        width: Math.max(0, localRight - localLeft),
+        height: Math.max(0, localBottom - localTop),
+      }
+    })
+    return groupFragments(fragments)
+  } finally {
+    range.detach?.()
+  }
+}
+
 function applyDropCapGeometry(
   sentence: Element,
   lines: MutableLine[],
@@ -268,6 +308,7 @@ export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLi
   const layoutKey = computedLayoutKey(flow, viewport, options, scaleX, scaleY)
   const lines: VisualLine[] = []
   const bySentence = new Map<number, VisualLine[]>()
+  const paragraphLineCache = new WeakMap<Element, MutableLine[]>()
   const sentenceElements = Array.from(
     flow.querySelectorAll<HTMLElement>('.sentence[data-local-sent-idx]'),
   )
@@ -282,7 +323,16 @@ export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLi
 
     const fragments = measureTokenFragments(sentence, tokens, flowRect, scaleX, scaleY, pageStride)
     if (!fragments.length) continue
-    const grouped = groupFragments(fragments)
+    let grouped = groupFragments(fragments)
+    const paragraph = sentence.closest('.reflow-para')
+    if (paragraph) {
+      let canonicalLines = paragraphLineCache.get(paragraph)
+      if (!canonicalLines) {
+        canonicalLines = measureCanonicalParagraphLines(paragraph, flowRect, scaleX, scaleY, pageStride)
+        paragraphLineCache.set(paragraph, canonicalLines)
+      }
+      grouped = grouped.map(line => mergeWithCanonicalLineGeometry(line, canonicalLines || []))
+    }
     applyDropCapGeometry(sentence, grouped, flowRect, scaleX, scaleY, pageStride)
 
     const weightedLines = assignVisualLineProgress(grouped.map(line => ({

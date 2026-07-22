@@ -5,7 +5,9 @@ import { Buffer } from 'node:buffer'
 import ts from 'typescript'
 
 const sourceUrl = new URL('../src/followAlong/playbackModel.ts', import.meta.url)
+const hookUrl = new URL('../src/followAlong/usePlaybackLineCursor.tsx', import.meta.url)
 const source = await readFile(sourceUrl, 'utf8')
+const hookSource = await readFile(hookUrl, 'utf8')
 const transpiled = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.ES2020,
@@ -258,4 +260,43 @@ test('a regressing sample cannot drive the selected visual line backwards', () =
   })
   assert.equal(firstAnchor.lineId, 'c0:s4:l1')
   assert.equal(correctedAnchor.lineId, 'c0:s4:l1')
+})
+
+
+test('a sentence beginning mid-line inherits the physical line left edge', () => {
+  const sentenceLine = { contentPage: 0, top: 40, bottom: 62, left: 312, right: 520, marker: 'sentence' }
+  const physicalLines = [{ contentPage: 0, top: 40, bottom: 62, left: 28, right: 640 }]
+  const merged = model.mergeWithCanonicalLineGeometry(sentenceLine, physicalLines)
+  assert.equal(merged.left, 28)
+  assert.equal(merged.right, 640)
+  assert.equal(merged.marker, 'sentence')
+})
+
+test('canonical geometry never crosses into an adjacent rendered line', () => {
+  const sentenceLine = { contentPage: 0, top: 70, bottom: 92, left: 260, right: 520 }
+  const physicalLines = [
+    { contentPage: 0, top: 40, bottom: 62, left: 20, right: 640 },
+    { contentPage: 0, top: 70, bottom: 92, left: 24, right: 630 },
+  ]
+  const merged = model.mergeWithCanonicalLineGeometry(sentenceLine, physicalLines)
+  assert.equal(merged.left, 24)
+  assert.equal(merged.top, 70)
+})
+
+test('ordinary movement in the same column is smooth while discontinuities snap', () => {
+  const previous = { x: 100, generation: 4, column: 0, viewIndex: 2 }
+  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 4, column: 0, viewIndex: 2 }), 'smooth')
+  assert.equal(model.cursorTransitionKind(previous, { x: 790, generation: 4, column: 1, viewIndex: 2 }), 'snap')
+  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 5, column: 0, viewIndex: 2 }), 'snap')
+  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 4, column: 0, viewIndex: 3 }), 'snap')
+})
+
+test('debug tracing reads live playback through refs without destabilising rebuild callbacks', () => {
+  assert.match(hookSource, /const traceContextRef = useRef\(/)
+  const traceStart = hookSource.indexOf('const trace = useCallback')
+  const traceEnd = hookSource.indexOf('const commitMap', traceStart)
+  assert.ok(traceStart >= 0 && traceEnd > traceStart)
+  const traceBlock = hookSource.slice(traceStart, traceEnd)
+  assert.ok(traceBlock.includes('}, [])'))
+  assert.doesNotMatch(traceBlock, /rawProgress, sessionId, viewPage/)
 })
