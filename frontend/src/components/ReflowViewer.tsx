@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState, useLayoutEffect, useCallback, useMemo } from 'react'
 import type React from 'react'
+import { usePlaybackLineCursor } from '../followAlong/usePlaybackLineCursor'
 import { clampReaderViewTarget, readerPageNavigationState } from '../readerNavigation'
 import type { ReaderPageNavigationState } from '../readerNavigation'
 import type {
@@ -23,7 +24,6 @@ const TWO_PAGE_MARGIN = 24
 const PAGE_TURN_MS = 560
 const PAGE_TURN_CLEAR_MS = PAGE_TURN_MS + 80
 const SINGLE_PAGE_TURN_MS = 280
-const LINE_SWITCH_HYSTERESIS = 0.018
 type TurnDirection = 'next' | 'prev'
 type TurnState = 'started' | 'busy' | 'skipped'
 type DoubleTurn = {
@@ -71,23 +71,6 @@ function blockRole(block: any) {
 
 function blockRoleClass(role: string) {
   return `reflow-para-${String(role || 'prose').replace(/[^a-z0-9_-]/gi, '-')}`
-}
-
-function debugFlag(globalName: string, storageKey: string) {
-  if (typeof window === 'undefined') return false
-  return Boolean(window[globalName]) || window.localStorage?.getItem(storageKey) === '1'
-}
-
-function debugRect(rect: any) {
-  if (!rect) return null
-  return {
-    left: Math.round(rect.left),
-    top: Math.round(rect.top),
-    right: Math.round(rect.right),
-    bottom: Math.round(rect.bottom),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-  }
 }
 
 function safeStorage() {
@@ -326,303 +309,6 @@ function normalizedWordRect(rects: DOMRect[]) {
   }
 }
 
-function rectToLocal(rect: DOMRect | any, rootRect: DOMRect, scrollEl: Element | null) {
-  // Cursor lives inside the scrolling .page-scroll container, so it's
-  // positioned in the container's *content* coordinate space, not the
-  // viewport. getBoundingClientRect returns viewport coords, so we add the
-  // current scroll offset to anchor the cursor to its content position.
-  // Without this, scrolling the reader leaves the cursor behind / ahead of
-  // the active word.
-  const scrollTop = scrollEl?.scrollTop || 0
-  const scrollLeft = scrollEl?.scrollLeft || 0
-  return {
-    x: rect.left - rootRect.left + scrollLeft,
-    y: rect.top - rootRect.top + scrollTop,
-    width: rect.width,
-    height: rect.height,
-  }
-}
-
-function rectIntersects(a: DOMRect | any, b: DOMRect | any, pad = 2) {
-  return (
-    a.right >= b.left - pad &&
-    a.left <= b.right + pad &&
-    a.bottom >= b.top - pad &&
-    a.top <= b.bottom + pad
-  )
-}
-
-function pointIntersectsRect(x: number, y: number, rect: DOMRect | any, pad = 2) {
-  return (
-    x >= rect.left - pad &&
-    x <= rect.right + pad &&
-    y >= rect.top - pad &&
-    y <= rect.bottom + pad
-  )
-}
-
-function visibleColumnLayout(viewportRect: DOMRect | undefined) {
-  if (!viewportRect) return null
-  const columns = viewportRect.width > TEXT_WIDTH + GAP / 2 ? 2 : 1
-  const layoutWidth = columns * TEXT_WIDTH + (columns - 1) * GAP
-  const scale = viewportRect.width / layoutWidth
-  return {
-    columns,
-    stride: (TEXT_WIDTH + GAP) * scale,
-  }
-}
-
-function rectColumnIndex(rect: DOMRect | any, viewportRect: DOMRect | undefined) {
-  const layout = visibleColumnLayout(viewportRect)
-  if (!layout) return 0
-  const mid = rect.left + rect.width / 2
-  return clamp(
-    Math.floor(Math.max(0, mid - viewportRect!.left) / layout.stride),
-    0,
-    layout.columns - 1,
-  )
-}
-
-function sameVisualLine(a, b, viewportRect?: DOMRect) {
-  if (!a || !b) return false
-  const aMid = a.top + a.height / 2
-  const bMid = b.top + b.height / 2
-  const sameRow = Math.abs(aMid - bMid) < Math.max(7, Math.min(a.height, b.height) * 0.7)
-  const sameColumn = rectColumnIndex(a, viewportRect) === rectColumnIndex(b, viewportRect)
-  return sameRow && sameColumn
-}
-
-function unionRects(rects: Array<DOMRect | any>) {
-  const left = Math.min(...rects.map(rect => rect.left))
-  const top = Math.min(...rects.map(rect => rect.top))
-  const right = Math.max(...rects.map(rect => rect.right))
-  const bottom = Math.max(...rects.map(rect => rect.bottom))
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    width: right - left,
-    height: bottom - top,
-  }
-}
-
-function expandRect(rect: any, x: number, y: number) {
-  return {
-    left: rect.left - x,
-    top: rect.top - y,
-    right: rect.right + x,
-    bottom: rect.bottom + y,
-    width: rect.width + x * 2,
-    height: rect.height + y * 2,
-  }
-}
-
-function clampRectToBounds(rect: any, bounds: any) {
-  const left = Math.max(rect.left, bounds.left)
-  const top = Math.max(rect.top, bounds.top)
-  const right = Math.min(rect.right, bounds.right)
-  const bottom = Math.min(rect.bottom, bounds.bottom)
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    width: Math.max(0, right - left),
-    height: Math.max(0, bottom - top),
-  }
-}
-
-function activeLineRect(active: Element, words: any[], currentIdx: number, viewportRect: DOMRect | undefined) {
-  const currentRect = wordRect(active, words[currentIdx])
-  if (!currentRect) return null
-
-  // Drop caps create an oversized first-letter box that can distort the
-  // paragraph-level line rect. For that opening sentence, keep the measured
-  // line scoped to the sentence's own fragments.
-  const lineSource = active.closest('.reflow-para') || active
-  const dropCap = lineSource.querySelector('.drop-cap')
-  const hasDropCap = Boolean(dropCap)
-  const sourceRange = document.createRange()
-  sourceRange.selectNodeContents(lineSource)
-  const sourceRects = Array.from(sourceRange.getClientRects()).filter(rect => (
-    rect.width > 0 &&
-    rect.height > 0 &&
-    (!hasDropCap || rect.height < currentRect.height * 1.8)
-  ))
-  sourceRange.detach?.()
-
-  const lineRects = sourceRects.filter(rect => sameVisualLine(currentRect, rect, viewportRect))
-  let startIdx = currentIdx
-  let endIdx = currentIdx
-  for (let i = currentIdx - 1; i >= 0; i--) {
-    const rect = wordRect(active, words[i])
-    if (!rect || !sameVisualLine(currentRect, rect, viewportRect)) break
-    startIdx = i
-  }
-  for (let i = currentIdx + 1; i < words.length; i++) {
-    const rect = wordRect(active, words[i])
-    if (!rect || !sameVisualLine(currentRect, rect, viewportRect)) break
-    endIdx = i
-  }
-  const wordLineRects: Array<DOMRect | any> = []
-  for (let i = startIdx; i <= endIdx; i++) {
-    const rect = wordRect(active, words[i])
-    if (rect) wordLineRects.push(rect)
-  }
-  const lineRect = lineRects.length
-    ? unionRects(lineRects)
-    : (wordLineRects.length ? unionRects(wordLineRects) : currentRect)
-
-  let rect = expandRect(lineRect, 18, 9)
-  if (viewportRect) rect = clampRectToBounds(rect, viewportRect)
-  const dropCapRect = dropCap?.getBoundingClientRect() || null
-  const markerRect = lineMarkerAnchorRect(lineRect, currentRect, viewportRect, dropCapRect)
-  const lineKey = [
-    lineSource.getAttribute('data-block-index') || '',
-    Math.round(lineRect.top),
-    Math.round(lineRect.left),
-    Math.round(lineRect.right),
-    Math.round(lineRect.height),
-  ].join(':')
-  return rect.width && rect.height ? { rect, lineRect, markerRect, currentRect, startIdx, endIdx, lineKey } : null
-}
-
-type CursorMode = 'hover' | 'selected' | 'playback' | 'turn-suppressed'
-type CursorHideMode = CursorMode | 'hidden' | 'force-hidden'
-type CursorPlacement = {
-  x: number
-  y: number
-  width: number
-  height: number
-  key: string
-}
-
-const LINE_CURSOR_GUTTER = 26
-const LINE_CURSOR_COLUMN_SNAP_DISTANCE = 96
-
-function placeLineOverlay(el: HTMLElement, rect: CursorPlacement, opacity: number, mode: CursorMode) {
-  const opacityKey = `${opacity}`
-  const wasVisible = el.classList.contains('is-visible')
-  const previousMode = el.dataset.cursorMode
-  const previousX = Number.parseFloat(el.dataset.cursorX || '')
-  const positionChanged = el.dataset.cursorKey !== rect.key
-  const modeChanged = el.dataset.cursorMode !== mode
-  const opacityChanged = el.dataset.cursorOpacity !== opacityKey
-  if (!positionChanged && !modeChanged && !opacityChanged && wasVisible) return
-
-  const horizontalDistance = Number.isFinite(previousX)
-    ? Math.abs(rect.x - previousX)
-    : 0
-  const shouldSnapPosition = (
-    !wasVisible ||
-    (positionChanged && (
-      previousMode !== mode
-    ))
-  )
-  const shouldSnapHorizontal = (
-    !shouldSnapPosition &&
-    positionChanged &&
-    horizontalDistance > LINE_CURSOR_COLUMN_SNAP_DISTANCE
-  )
-
-  // A cursor returning from a hidden page should appear at its destination,
-  // not travel across the spread from the last visible line. Playback handoff
-  // and cross-column jumps snap for the same reason: the marker should never
-  // sweep horizontally through paragraph text while it is catching up to the
-  // reader. Vertical movement stays animated because the marker remains in
-  // the clear gutter beside the text for the entire journey.
-  if (shouldSnapPosition) el.dataset.cursorMode = 'instant'
-  else el.dataset.cursorMode = mode
-  el.dataset.cursorPosition = shouldSnapHorizontal ? 'horizontal-snap' : 'smooth'
-
-  if (positionChanged) {
-    el.style.transform = `translate3d(${rect.x}px, ${rect.y}px, 0)`
-    el.style.width = `${rect.width}px`
-    el.style.height = `${rect.height}px`
-    el.dataset.cursorKey = rect.key
-    el.dataset.cursorX = `${rect.x}`
-    el.dataset.cursorY = `${rect.y}`
-  }
-
-  if (shouldSnapPosition) void el.offsetWidth
-  el.dataset.cursorMode = mode
-  el.dataset.cursorOpacity = opacityKey
-  el.dataset.cursorSticky = mode === 'selected' ? 'true' : 'false'
-  el.style.opacity = opacityKey
-  el.classList.toggle('is-visible', opacity > 0)
-  if (shouldSnapHorizontal) {
-    const key = rect.key
-    requestAnimationFrame(() => {
-      if (el.isConnected && el.dataset.cursorKey === key) {
-        el.dataset.cursorPosition = 'smooth'
-      }
-    })
-  }
-}
-
-function lineMarkerRect(region: any, rootRect: DOMRect, scrollEl: Element | null): CursorPlacement {
-  const local = rectToLocal(region.markerRect || region.lineRect || region.currentRect || region.rect, rootRect, scrollEl)
-  const x = Math.max(0, local.x - LINE_CURSOR_GUTTER)
-  const y = local.y - 2
-  const width = 2
-  const height = Math.max(18, local.height + 4)
-  return {
-    x,
-    y,
-    width,
-    height,
-    key: `${region.lineKey || ''}:${Math.round(x * 2) / 2}:${Math.round(y * 2) / 2}:${Math.round(height * 2) / 2}`,
-  }
-}
-
-function lineMarkerAnchorRect(
-  lineRect: any,
-  currentRect: DOMRect | any,
-  viewportRect: DOMRect | undefined,
-  dropCapRect?: DOMRect | null,
-) {
-  const layout = visibleColumnLayout(viewportRect)
-  const columnLeft = layout && viewportRect
-    ? viewportRect.left + rectColumnIndex(currentRect, viewportRect) * layout.stride
-    : lineRect.left
-  let left = Math.max(columnLeft, lineRect.left)
-  let top = lineRect.top
-  let bottom = lineRect.bottom
-
-  // A floated drop cap normally sits immediately to the left of the opening
-  // text, so its rectangle does not intersect the line rectangle horizontally.
-  // Detect the opening line by vertical proximity instead. Anchor the marker
-  // to the cap's left edge and grow it to the cap's full height; subsequent
-  // lines return to the regular line-sized marker even while wrapping beside
-  // the float.
-  const dropCapWrapsLine = Boolean(
-    dropCapRect &&
-    lineRect.bottom >= dropCapRect.top &&
-    lineRect.top <= dropCapRect.bottom + lineRect.height
-  )
-  const dropCapOpeningLine = Boolean(
-    dropCapRect &&
-    dropCapWrapsLine &&
-    Math.abs(lineRect.top - dropCapRect.top) <= Math.max(12, lineRect.height * 0.75)
-  )
-  if (dropCapRect && dropCapWrapsLine) {
-    left = Math.max(columnLeft, dropCapRect.left)
-  }
-  if (dropCapRect && dropCapOpeningLine) {
-    top = Math.min(lineRect.top, dropCapRect.top)
-    bottom = Math.max(lineRect.bottom, dropCapRect.bottom)
-  }
-  return {
-    left,
-    top,
-    right: Math.max(left + 2, lineRect.right),
-    bottom,
-    width: Math.max(2, lineRect.right - left),
-    height: Math.max(2, bottom - top),
-  }
-}
-
 type WeightedWord = { start: number; end: number; weightStart: number; weightEnd: number }
 type WordCacheResult = { key: string; words: WeightedWord[]; totalWeight: number }
 
@@ -682,31 +368,6 @@ function predictedWordIndex(words: WeightedWord[], progress: number) {
   return { index: result, weightedPosition: target }
 }
 
-function wordIndexForOffset(words: WeightedWord[], offset: number) {
-  if (!words.length) return -1
-  const safeOffset = Math.max(0, offset)
-  let lo = 0
-  let hi = words.length - 1
-  let result = hi
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1
-    if (safeOffset <= words[mid].end) {
-      result = mid
-      hi = mid - 1
-    } else {
-      lo = mid + 1
-    }
-  }
-  return result
-}
-
-function progressForWord(words: WeightedWord[], index: number) {
-  if (!words.length || index < 0) return 0
-  const totalWeight = words[words.length - 1].weightEnd || words.length
-  if (!totalWeight) return 0
-  return clamp(words[Math.min(index, words.length - 1)].weightStart / totalWeight, 0, 0.98)
-}
-
 function measuredSentenceElement(measure: Element | null, sentenceIdx: number, indexType = 'local') {
   if (!measure || sentenceIdx == null || sentenceIdx < 0) return null
   const attr = indexType === 'global' ? 'data-sent-idx' : 'data-local-sent-idx'
@@ -748,41 +409,6 @@ function measuredReadingView(
     }
   }
   return measuredSentenceView(measure, sentenceIdx, indexType, pagesPerView)
-}
-
-function caretRangeFromPoint(x: number, y: number) {
-  const doc: any = document
-  if (typeof doc.caretRangeFromPoint === 'function') {
-    return doc.caretRangeFromPoint(x, y)
-  }
-  if (typeof doc.caretPositionFromPoint === 'function') {
-    const pos = doc.caretPositionFromPoint(x, y)
-    if (!pos) return null
-    const range = document.createRange()
-    range.setStart(pos.offsetNode, pos.offset)
-    range.collapse(true)
-    return range
-  }
-  return null
-}
-
-function sentenceFromNode(node: Node | null) {
-  const element = node?.nodeType === Node.ELEMENT_NODE
-    ? node as Element
-    : node?.parentElement
-  return element?.closest('.sentence') || null
-}
-
-function textOffsetInElement(root: Element, node: Node, offset: number) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  let total = 0
-  let current = walker.nextNode()
-  while (current) {
-    if (current === node) return total + offset
-    total += current.textContent?.length || 0
-    current = walker.nextNode()
-  }
-  return total
 }
 
 interface ReflowViewerProps {
@@ -834,7 +460,6 @@ function ReflowViewer({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const chapterMeasureRef = useRef<HTMLDivElement | null>(null)
-  const androidLineTapRef = useRef({ pointerId: -1, x: 0, y: 0 })
   const [contentPageCount, setContentPageCount] = useState(1)
   const [chapterPageCounts, setChapterPageCounts] = useState<number[]>([])
   const [measureChapterIdx, setMeasureChapterIdx] = useState<number | null>(null)
@@ -913,26 +538,6 @@ function ReflowViewer({
   const initialResumeLandingRef = useRef<string | null>(null)
   const stateRef = useRef({ viewPage: 0, viewCount: 1, chapterIdx: 0, pagesPerView: 1 })
   const visualPositionReadyRef = useRef(false)
-  const followTurnKeyRef = useRef('')
-  const pendingFollowTargetRef = useRef<any>(null)
-  const [followRetryTick, setFollowRetryTick] = useState(0)
-  const followRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const clearFollowRetry = useCallback(() => {
-    if (followRetryTimeoutRef.current) {
-      clearTimeout(followRetryTimeoutRef.current)
-      followRetryTimeoutRef.current = null
-    }
-  }, [])
-
-  const queueFollowRetry = useCallback(() => {
-    if (followRetryTimeoutRef.current) return
-    followRetryTimeoutRef.current = setTimeout(() => {
-      followRetryTimeoutRef.current = null
-      setFollowRetryTick((tick) => (tick + 1) % 1000000)
-    }, 180)
-  }, [])
-
   const chapterMeasureOrder = useMemo(() => {
     const total = reflow?.chapters?.length || 0
     if (!total) return []
@@ -1046,15 +651,6 @@ function ReflowViewer({
   const singleTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [doubleTurn, setDoubleTurn] = useState<DoubleTurn | null>(null)
   const doubleTurnTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [cursorRefreshTick, setCursorRefreshTick] = useState(0)
-  const cursorRefreshFrameRef = useRef<number | null>(null)
-  const refreshCursorAfterTurn = useCallback(() => {
-    if (cursorRefreshFrameRef.current != null) cancelAnimationFrame(cursorRefreshFrameRef.current)
-    cursorRefreshFrameRef.current = requestAnimationFrame(() => {
-      cursorRefreshFrameRef.current = null
-      setCursorRefreshTick((tick) => (tick + 1) % 1000000)
-    })
-  }, [])
   const isPageTurning = Boolean(singleTurn || doubleTurn)
   const pageNavigation = readerPageNavigationState(
     viewPage,
@@ -1078,10 +674,9 @@ function ReflowViewer({
     singleTurnTimeoutRef.current = setTimeout(() => {
       setSingleTurn(null)
       singleTurnTimeoutRef.current = null
-      refreshCursorAfterTurn()
     }, SINGLE_PAGE_TURN_MS)
     return 'started'
-  }, [motion, refreshCursorAfterTurn])
+  }, [motion])
   const triggerDoubleTurn = useCallback((
     direction: TurnDirection,
     fromView: number,
@@ -1121,556 +716,16 @@ function ReflowViewer({
     doubleTurnTimeoutRef.current = setTimeout(() => {
       setDoubleTurn(null)
       doubleTurnTimeoutRef.current = null
-      refreshCursorAfterTurn()
     }, PAGE_TURN_CLEAR_MS)
     return 'started'
-  }, [chapterLabel, chapterPageOffset, contentEls, contentPageCount, motion, refreshCursorAfterTurn, runHeadText])
-
-  // Reading/selection cursor — a single minimal line. It uses the same
-  // weighted-word estimate as follow-along page turns, but renders beside the
-  // active visual line instead of tinting text.
-  const cursorRef = useRef<HTMLDivElement | null>(null)
-  const wordsCacheRef = useRef<WeightedWord[]>([])
-  const wordsCacheKeyRef = useRef('')
-  const cursorDebugRef = useRef({ lastKey: '', lastAt: 0 })
-  const selectedLineRef = useRef<any>(null)
-  const hoverFrameRef = useRef<number | null>(null)
-  const hoverPointRef = useRef<{ x: number; y: number } | null>(null)
-  const playbackLineCacheRef = useRef<{ key: string; placements: Map<number, any> }>({
-    key: '',
-    placements: new Map(),
-  })
-  const playbackLineHoldRef = useRef<any>(null)
-
-  const findVisibleSentence = useCallback((sentenceIdx: number) => {
-    const root = scrollRef.current
-    if (!root) return null
-    const live = root.querySelector('.reflow-viewport .reflow-flow:not(.reflow-measure)')
-    return live?.querySelector(`.sentence[data-local-sent-idx="${sentenceIdx}"]`) || null
-  }, [])
-
-  const findLiveSentence = useCallback((sentenceIdx: number) => {
-    if (activeChapterIdx !== chapterIdx) return null
-    return findVisibleSentence(sentenceIdx)
-  }, [activeChapterIdx, chapterIdx, findVisibleSentence])
-
-  const selectedLineStillVisible = useCallback((selection = selectedLineRef.current) => {
-    if (!selection?.placement || selection.chapterIdx !== chapterIdx || selection.pagesPerView !== pagesPerView) return false
-    const sentence = findVisibleSentence(selection.sentenceIdx)
-    const viewport = sentence?.closest('.reflow-viewport')?.getBoundingClientRect()
-    const rect = sentence?.getBoundingClientRect()
-    return Boolean(rect && viewport && rectIntersects(rect, viewport, 1))
-  }, [chapterIdx, findVisibleSentence, pagesPerView])
-
-  const selectedLineMatchesCurrentView = useCallback((selection = selectedLineRef.current) => (
-    Boolean(
-      selection?.placement &&
-      selection.chapterIdx === chapterIdx &&
-      selection.pagesPerView === pagesPerView &&
-      (selection.viewPage === viewPage || selectedLineStillVisible(selection))
-    )
-  ), [chapterIdx, pagesPerView, selectedLineStillVisible, viewPage])
-
-  const readingViewForPosition = useCallback((sentenceIdx: number, progress: number) => (
-    measuredReadingView(measureRef.current, sentenceIdx, progress, 'local', pagesPerView)
-  ), [pagesPerView])
-
-  const showLineCursor = useCallback((placement: CursorPlacement, opacity = 1, mode: CursorMode = 'playback') => {
-    const cursor = cursorRef.current
-    if (!cursor || !placement) return
-    placeLineOverlay(cursor, placement, opacity, mode)
-  }, [])
-
-  const cursorPlacementForRegion = useCallback((region: any) => {
-    const root = scrollRef.current
-    if (!root || !region) return null
-    const rootRect = root.getBoundingClientRect()
-    const scale = Number.isFinite(spreadScale) && spreadScale > 0 ? spreadScale : 1
-    if (Math.abs(scale - 1) < 0.001) return lineMarkerRect(region, rootRect, root)
-
-    // Chromium reports descendant ranges in the pre-zoom coordinate space,
-    // while the cursor is rendered outside the zoomed spread. Project the
-    // measured line back into the page-scroll coordinate space first.
-    const visualRect = (rect: any) => rect ? {
-      left: rootRect.left + (rect.left - rootRect.left) * scale,
-      top: rootRect.top + (rect.top - rootRect.top) * scale,
-      right: rootRect.left + (rect.right - rootRect.left) * scale,
-      bottom: rootRect.top + (rect.bottom - rootRect.top) * scale,
-      width: rect.width * scale,
-      height: rect.height * scale,
-    } : rect
-    return lineMarkerRect({
-      ...region,
-      rect: visualRect(region.rect),
-      lineRect: visualRect(region.lineRect),
-      markerRect: visualRect(region.markerRect),
-      currentRect: visualRect(region.currentRect),
-    }, rootRect, root)
-  }, [spreadScale])
-
-  const hideLineCursor = useCallback((mode: CursorHideMode = 'hidden') => {
-    const cursor = cursorRef.current
-    if (!cursor) return
-    if (mode === 'hidden' && cursor.dataset.cursorSticky === 'true') return
-    cursor.style.opacity = '0'
-    cursor.classList.remove('is-visible')
-    cursor.dataset.cursorMode = mode === 'force-hidden' ? 'hidden' : mode
-    cursor.dataset.cursorOpacity = '0'
-    cursor.dataset.cursorSticky = 'false'
-  }, [])
-
-  const locateLineAtPoint = useCallback((clientX: number, clientY: number) => {
-    const root = scrollRef.current
-    if (!root) return null
-    const viewport = root.querySelector('.reflow-viewport')
-    const viewportRect = viewport?.getBoundingClientRect()
-    if (!viewportRect) return null
-    const rootRect = root.getBoundingClientRect()
-    const scale = Number.isFinite(spreadScale) && spreadScale > 0 ? spreadScale : 1
-    const geometryX = rootRect.left + (clientX - rootRect.left) / scale
-    const geometryY = rootRect.top + (clientY - rootRect.top) / scale
-    if (
-      geometryX < viewportRect.left ||
-      geometryX > viewportRect.right ||
-      geometryY < viewportRect.top ||
-      geometryY > viewportRect.bottom
-    ) return null
-
-    const range = caretRangeFromPoint(clientX, clientY)
-    let sentence = sentenceFromNode(range?.startContainer || null)
-    let words = sentence && viewport.contains(sentence)
-      ? wordCacheForElement(sentence).words
-      : []
-    let wordIdx = -1
-    if (sentence && words.length && range?.startContainer) {
-      const offset = textOffsetInElement(sentence, range.startContainer, range.startOffset)
-      wordIdx = wordIndexForOffset(words, offset)
-    }
-    let region = wordIdx >= 0
-      ? activeLineRect(sentence!, words, wordIdx, viewportRect)
-      : null
-
-    // Android WebView can return a caret range from an adjacent visual line
-    // when the compact phone page is scaled with CSS zoom. Treat the caret as
-    // a fast path, then recover from the rendered line fragments themselves.
-    if (!region || !pointIntersectsRect(geometryX, geometryY, region.rect)) {
-      sentence = null
-      words = []
-      wordIdx = -1
-      region = null
-      const candidates = Array.from(viewport.querySelectorAll('.sentence[data-local-sent-idx]'))
-      for (const candidate of candidates) {
-        const candidateRange = document.createRange()
-        candidateRange.selectNodeContents(candidate)
-        const lineFragments = Array.from(candidateRange.getClientRects()).filter(rect => (
-          rect.width > 0 &&
-          rect.height > 0 &&
-          pointIntersectsRect(geometryX, geometryY, expandRect(rect, 18, 9))
-        ))
-        candidateRange.detach?.()
-        if (!lineFragments.length) continue
-
-        const candidateWords = wordCacheForElement(candidate).words
-        let bestWordIdx = -1
-        let bestDistance = Number.POSITIVE_INFINITY
-        for (let idx = 0; idx < candidateWords.length; idx++) {
-          const rect = wordRect(candidate, candidateWords[idx])
-          if (!rect || !lineFragments.some(fragment => sameVisualLine(fragment, rect, viewportRect))) continue
-          const dx = geometryX < rect.left
-            ? rect.left - geometryX
-            : (geometryX > rect.right ? geometryX - rect.right : 0)
-          const dy = geometryY < rect.top
-            ? rect.top - geometryY
-            : (geometryY > rect.bottom ? geometryY - rect.bottom : 0)
-          const distance = Math.hypot(dx, dy)
-          if (distance < bestDistance) {
-            bestDistance = distance
-            bestWordIdx = idx
-          }
-        }
-        if (bestWordIdx < 0) continue
-        const candidateRegion = activeLineRect(candidate, candidateWords, bestWordIdx, viewportRect)
-        if (!candidateRegion || !pointIntersectsRect(geometryX, geometryY, candidateRegion.rect)) continue
-        sentence = candidate
-        words = candidateWords
-        wordIdx = bestWordIdx
-        region = candidateRegion
-        break
-      }
-    }
-
-    if (!sentence || !region || wordIdx < 0) return null
-    const sentenceIdx = Number.parseInt(sentence.getAttribute('data-local-sent-idx') || '-1', 10)
-    if (!Number.isFinite(sentenceIdx) || sentenceIdx < 0) return null
-    const placement = cursorPlacementForRegion(region)
-    if (!placement) return null
-    const lineStartWordIdx = Math.max(0, region.startIdx ?? wordIdx)
-    return {
-      region,
-      placement,
-      sentenceIdx,
-      progress: progressForWord(words, lineStartWordIdx),
-      wordIdx,
-      lineStartWordIdx,
-      text: sentence.textContent || '',
-    }
-  }, [cursorPlacementForRegion, spreadScale])
-
-  // Word boundaries only change with the active sentence/chapter. Rebuilding
-  // this cache on every progress tick forces repeated text walks at 20Hz.
-  useLayoutEffect(() => {
-    wordsCacheRef.current = []
-    wordsCacheKeyRef.current = ''
-    if (currentSentence == null || currentSentence < 0) return
-    const active = findLiveSentence(currentSentence)
-    if (!active) return
-    const text = active.textContent || ''
-    const { key, words } = wordCacheForElement(active)
-    wordsCacheRef.current = words
-    wordsCacheKeyRef.current = key
-    if (typeof window !== 'undefined') {
-      window.__folioCursorWords = {
-        currentSentence,
-        activeChapterIdx,
-        wordCount: words.length,
-        textPreview: text.slice(0, 120),
-      }
-    }
-  }, [currentSentence, activeChapterIdx, chapterIdx, findLiveSentence])
-
-  const restoreSelectedOrHide = useCallback(() => {
-    if (isPageTurning) {
-      hideLineCursor('turn-suppressed')
-      return
-    }
-    const selected = selectedLineRef.current
-    const handoffActive = Number.isFinite(selected?.handoffUntil) && performance.now() < selected.handoffUntil
-    if (selected?.placement && (selectedLineMatchesCurrentView(selected) || handoffActive)) {
-      showLineCursor(selected.placement, 1, 'selected')
-    } else {
-      hideLineCursor()
-    }
-  }, [hideLineCursor, isPageTurning, selectedLineMatchesCurrentView, showLineCursor])
-
-  const flushHoverCursor = useCallback(() => {
-    hoverFrameRef.current = null
-    const point = hoverPointRef.current
-    if (!point || isPlaying || isPageTurning) return
-    if (selectedLineMatchesCurrentView()) {
-      showLineCursor(selectedLineRef.current.placement, 1, 'selected')
-      return
-    }
-    const located = locateLineAtPoint(point.x, point.y)
-    if (!located) {
-      restoreSelectedOrHide()
-      return
-    }
-    showLineCursor(located.placement, 0.86, 'hover')
-  }, [isPageTurning, isPlaying, locateLineAtPoint, restoreSelectedOrHide, selectedLineMatchesCurrentView, showLineCursor])
-
-  const handleLinePointerMove = useCallback((event: React.PointerEvent) => {
-    if (event.pointerType === 'touch' || event.pointerType === 'pen') return
-    if (isPlaying || isPageTurning || selectedLineMatchesCurrentView()) return
-    hoverPointRef.current = { x: event.clientX, y: event.clientY }
-    if (hoverFrameRef.current == null) {
-      hoverFrameRef.current = requestAnimationFrame(flushHoverCursor)
-    }
-  }, [flushHoverCursor, isPageTurning, isPlaying, selectedLineMatchesCurrentView])
-
-  const handleLinePointerLeave = useCallback(() => {
-    if (isPlaying) return
-    if (isPageTurning) {
-      hideLineCursor('turn-suppressed')
-      return
-    }
-    hoverPointRef.current = null
-    if (hoverFrameRef.current != null) {
-      cancelAnimationFrame(hoverFrameRef.current)
-      hoverFrameRef.current = null
-    }
-    restoreSelectedOrHide()
-  }, [hideLineCursor, isPageTurning, isPlaying, restoreSelectedOrHide])
-
-  const selectLineAtPoint = useCallback((clientX: number, clientY: number) => {
-    if (isPageTurning) return
-    const located = locateLineAtPoint(clientX, clientY)
-    if (!located) return
-    if (hoverFrameRef.current != null) {
-      cancelAnimationFrame(hoverFrameRef.current)
-      hoverFrameRef.current = null
-    }
-    selectedLineRef.current = {
-      ...located,
-      chapterIdx,
-      viewPage,
-      pagesPerView,
-      handoffUntil: performance.now() + 4000,
-    }
-    showLineCursor(located.placement, 1, 'selected')
-    onSentenceSelect?.(chapterIdx, located.sentenceIdx, { progress: located.progress })
-  }, [chapterIdx, isPageTurning, locateLineAtPoint, onSentenceSelect, pagesPerView, showLineCursor, viewPage])
-
-  const handleLineDoubleClick = useCallback((event: React.MouseEvent) => {
-    if (androidRuntime || event.button !== 0) return
-    event.preventDefault()
-    selectLineAtPoint(event.clientX, event.clientY)
-  }, [androidRuntime, selectLineAtPoint])
-
-  const handleAndroidLinePointerDown = useCallback((event: React.PointerEvent) => {
-    if (!androidRuntime || (event.pointerType !== 'touch' && event.pointerType !== 'pen')) return
-    const target = event.target as HTMLElement | null
-    if (target?.closest('button, a, input, textarea, select, [role="button"]')) return
-    androidLineTapRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
-  }, [androidRuntime])
-
-  const handleAndroidLinePointerUp = useCallback((event: React.PointerEvent) => {
-    const tap = androidLineTapRef.current
-    androidLineTapRef.current = { pointerId: -1, x: 0, y: 0 }
-    if (!androidRuntime || event.pointerId !== tap.pointerId) return
-    if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 12) return
-    event.preventDefault()
-    selectLineAtPoint(event.clientX, event.clientY)
-  }, [androidRuntime, selectLineAtPoint])
-
-  const cancelAndroidLineTap = useCallback(() => {
-    androidLineTapRef.current = { pointerId: -1, x: 0, y: 0 }
-  }, [])
-
-  useEffect(() => () => {
-    if (hoverFrameRef.current != null) cancelAnimationFrame(hoverFrameRef.current)
-  }, [])
-
-  useLayoutEffect(() => {
-    if (isPageTurning) {
-      selectedLineRef.current = null
-      hideLineCursor('turn-suppressed')
-      return
-    }
-    const selected = selectedLineRef.current
-    if (!selected || selectedLineMatchesCurrentView(selected)) return
-    const handoffActive = Number.isFinite(selected.handoffUntil) && performance.now() < selected.handoffUntil
-    if (handoffActive) {
-      showLineCursor(selected.placement, 1, 'selected')
-      return
-    }
-    if (isPlaying) {
-      hideLineCursor()
-      return
-    }
-    hideLineCursor()
-  }, [chapterIdx, hideLineCursor, isPageTurning, isPlaying, pagesPerView, selectedLineMatchesCurrentView, showLineCursor, viewPage])
-
-  // While audio is playing, the line trails the estimated word/line inside the
-  // generated chunk. While paused, a clicked line remains parked until the user
-  // hovers/selects elsewhere.
-  useLayoutEffect(() => {
-    const cursor = cursorRef.current
-    const root = scrollRef.current
-    if (!cursor || !root) return
-    const reportCursor = (reason: string, extra: any = {}) => {
-      if (typeof window === 'undefined') return
-      const entry = {
-        reason,
-        isPlaying,
-        chunkProgress,
-        currentSentence,
-        activeChapterIdx,
-        chapterIdx,
-        viewPage,
-        pagesPerView,
-        wordCount: wordsCacheRef.current.length,
-        selectedSentence: selectedLineRef.current?.sentenceIdx ?? null,
-        cursorStyle: cursor.getAttribute('style') || '',
-        ...extra,
-      }
-      window.__folioCursorDebug = entry
-
-      if (!debugFlag('FOLIO_DEBUG_CURSOR', 'folioDebugCursor')) return
-      const now = performance.now()
-      const key = `${reason}|${extra.currentIdx ?? ''}|${chunkProgress.toFixed(3)}`
-      const prev = cursorDebugRef.current
-      if (key !== prev.lastKey || now - prev.lastAt > 600) {
-        cursorDebugRef.current = { lastKey: key, lastAt: now }
-        console.debug('[cursor]', entry)
-      }
-    }
-    const hide = (reason: string, extra: any = {}, mode: CursorHideMode = 'hidden') => {
-      hideLineCursor(mode)
-      reportCursor(reason, extra)
-    }
-    const showSelectedFallback = (reason: string, extra: any = {}) => {
-      const selected = selectedLineRef.current
-      const sameSentence = (
-        selected?.sentenceIdx === currentSentence ||
-        currentSentence == null ||
-        currentSentence < 0
-      )
-      const handoffActive = Number.isFinite(selected?.handoffUntil) && performance.now() < selected.handoffUntil
-      if ((!sameSentence && !handoffActive) || !selectedLineMatchesCurrentView(selected)) return false
-      showLineCursor(selected.placement, 1, 'selected')
-      reportCursor(reason, {
-        selectedSentence: selected.sentenceIdx,
-        selectedProgress: selected.progress,
-        ...extra,
-      })
-      return true
-    }
-    if (isPageTurning) {
-      return hide('page-turn-active', {
-        singleTurn,
-        doubleTurn: Boolean(doubleTurn),
-      }, 'turn-suppressed')
-    }
-    if (!isPlaying) {
-      const selected = selectedLineRef.current
-      if (selected?.placement) {
-        showLineCursor(selected.placement, 1, 'selected')
-      } else {
-        hideLineCursor()
-      }
-      return
-    }
-    if (activeChapterIdx !== chapterIdx) {
-      if (showSelectedFallback('selected-line-awaiting-active-chapter', { activeChapterIdx, chapterIdx })) return
-      return hide('chapter-mismatch', { activeChapterIdx, chapterIdx })
-    }
-    const targetView = readingViewForPosition(currentSentence, chunkProgress)
-    if (targetView == null) {
-      if (showSelectedFallback('selected-line-awaiting-reading-view', { currentSentence, chunkProgress })) return
-      return hide('no-reading-view', { currentSentence, chunkProgress })
-    }
-    if (targetView !== viewPage) {
-      if (showSelectedFallback('selected-line-before-reading-view-sync', { targetView, viewPage })) return
-      return hide('reading-position-off-view', { targetView, viewPage })
-    }
-    const active = findLiveSentence(currentSentence)
-    if (!active) {
-      if (showSelectedFallback('selected-line-awaiting-live-sentence')) return
-      return hide('no-live-sentence')
-    }
-    const liveCache = wordCacheForElement(active)
-    if (
-      liveCache.key &&
-      (liveCache.key !== wordsCacheKeyRef.current || wordsCacheRef.current.length !== liveCache.words.length)
-    ) {
-      wordsCacheRef.current = liveCache.words
-      wordsCacheKeyRef.current = liveCache.key
-      if (typeof window !== 'undefined') {
-        window.__folioCursorWords = {
-          currentSentence,
-          activeChapterIdx,
-          wordCount: liveCache.words.length,
-          textPreview: (active.textContent || '').slice(0, 120),
-          rebuiltInCursorEffect: true,
-        }
-      }
-    }
-    const words = wordsCacheRef.current
-    if (!words.length) {
-      if (showSelectedFallback('selected-line-awaiting-words')) return
-      return hide('no-words')
-    }
-    const viewportRect = active.closest('.reflow-viewport')?.getBoundingClientRect()
-    const { index: currentIdx, weightedPosition } = predictedWordIndex(words, chunkProgress)
-    if (currentIdx < 0) {
-      if (showSelectedFallback('selected-line-awaiting-prediction')) return
-      return hide('no-predicted-word')
-    }
-    const viewportKey = viewportRect
-      ? `${Math.round(viewportRect.width)}:${Math.round(viewportRect.height)}`
-      : 'none'
-    const activeRect = active.getBoundingClientRect()
-    const activeStyle = getComputedStyle(active)
-    const layoutKey = [
-      Math.round(activeRect.width * 2) / 2,
-      activeStyle.fontFamily,
-      activeStyle.fontSize,
-      activeStyle.lineHeight,
-      activeStyle.letterSpacing,
-    ].join(':')
-    const cacheKey = `${chapterIdx}:${viewPage}:${pagesPerView}:${currentSentence}:${liveCache.key}:${viewportKey}:${layoutKey}`
-    if (playbackLineCacheRef.current.key !== cacheKey) {
-      playbackLineCacheRef.current = { key: cacheKey, placements: new Map() }
-    }
-    let cachedLine = playbackLineCacheRef.current.placements.get(currentIdx)
-    if (!cachedLine) {
-      const region = activeLineRect(active, words, currentIdx, viewportRect)
-      const placement = cursorPlacementForRegion(region)
-      if (region && placement) {
-        cachedLine = { region, placement }
-        const startIdx = Math.max(0, region.startIdx ?? currentIdx)
-        const endIdx = Math.min(words.length - 1, region.endIdx ?? currentIdx)
-        for (let idx = startIdx; idx <= endIdx; idx += 1) {
-          playbackLineCacheRef.current.placements.set(idx, cachedLine)
-        }
-      }
-    }
-    if (!cachedLine) {
-      if (showSelectedFallback('selected-line-awaiting-region', { currentIdx, weightedPosition })) return
-      return hide('no-estimated-region-rect', { currentIdx, weightedPosition })
-    }
-    let displayedLine = cachedLine
-    const previousLine = playbackLineHoldRef.current
-    if (
-      previousLine &&
-      previousLine.cacheKey === cacheKey &&
-      previousLine.lineKey !== cachedLine.region.lineKey &&
-      previousLine.region?.endIdx < cachedLine.region?.startIdx
-    ) {
-      const nextLineProgress = progressForWord(words, cachedLine.region.startIdx ?? currentIdx)
-      if (chunkProgress < nextLineProgress + LINE_SWITCH_HYSTERESIS) {
-        displayedLine = previousLine
-      }
-    }
-
-    const { region, placement } = displayedLine
-    if (viewportRect && !rectIntersects(region.currentRect, viewportRect)) {
-      if (showSelectedFallback('selected-line-current-word-outside-viewport', {
-        currentIdx,
-        weightedPosition,
-      })) return
-      return hide('current-word-outside-viewport', {
-        currentIdx,
-        weightedPosition,
-        word: active.textContent?.slice(words[currentIdx].start, words[currentIdx].end),
-        wordRect: debugRect(region.currentRect),
-        viewportRect: debugRect(viewportRect),
-      })
-    }
-
-    showLineCursor(placement, 1, 'playback')
-    playbackLineHoldRef.current = {
-      cacheKey,
-      lineKey: region.lineKey,
-      region,
-      placement,
-    }
-    selectedLineRef.current = null
-    reportCursor('placed', {
-      currentIdx,
-      startIdx: region.startIdx,
-      endIdx: region.endIdx,
-      lineKey: region.lineKey,
-      weightedPosition,
-      word: active.textContent?.slice(words[currentIdx].start, words[currentIdx].end),
-      phrase: active.textContent?.slice(words[region.startIdx].start, words[region.endIdx].end),
-      wordRect: debugRect(region.currentRect),
-      regionRect: debugRect(region.rect),
-      viewportRect: debugRect(viewportRect),
-    })
-  }, [chunkProgress, currentSentence, activeChapterIdx, chapterIdx, cursorPlacementForRegion, cursorRefreshTick, doubleTurn, hideLineCursor, isPageTurning, isPlaying, pagesPerView, singleTurn, viewPage, readingViewForPosition, findLiveSentence, selectedLineMatchesCurrentView, showLineCursor])
+  }, [chapterLabel, chapterPageOffset, contentEls, contentPageCount, motion, runHeadText])
 
   const turnToView = useCallback((targetView: number, animate = true) => {
     const { viewPage: currentView, viewCount: currentViewCount, pagesPerView: ppv } = stateRef.current
     if (!Number.isFinite(targetView) || currentViewCount <= 0) return false
     const nextView = clampReaderViewTarget(targetView, currentViewCount)
     if (nextView == null) return false
-    if (nextView === currentView) {
-      followTurnKeyRef.current = ''
-      return false
-    }
-    selectedLineRef.current = null
-    hideLineCursor('force-hidden')
+    if (nextView === currentView) return false
     const direction: TurnDirection = nextView > currentView ? 'next' : 'prev'
     const adjacent = Math.abs(nextView - currentView) === 1
     if (animate && adjacent && ppv === 2 && !androidRuntime) {
@@ -1682,13 +737,48 @@ function ReflowViewer({
     if (animate && adjacent && triggerSingleTurn(direction) === 'busy') return false
     setViewPage(nextView)
     return true
-  }, [androidRuntime, hideLineCursor, triggerDoubleTurn, triggerSingleTurn])
+  }, [androidRuntime, triggerDoubleTurn, triggerSingleTurn])
+
+  const playbackCursor = usePlaybackLineCursor({
+    rootRef: scrollRef,
+    bookId,
+    chapterIndex: chapterIdx,
+    activeChapterIndex: activeChapterIdx,
+    currentSentence,
+    rawProgress: chunkProgress,
+    isPlaying,
+    followAlongMode,
+    pagesPerView,
+    viewPage,
+    pageStride: TEXT_WIDTH + GAP,
+    layoutIdentity: [
+      bookId,
+      chapter?.id ?? chapterIdx,
+      paginationKey || 'no-pagination-key',
+      pagesPerView,
+      theme,
+      contentPageCount,
+      modeMeasured ? 'measured' : 'pending',
+    ].join(':'),
+    isPageTurning,
+    androidRuntime,
+    onRequestChapter: setChapterIdx,
+    onRequestView: turnToView,
+    onSentenceSelect,
+  })
+  const {
+    cursorRef,
+    handleLinePointerMove,
+    handleLinePointerLeave,
+    handleLineDoubleClick,
+    handleAndroidLinePointerDown,
+    handleAndroidLinePointerUp,
+    cancelAndroidLineTap,
+  } = playbackCursor
 
   useEffect(() => () => {
     if (singleTurnTimeoutRef.current) clearTimeout(singleTurnTimeoutRef.current)
     if (doubleTurnTimeoutRef.current) clearTimeout(doubleTurnTimeoutRef.current)
-    if (followRetryTimeoutRef.current) clearTimeout(followRetryTimeoutRef.current)
-    if (cursorRefreshFrameRef.current != null) cancelAnimationFrame(cursorRefreshFrameRef.current)
   }, [])
 
   const updateMode = useCallback(() => {
@@ -1966,108 +1056,6 @@ function ReflowViewer({
     if (targetView != null) turnToView(targetView, animate)
   }, [chapterIdx, setChapterIdx, triggerSingleTurn, turnToView, viewForReadingPosition])
 
-  // Follow Along owns continuous page/sub-page synchronization. App only
-  // enters/exits the mode; this effect keeps retrying until the active audio
-  // position is actually on the visible spread.
-  useLayoutEffect(() => {
-    const debug = typeof window !== 'undefined' && window.FOLIO_DEBUG_PAGE_TURN
-    const log = (reason: string, extra: any = undefined) => {
-      if (debug) console.debug('[page-turn]', reason, extra || '')
-    }
-
-    if (!followAlongMode) {
-      pendingFollowTargetRef.current = null
-      followTurnKeyRef.current = ''
-      clearFollowRetry()
-      return log('skip: not in follow along')
-    }
-    if (currentSentence == null || currentSentence < 0) {
-      return log('pending: no current sentence', { currentSentence })
-    }
-    if (activeChapterIdx == null || activeChapterIdx < 0) {
-      return log('pending: no active chapter', { activeChapterIdx })
-    }
-
-    const target = {
-      chapterIdx: activeChapterIdx,
-      sentenceIdx: currentSentence,
-      progress: clamp(chunkProgress, 0, 0.98),
-    }
-    pendingFollowTargetRef.current = target
-
-    if (isPageTurning) {
-      queueFollowRetry()
-      return log('pending: page turn active', target)
-    }
-
-    if (!modeMeasured || !measureRef.current) {
-      queueFollowRetry()
-      return log('pending: measurement not ready', { modeMeasured, target })
-    }
-
-    if (target.chapterIdx !== chapterIdx) {
-      goToReadingPosition(target.chapterIdx, target.sentenceIdx, target.progress, 'local', false)
-      queueFollowRetry()
-      return log('requested chapter sync', { from: chapterIdx, target })
-    }
-
-    const measuredTargetView = viewForReadingPosition(target.sentenceIdx, target.progress, 'local')
-    if (measuredTargetView == null) {
-      queueFollowRetry()
-      return log('pending: no target view', target)
-    }
-
-    const { viewPage: vp, viewCount: vc } = stateRef.current
-    const targetView = clampReaderViewTarget(measuredTargetView, vc)
-    if (targetView == null) {
-      queueFollowRetry()
-      return log('pending: invalid view count', { measuredTargetView, viewCount: vc })
-    }
-    log('checked', {
-      currentSentence,
-      chunkProgress: +target.progress.toFixed(3),
-      targetView,
-      measuredTargetView,
-      currentView: vp,
-      viewCount: vc,
-    })
-
-    if (targetView === vp) {
-      pendingFollowTargetRef.current = null
-      followTurnKeyRef.current = ''
-      clearFollowRetry()
-      return log('in sync', { targetView, currentView: vp })
-    }
-
-    // Follow Along favors synchronization over a decorative physical turn.
-    // A full page animation can outlast a short spoken line and leave the
-    // cursor one view behind; the manual controls still use the page turn.
-    const moved = turnToView(targetView, false)
-    if (moved) {
-      followTurnKeyRef.current = `${chapterIdx}:${targetView}`
-      return log('TURN', { from: vp, to: targetView })
-    }
-    queueFollowRetry()
-    log('pending: turn refused', { from: vp, to: targetView })
-  }, [
-    activeChapterIdx,
-    chapterIdx,
-    clearFollowRetry,
-    chunkProgress,
-    currentSentence,
-    followAlongMode,
-    followRetryTick,
-    goToReadingPosition,
-    isPageTurning,
-    modeMeasured,
-    pagesPerView,
-    queueFollowRetry,
-    turnToView,
-    viewCount,
-    viewForReadingPosition,
-    viewPage,
-  ])
-
   const goToSentence = useCallback((targetChapter, sentenceIdx, indexType = 'local') => {
     goToReadingPosition(targetChapter, sentenceIdx, 0, indexType)
   }, [goToReadingPosition])
@@ -2175,6 +1163,7 @@ function ReflowViewer({
       ref={scrollRef}
     >
       <div className="reader-line-cursor" ref={cursorRef} aria-hidden="true" />
+      {playbackCursor.debugOverlay}
       <div
         className={`spread reflow-spread pt-spread pages-${pagesPerView}${singleTurn ? ` sp-turning sp-turning-${singleTurn}` : ''}`}
         style={{ zoom: spreadScale } as React.CSSProperties}
