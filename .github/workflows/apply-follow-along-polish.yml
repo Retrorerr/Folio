@@ -7,6 +7,15 @@ on:
     paths:
       - .github/workflows/apply-follow-along-polish.yml
       - scripts/apply-follow-along-polish.py
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-follow-along-polish.yml
+      - scripts/apply-follow-along-polish.py
+      - frontend/src/followAlong/**
+      - frontend/src/styles/reader.css
+      - frontend/tests/followAlongPlayback.test.mjs
 
 permissions:
   contents: write
@@ -56,6 +65,7 @@ jobs:
         run: git diff --check
 
       - name: Commit validated implementation
+        if: github.event_name == 'push'
         run: |
           git config user.name "folio-refactor-bot"
           git config user.email "actions@users.noreply.github.com"
