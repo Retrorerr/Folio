@@ -1,0 +1,84 @@
+name: Apply follow-along cursor refactor
+
+on:
+  push:
+    branches:
+      - agent/rebuild-follow-along-cursor
+    paths:
+      - .github/workflows/apply-follow-along-refactor.yml
+      - scripts/apply-follow-along-refactor.py
+
+permissions:
+  contents: write
+
+jobs:
+  refactor-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out cursor branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/rebuild-follow-along-cursor
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Apply guarded migration
+        id: migrate
+        shell: bash
+        run: |
+          set -o pipefail
+          : > cursor-refactor-ci.log
+          python scripts/apply-follow-along-refactor.py 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Install dependencies
+        id: install
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee -a cursor-refactor-ci.log
+          npm --prefix frontend ci 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Run focused and frontend validation
+        id: validate
+        shell: bash
+        run: |
+          set -o pipefail
+          npm --prefix frontend test 2>&1 | tee -a cursor-refactor-ci.log
+          npm --prefix frontend run typecheck 2>&1 | tee -a cursor-refactor-ci.log
+          npm --prefix frontend run lint 2>&1 | tee -a cursor-refactor-ci.log
+          npm --prefix frontend run build 2>&1 | tee -a cursor-refactor-ci.log
+          git diff --check 2>&1 | tee -a cursor-refactor-ci.log
+
+      - name: Commit validated implementation
+        if: success()
+        shell: bash
+        run: |
+          rm -f scripts/apply-follow-along-refactor.py
+          rm -f .github/workflows/apply-follow-along-refactor.yml
+          rm -f cursor-refactor-ci.log
+          git config user.name "folio-refactor-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Rebuild follow-along cursor architecture"
+          git push origin HEAD:agent/rebuild-follow-along-cursor
+
+      - name: Publish failure log
+        if: failure()
+        shell: bash
+        run: |
+          git config user.name "folio-refactor-bot"
+          git config user.email "actions@users.noreply.github.com"
+          printf '\nWorkflow failed at %s\n' "$(date -u +%FT%TZ)" >> cursor-refactor-ci.log
+          git add cursor-refactor-ci.log
+          git commit -m "Record follow-along refactor validation failure" || true
+          git push origin HEAD:agent/rebuild-follow-along-cursor || true
