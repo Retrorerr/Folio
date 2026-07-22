@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { apiFetch, apiJson } from '../api'
-import type { BookState, PageText, Position } from '../types'
+import { NARRATION_INDEX_VERSION, type BookState, type PageText, type Position } from '../types'
 import { mergeBookSettingsIfChanged, sameBookSettings, type BookSettingsPatch } from './bookSettings'
 
 function mergePosition(previous: Position | null | undefined, next: Position): Position {
@@ -178,6 +178,7 @@ export default function useBookState() {
     const position: Position = typeof pageOrPosition === 'number'
       ? { page: pageOrPosition, sentence_idx: sentenceIdx, ...extra }
       : { ...pageOrPosition, ...extra }
+    position.narration_index_version = NARRATION_INDEX_VERSION
     if (position.saved_at == null) position.saved_at = Date.now()
     // Swallow errors: callers are split between fire-and-forget (pause/stop)
     // and awaited (seek). Letting the error bubble up to fire-and-forget call

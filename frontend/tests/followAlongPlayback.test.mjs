@@ -283,12 +283,20 @@ test('canonical geometry never crosses into an adjacent rendered line', () => {
   assert.equal(merged.top, 70)
 })
 
-test('ordinary movement in the same column is smooth while discontinuities snap', () => {
+test('cursor movement stays smooth across columns, layouts, and views', () => {
   const previous = { x: 100, generation: 4, column: 0, viewIndex: 2 }
   assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 4, column: 0, viewIndex: 2 }), 'smooth')
-  assert.equal(model.cursorTransitionKind(previous, { x: 790, generation: 4, column: 1, viewIndex: 2 }), 'snap')
-  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 5, column: 0, viewIndex: 2 }), 'snap')
-  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 4, column: 0, viewIndex: 3 }), 'snap')
+  assert.equal(model.cursorTransitionKind(previous, { x: 790, generation: 4, column: 1, viewIndex: 2 }), 'smooth')
+  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 5, column: 0, viewIndex: 2 }), 'smooth')
+  assert.equal(model.cursorTransitionKind(previous, { x: 100, generation: 4, column: 0, viewIndex: 3 }), 'smooth')
+})
+
+test('cursor placement expands to the measured leading-glyph height', () => {
+  const tallLine = visualLine({ cursorLineHeight: 78, cursorPageY: 20 })
+  const map = visualMap([tallLine])
+  const tallPlacement = model.placementForLine(map, tallLine, 0)
+  assert.equal(tallPlacement.height, 78)
+  assert.equal(tallPlacement.y, 70)
 })
 
 test('debug tracing reads live playback through refs without destabilising rebuild callbacks', () => {

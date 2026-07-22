@@ -36,6 +36,8 @@ const PAGE_TEXT_CACHE_LIMIT = 24
 const READ_AHEAD_KEY_LIMIT = 256
 const AUDIO_SPECTRUM_BARS = 64
 const AUDIO_SPECTRUM_INTERVAL_MS = 40
+const INTER_CHUNK_PAUSE_MS = 500
+const MAX_INTER_CHUNK_PAUSE_MS = 1_500
 
 type LeadPosition = { page: number; sentence: number }
 type AudioPlaybackResult = 'done' | 'error' | 'paused' | 'cancelled'
@@ -1706,6 +1708,18 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
         // backend write. Errors are swallowed because position is also saved
         // on pause/stop and on every navigation.
         Promise.resolve(savePosition(page, sentence, { chunk_progress: 0 })).catch(() => {})
+      }
+      if (!isAndroidRuntime()) {
+        const pauseAfterMs = clampNumber(
+          sentenceInfo.pause_after_ms,
+          0,
+          MAX_INTER_CHUNK_PAUSE_MS,
+          INTER_CHUNK_PAUSE_MS,
+        )
+        if (pauseAfterMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, pauseAfterMs))
+          if (playbackSessionRef.current !== sessionId || !isPlayingRef.current) return
+        }
       }
       position = await findNextReadablePosition(page, sentence + 1)
     }

@@ -1,10 +1,12 @@
 export type BookFormat = 'epub' | 'pdf'
 export type TtsEngine = 'supertonic' | 'kokoro'
 export type PreloadStatus = 'idle' | 'verifying' | 'current-ready' | 'preloading' | 'ready' | 'error'
+export const NARRATION_INDEX_VERSION = 2
 
 export interface Position {
   page: number
   sentence_idx: number
+  narration_index_version?: number | null
   content_page?: number | null
   visual_page?: number | null
   pages_per_view?: number | null
@@ -67,6 +69,9 @@ export interface SentenceInfo {
   words: WordInfo[]
   audio_path?: string | null
   duration_ms?: number
+  kind?: string | null
+  pause_after_ms?: number
+  global_sentence_idx?: number | null
 }
 
 export interface PageText {
@@ -85,7 +90,7 @@ export interface ReflowSentence {
 
 export type ReflowBlock =
   | { type: 'paragraph'; sentences: ReflowSentence[]; role?: string; kind?: string; [key: string]: unknown }
-  | { type: 'heading'; text: string; level?: number; [key: string]: unknown }
+  | { type: 'heading'; text: string; level?: number; idx?: number; kind?: string; [key: string]: unknown }
   | { type: 'dinkus'; [key: string]: unknown }
   | { type: string; [key: string]: unknown }
 
@@ -93,6 +98,8 @@ export interface ReflowChapter {
   id?: string | number
   title?: string
   number?: string | number | null
+  title_idx?: number | null
+  number_idx?: number | null
   blocks: ReflowBlock[]
 }
 
@@ -246,7 +253,7 @@ export interface AudioInfo {
 export interface SearchResult {
   page: number
   sentence_idx: number
-  global_sentence_idx: number
+  global_sentence_idx: number | null
   location_label: string
   text: string
   snippet: string

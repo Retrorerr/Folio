@@ -11,6 +11,7 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 import main
+import reflow_service
 import supertonic_service
 import tts_service
 from models import BookState
@@ -213,6 +214,78 @@ class TtsArchitectureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         predicate = cancel_pending.call_args.args[0]
         self.assertTrue(predicate(main._job_key("book", 0, 0, "kokoro", "af_heart", 1.0)))
+
+
+class ReflowNarrationTests(unittest.TestCase):
+    def test_structure_and_body_follow_visual_order(self):
+        chapter = {
+            "number": "4",
+            "title": "Storm Signals",
+            "blocks": [
+                {"type": "heading", "level": 2, "text": "What Changed"},
+                {
+                    "type": "paragraph",
+                    "sentences": [
+                        {"text": "The first body sentence.", "idx": 21, "kind": "prose"},
+                        {"text": "The second body sentence.", "idx": 22, "kind": "prose"},
+                    ],
+                },
+            ],
+        }
+
+        units = reflow_service.chapter_narration_units(chapter)
+
+        self.assertEqual(
+            [unit["text"] for unit in units],
+            [
+                "Chapter 4.",
+                "Storm Signals.",
+                "What Changed.",
+                "The first body sentence.",
+                "The second body sentence.",
+            ],
+        )
+        self.assertEqual([unit["kind"] for unit in units[:3]], ["chapter-label", "chapter-title", "heading-2"])
+        self.assertEqual(units[3]["global_sentence_idx"], 21)
+        self.assertEqual(units[3]["legacy_sentence_idx"], 0)
+        self.assertEqual(units[4]["legacy_sentence_idx"], 1)
+        self.assertEqual(units[4]["pause_after_ms"], 500)
+
+    def test_section_break_extends_previous_pause(self):
+        chapter = {
+            "title": "A Beginning",
+            "blocks": [
+                {"type": "paragraph", "sentences": [{"text": "Before the break.", "idx": 1}]},
+                {"type": "dinkus"},
+                {"type": "paragraph", "sentences": [{"text": "After the break.", "idx": 2}]},
+            ],
+        }
+
+        units = reflow_service.chapter_narration_units(chapter)
+
+        self.assertEqual(units[1]["text"], "Before the break.")
+        self.assertEqual(units[1]["pause_after_ms"], 900)
+        self.assertEqual(units[2]["text"], "After the break.")
+
+    def test_legacy_body_index_maps_past_structural_units(self):
+        chapter = {
+            "number": "7",
+            "title": "The Crossing",
+            "blocks": [
+                {"type": "heading", "level": 2, "text": "At the Shore"},
+                {
+                    "type": "paragraph",
+                    "sentences": [
+                        {"text": "First body sentence."},
+                        {"text": "Second body sentence."},
+                    ],
+                },
+            ],
+        }
+
+        self.assertEqual(reflow_service.migrate_legacy_sentence_index(chapter, 0), 3)
+        self.assertEqual(reflow_service.migrate_legacy_sentence_index(chapter, 1), 4)
+        self.assertEqual(reflow_service.migrate_legacy_sentence_index(chapter, 99), 4)
 
 
 if __name__ == "__main__":

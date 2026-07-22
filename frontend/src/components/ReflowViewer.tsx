@@ -551,6 +551,11 @@ function ReflowViewer({
     if (!targetChapter) return null
 
     let localSentenceIdx = 0
+    const chapterLabel = targetChapter.number ? `Chapter ${targetChapter.number}` : ''
+    const chapterTitle = String(targetChapter.title || '').trim()
+    const showChapterTitle = Boolean(
+      chapterTitle && chapterTitle.toLocaleLowerCase().replace(/\.$/, '') !== chapterLabel.toLocaleLowerCase(),
+    )
 
     let targetDropCapBlockIdx = -1
     for (let i = 0; i < targetChapter.blocks.length; i++) {
@@ -569,10 +574,36 @@ function ReflowViewer({
 
     return (
       <>
-        {targetChapter.number || targetChapter.title ? (
+        {targetChapter.number || showChapterTitle ? (
           <div className="chapter-opener" style={{ breakAfter: 'avoid' }}>
-            {targetChapter.number && <div className="label">CHAPTER {targetChapter.number}</div>}
-            <h1>{targetChapter.title}</h1>
+            {targetChapter.number && (() => {
+              const localIdx = localSentenceIdx
+              localSentenceIdx += 1
+              return (
+                <div
+                  className="label sentence"
+                  data-sent-idx={targetChapter.number_idx ?? undefined}
+                  data-local-sent-idx={localIdx}
+                  data-narration-kind="chapter-label"
+                >
+                  CHAPTER {targetChapter.number}
+                </div>
+              )
+            })()}
+            {showChapterTitle && (() => {
+              const localIdx = localSentenceIdx
+              localSentenceIdx += 1
+              return (
+                <h1
+                  className="sentence"
+                  data-sent-idx={targetChapter.title_idx ?? undefined}
+                  data-local-sent-idx={localIdx}
+                  data-narration-kind="chapter-title"
+                >
+                  {targetChapter.title}
+                </h1>
+              )
+            })()}
             <div className="fleuron">. . .</div>
           </div>
         ) : null}
@@ -582,12 +613,17 @@ function ReflowViewer({
           }
           if (block.type === 'heading') {
             const Tag = `h${Math.min(4, Math.max(2, block.level || 2))}` as React.ElementType
+            const localIdx = localSentenceIdx
+            localSentenceIdx += 1
             return (
               <Tag
                 key={i}
-                className="reflow-heading"
+                className="reflow-heading sentence"
                 data-block-kind="heading"
                 data-block-level={block.level || 2}
+                data-sent-idx={block.idx ?? undefined}
+                data-local-sent-idx={localIdx}
+                data-narration-kind={`heading-${block.level || 2}`}
               >
                 {block.text}
               </Tag>
@@ -770,7 +806,7 @@ function ReflowViewer({
     cursorRef,
     handleLinePointerMove,
     handleLinePointerLeave,
-    handleLineDoubleClick,
+    handleLineClick,
     handleAndroidLinePointerDown,
     handleAndroidLinePointerUp,
     cancelAndroidLineTap,
@@ -1271,7 +1307,7 @@ function ReflowViewer({
           onPointerUp={handleAndroidLinePointerUp}
           onPointerCancel={cancelAndroidLineTap}
           onPointerLeave={handleLinePointerLeave}
-          onDoubleClick={handleLineDoubleClick}
+          onClick={handleLineClick}
           onKeyDown={handleViewportKeyDown}
         >
           <div

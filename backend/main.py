@@ -492,6 +492,28 @@ def _clamp_position(position: Position, page_count: int) -> Position:
     return position
 
 
+def _migrate_saved_narration_indices(state: BookState, reflow: dict) -> None:
+    """Preserve body-text resume targets after titles/headings join narration."""
+    chapters = reflow.get("chapters", [])
+    position = state.last_position
+    if position.narration_index_version != reflow_service.NARRATION_INDEX_VERSION:
+        if chapters:
+            position.sentence_idx = reflow_service.migrate_legacy_sentence_index(
+                chapters[position.page], position.sentence_idx
+            )
+        position.narration_index_version = reflow_service.NARRATION_INDEX_VERSION
+
+    for bookmark in state.bookmarks:
+        if bookmark.narration_index_version == reflow_service.NARRATION_INDEX_VERSION:
+            continue
+        if chapters:
+            bookmark.page = max(0, min(len(chapters) - 1, bookmark.page))
+            bookmark.sentence_idx = reflow_service.migrate_legacy_sentence_index(
+                chapters[bookmark.page], bookmark.sentence_idx
+            )
+        bookmark.narration_index_version = reflow_service.NARRATION_INDEX_VERSION
+
+
 def _settings_path() -> str:
     return os.path.join(DATA_DIR, "settings.json")
 
@@ -1172,24 +1194,19 @@ def _build_search_index(book_id: str) -> dict:
 
     reflow = reflow_service.get_or_build_reflow(entry["filepath"], DATA_DIR)
     for chapter_idx, chapter in enumerate(reflow.get("chapters", [])):
-        sentence_idx = 0
         chapter_title = chapter.get("title") or f"Chapter {chapter_idx + 1}"
-        for block in chapter.get("blocks", []):
-            if block.get("type") != "paragraph":
+        for sentence_idx, unit in enumerate(reflow_service.chapter_narration_units(chapter)):
+            text = re.sub(r"\s+", " ", unit.get("text", "")).strip()
+            if not text:
                 continue
-            for sentence in block.get("sentences", []):
-                text = re.sub(r"\s+", " ", sentence.get("text", "")).strip()
-                if not text:
-                    continue
-                rows.append({
-                    "page": chapter_idx,
-                    "sentence_idx": sentence_idx,
-                    "global_sentence_idx": sentence.get("idx"),
-                    "location_label": chapter_title,
-                    "text": text,
-                    "normalized_text": _normalize_search_text(text),
-                })
-                sentence_idx += 1
+            rows.append({
+                "page": chapter_idx,
+                "sentence_idx": sentence_idx,
+                "global_sentence_idx": unit.get("global_sentence_idx"),
+                "location_label": chapter_title,
+                "text": text,
+                "normalized_text": _normalize_search_text(text),
+            })
 
     index = {
         "book_id": book_id,
@@ -1664,6 +1681,8 @@ def open_book(filepath: str = Query(...)):
             state.imported_at = now_ms
     state.page_count = meta["page_count"]
     state.last_position = _clamp_position(state.last_position, state.page_count)
+    if saved:
+        _migrate_saved_narration_indices(state, reflow)
     if state.filepath != resolved:
         state.filepath = resolved
     state.format = "epub"
@@ -1783,14 +1802,17 @@ def get_page_text(book_id: str, page_num: int):
         raise HTTPException(400, "Invalid chapter index")
     chapter = chapters[page_num]
 
-    sentences = []
-    for block in chapter.get("blocks", []):
-        if block.get("type") != "paragraph":
-            continue
-        for sent in block.get("sentences", []):
-            text = sent.get("text", "").strip()
-            if text:
-                sentences.append(SentenceInfo(text=text, words=[]))
+    sentences = [
+        SentenceInfo(
+            text=unit["text"],
+            words=[],
+            kind=unit.get("kind"),
+            pause_after_ms=unit.get("pause_after_ms", reflow_service.DEFAULT_NARRATION_PAUSE_MS),
+            global_sentence_idx=unit.get("global_sentence_idx"),
+        )
+        for unit in reflow_service.chapter_narration_units(chapter)
+        if unit.get("text", "").strip()
+    ]
     result = PageText(
         page_number=page_num,
         sentences=sentences,
@@ -2027,10 +2049,7 @@ def _iter_sentence_window(book_id: str, page: int, sentence: int, count: int, in
             return cached
         if page_idx < 0 or page_idx >= len(chapters):
             return 0
-        n = 0
-        for b in chapters[page_idx].get("blocks", []):
-            if b.get("type") == "paragraph":
-                n += sum(1 for s in b.get("sentences", []) if s.get("text", "").strip())
+        n = len(reflow_service.chapter_narration_units(chapters[page_idx]))
         _sentence_count_cache[page_idx] = n
         return n
 
@@ -2375,6 +2394,7 @@ def save_position(book_id: str, position: Position):
         raise HTTPException(400, "Invalid page index")
     if position.sentence_idx < 0:
         raise HTTPException(400, "Invalid sentence index")
+    position.narration_index_version = reflow_service.NARRATION_INDEX_VERSION
     previous = state.last_position
     provided_fields = getattr(position, "model_fields_set", set())
     if previous and previous.page == position.page:
@@ -2427,6 +2447,7 @@ def save_position(book_id: str, position: Position):
 def add_bookmark(book_id: str, bookmark: Bookmark):
     if book_id not in BOOKS:
         raise HTTPException(404, "Book not loaded")
+    bookmark.narration_index_version = reflow_service.NARRATION_INDEX_VERSION
     BOOKS[book_id]["state"].bookmarks.append(bookmark)
     _save_state(book_id)
     return {"ok": True}
