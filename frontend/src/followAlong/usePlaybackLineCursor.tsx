@@ -13,6 +13,7 @@ import {
 import {
   INITIAL_FOLLOW_ALONG_STATE,
   appendBoundedTrace,
+  cursorTransitionKind,
   followAlongReducer,
   resolvePlaybackAnchor,
   updateStableProgress,
@@ -114,7 +115,15 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
   const requestedViewKeyRef = useRef('')
   const requestedChapterRef = useRef<number | null>(null)
   const lastResolvedAnchorRef = useRef<PlaybackAnchor | null>(null)
-  const lastPresentationRef = useRef<{ key: string; x: number; generation: number } | null>(null)
+  const lastPresentationRef = useRef<{
+    key: string
+    x: number
+    y: number
+    height: number
+    generation: number
+    column: number
+    viewIndex: number
+  } | null>(null)
   const hoverFrameRef = useRef<number | null>(null)
   const hoverPointRef = useRef<{ x: number; y: number } | null>(null)
   const pointerDownRef = useRef({ pointerId: -1, x: 0, y: 0 })
@@ -132,20 +141,41 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     `${bookId}:${activeChapterIndex}:${currentSentence}`
   ), [activeChapterIndex, bookId, currentSentence])
 
+  const traceContextRef = useRef({
+    sessionId,
+    activeChapterIndex,
+    currentSentence,
+    rawProgress,
+    viewPage,
+  })
+  useLayoutEffect(() => {
+    traceContextRef.current = {
+      sessionId,
+      activeChapterIndex,
+      currentSentence,
+      rawProgress,
+      viewPage,
+    }
+  }, [activeChapterIndex, currentSentence, rawProgress, sessionId, viewPage])
+
+  // Keep instrumentation independent from live playback values. Recreating this
+  // callback on every progress sample would also recreate scheduleRebuild and
+  // make the layout-identity effect rebuild the full visual-line map repeatedly.
   const trace = useCallback((reason: string, detail: Record<string, unknown> = {}) => {
+    const live = traceContextRef.current
     const state = followStateRef.current
     const progress = stableProgressRef.current
     const anchor = state.pendingAnchor || state.anchor || state.selectedAnchor || state.hoverAnchor
     const entry: FollowAlongTraceEntry = {
       at: Date.now(),
-      sessionId,
-      chapterIndex: activeChapterIndex >= 0 ? activeChapterIndex : null,
-      sentenceIndex: currentSentence >= 0 ? currentSentence : null,
-      rawProgress: Number.isFinite(rawProgress) ? rawProgress : null,
+      sessionId: live.sessionId,
+      chapterIndex: live.activeChapterIndex >= 0 ? live.activeChapterIndex : null,
+      sentenceIndex: live.currentSentence >= 0 ? live.currentSentence : null,
+      rawProgress: Number.isFinite(live.rawProgress) ? live.rawProgress : null,
       stableProgress: progress?.stableProgress ?? null,
       lineId: anchor?.lineId ?? null,
       targetView: anchor?.viewIndex ?? null,
-      visibleView: viewPage,
+      visibleView: live.viewPage,
       layoutGeneration: mapRef.current?.generation ?? null,
       state: state.status,
       reason,
@@ -155,7 +185,7 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     if (debugEnabled('FOLIO_DEBUG_FOLLOW_ALONG', 'folioDebugFollowAlong')) {
       console.debug('[follow-along]', entry)
     }
-  }, [activeChapterIndex, currentSentence, rawProgress, sessionId, viewPage])
+  }, [])
 
   const commitMap = useCallback((map: VisualLineMap) => {
     mapRef.current = map
@@ -529,11 +559,12 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     }
 
     const previous = lastPresentationRef.current
-    const discontinuous = Boolean(
-      !previous ||
-      previous.generation !== anchor.generation ||
-      Math.abs(previous.x - anchor.placement.x) > COLUMN_SNAP_DISTANCE,
-    )
+    const discontinuous = cursorTransitionKind(previous, {
+      x: anchor.placement.x,
+      generation: anchor.generation,
+      column: anchor.placement.column,
+      viewIndex: anchor.viewIndex,
+    }, COLUMN_SNAP_DISTANCE) === 'snap'
     cursor.dataset.cursorPosition = discontinuous ? 'horizontal-snap' : 'smooth'
     cursor.dataset.cursorMode = mode === 'paused' || mode === 'waiting' ? 'playback' : mode
     cursor.style.transform = `translate3d(${anchor.placement.x}px, ${anchor.placement.y}px, 0)`
@@ -544,7 +575,11 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
     lastPresentationRef.current = {
       key: anchor.placement.key,
       x: anchor.placement.x,
+      y: anchor.placement.y,
+      height: anchor.placement.height,
       generation: anchor.generation,
+      column: anchor.placement.column,
+      viewIndex: anchor.viewIndex,
     }
     if (discontinuous) {
       requestAnimationFrame(() => {

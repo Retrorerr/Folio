@@ -2045,29 +2045,29 @@
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--paper) 35%, transparent),
     0 0 18px color-mix(in srgb, var(--ember-soft) 28%, transparent);
-  transition: opacity 90ms ease-out;
+  transition: opacity 110ms ease-out;
   will-change: transform, height, opacity;
 }
 
 .reader-line-cursor[data-cursor-mode="playback"] {
   transition:
-    transform 140ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    height 140ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    opacity 60ms ease-out;
+    transform 235ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 90ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="selected"] {
   transition:
-    transform 165ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    height 165ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    opacity 90ms ease-out;
+    transform 210ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 100ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="hover"] {
   transition:
-    transform 125ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    height 125ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    opacity 90ms ease-out;
+    transform 165ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 190ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 100ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="instant"] {
@@ -2080,8 +2080,8 @@
 .reader-line-cursor[data-cursor-position="horizontal-snap"] {
   transition:
     transform 0ms linear,
-    height 140ms cubic-bezier(0.2, 0.76, 0.24, 1),
-    opacity 60ms ease-out;
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 90ms ease-out;
 }
 
 .reader-line-cursor[data-cursor-mode="turn-suppressed"],

@@ -7,6 +7,21 @@ export type CursorPlacement = {
   column: number
 }
 
+export type PhysicalLineGeometry = {
+  contentPage: number
+  top: number
+  bottom: number
+  left: number
+  right: number
+}
+
+export type CursorPresentationSnapshot = {
+  x: number
+  generation: number
+  column: number
+  viewIndex: number
+}
+
 export type WeightedToken = {
   text: string
   start: number
@@ -198,6 +213,52 @@ export function lineForProgress(lines: VisualLine[], progress: number): VisualLi
     if (normalized < line.progressEnd || index === lines.length - 1) return line
   }
   return lines[lines.length - 1]
+}
+
+export function mergeWithCanonicalLineGeometry<T extends PhysicalLineGeometry>(
+  line: T,
+  canonicalLines: PhysicalLineGeometry[],
+): T {
+  const lineMid = (line.top + line.bottom) / 2
+  const lineHeight = Math.max(1, line.bottom - line.top)
+  let best: PhysicalLineGeometry | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+
+  for (const candidate of canonicalLines) {
+    if (candidate.contentPage !== line.contentPage) continue
+    const candidateMid = (candidate.top + candidate.bottom) / 2
+    const candidateHeight = Math.max(1, candidate.bottom - candidate.top)
+    const overlap = Math.min(line.bottom, candidate.bottom) - Math.max(line.top, candidate.top)
+    const distance = Math.abs(lineMid - candidateMid)
+    const tolerance = Math.max(4, Math.min(lineHeight, candidateHeight) * 0.62)
+    if (overlap < -1 && distance > tolerance) continue
+    if (distance < bestDistance) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+
+  if (!best) return line
+  return {
+    ...line,
+    left: Math.min(line.left, best.left),
+    right: Math.max(line.right, best.right),
+    top: Math.min(line.top, best.top),
+    bottom: Math.max(line.bottom, best.bottom),
+  }
+}
+
+export function cursorTransitionKind(
+  previous: CursorPresentationSnapshot | null,
+  next: CursorPresentationSnapshot,
+  maxHorizontalDistance = 96,
+): 'smooth' | 'snap' {
+  if (!previous) return 'snap'
+  if (previous.generation !== next.generation) return 'snap'
+  if (previous.viewIndex !== next.viewIndex) return 'snap'
+  if (previous.column !== next.column) return 'snap'
+  if (Math.abs(previous.x - next.x) > maxHorizontalDistance) return 'snap'
+  return 'smooth'
 }
 
 export function placementForLine(
