@@ -1,9 +1,6 @@
 name: Codex ARM64 APK build
 
 on:
-  push:
-    branches:
-      - codex/build-arm64-740199c3
   pull_request:
     branches:
       - main
@@ -48,6 +45,7 @@ jobs:
           $ndk = Join-Path $env:ANDROID_SDK_ROOT "ndk\$env:NDK_VERSION"
           "ANDROID_HOME=$env:ANDROID_SDK_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "NDK_HOME=$ndk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_NDK_HOME=$ndk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install JavaScript dependencies
         shell: powershell
@@ -98,6 +96,23 @@ jobs:
         run: |
           cargo check --locked --manifest-path src-tauri\Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw "Rust check failed" }
+
+      - name: Prime generated Tauri Gradle integration
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm exec -- tauri android init --ci
+          if ($LASTEXITCODE -ne 0) { throw "Tauri Android initialization failed" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-espeak-android.ps1 -Targets aarch64
+          if ($LASTEXITCODE -ne 0) { throw "eSpeak Android bridge build failed" }
+          npm exec -- tauri android build --debug --target aarch64 --apk --split-per-abi --ci
+          $primeExit = $LASTEXITCODE
+          $settings = "src-tauri\gen\android\tauri.settings.gradle"
+          $buildLogic = "src-tauri\gen\android\app\tauri.build.gradle.kts"
+          if (-not (Test-Path -LiteralPath $settings -PathType Leaf) -or -not (Test-Path -LiteralPath $buildLogic -PathType Leaf)) {
+            throw "Tauri Gradle integration files were not generated (prime exit $primeExit)"
+          }
+          Write-Host "Tauri Gradle integration generated (prime exit $primeExit). Folio's verified packager will now rebuild the deliverable."
 
       - name: Build and verify ARM64 debug APK
         shell: powershell
