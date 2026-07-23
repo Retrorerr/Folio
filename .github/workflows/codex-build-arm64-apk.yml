@@ -1,0 +1,121 @@
+name: Codex ARM64 APK build
+
+on:
+  push:
+    branches:
+      - codex/build-arm64-740199c3
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64-debug:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_COMMIT: 740199c3d62b31598127d0f33a0a679e43a73c15
+      NDK_VERSION: 28.2.13676358
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@v4
+        with:
+          ref: 740199c3d62b31598127d0f33a0a679e43a73c15
+          fetch-depth: 1
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build components
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;$env:NDK_VERSION" "cmake;3.22.1"
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager failed with exit code $LASTEXITCODE" }
+          $ndk = Join-Path $env:ANDROID_SDK_ROOT "ndk\$env:NDK_VERSION"
+          "ANDROID_HOME=$env:ANDROID_SDK_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NDK_HOME=$ndk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install JavaScript dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "Root npm ci failed" }
+          npm --prefix frontend ci
+          if ($LASTEXITCODE -ne 0) { throw "Frontend npm ci failed" }
+
+      - name: Prepare pinned eSpeak data
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m venv backend\.venv
+          & backend\.venv\Scripts\python.exe -m pip install --disable-pip-version-check espeakng-loader==0.2.4
+          if ($LASTEXITCODE -ne 0) { throw "Pinned eSpeak data install failed" }
+
+      - name: Frontend checks
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm --prefix frontend run typecheck
+          if ($LASTEXITCODE -ne 0) { throw "Frontend typecheck failed" }
+          npm --prefix frontend run lint
+          if ($LASTEXITCODE -ne 0) { throw "Frontend lint failed" }
+          npm --prefix frontend test
+          if ($LASTEXITCODE -ne 0) { throw "Frontend tests failed" }
+          npm --prefix frontend run build
+          if ($LASTEXITCODE -ne 0) { throw "Frontend production build failed" }
+
+      - name: Rust check
+        shell: powershell
+        run: |
+          cargo check --locked --manifest-path src-tauri\Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw "Rust check failed" }
+
+      - name: Build and verify ARM64 debug APK
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-android.ps1 -Debug -Targets aarch64
+          if ($LASTEXITCODE -ne 0) { throw "ARM64 Android build failed" }
+
+      - name: Record build details
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $apk = Get-ChildItem dist\android\debug\Folio-*-arm64-v8a-debug.apk -File | Select-Object -First 1
+          if (-not $apk) { throw "Verified ARM64 APK was not found" }
+          $hash = (Get-FileHash -LiteralPath $apk.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "sourceCommit=$env:SOURCE_COMMIT"
+            "filename=$($apk.Name)"
+            "sizeBytes=$($apk.Length)"
+            "sha256=$hash"
+            "signingVerified=true"
+            "pageSize16KVerified=true"
+          ) | Set-Content -LiteralPath dist\android\debug\build-details.txt -Encoding utf8
+          Get-Content dist\android\debug\build-details.txt
+
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Folio-0.1.12-arm64-v8a-debug
+          path: |
+            dist/android/debug/Folio-*-arm64-v8a-debug.apk
+            dist/android/debug/build-manifest.json
+            dist/android/debug/build-details.txt
+          if-no-files-found: error
+          retention-days: 7
