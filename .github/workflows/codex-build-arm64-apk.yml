@@ -22,6 +22,21 @@ jobs:
           ref: 740199c3d62b31598127d0f33a0a679e43a73c15
           fetch-depth: 1
 
+      - name: Normalize pinned asset line endings
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          $assetRoot = "src-tauri\plugins\android\src\main\assets\misaki-en"
+          foreach ($name in @("NOTICE", "SOURCE.json")) {
+            $path = Join-Path $assetRoot $name
+            $text = [IO.File]::ReadAllText($path).Replace("`r`n", "`n")
+            [IO.File]::WriteAllText($path, $text, $utf8NoBom)
+          }
+          $licensePath = Join-Path $assetRoot "LICENSE"
+          $licenseText = [IO.File]::ReadAllText($licensePath).Replace("`r`n", "`n").Replace("`n", "`r`n")
+          [IO.File]::WriteAllText($licensePath, $licenseText, $utf8NoBom)
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
