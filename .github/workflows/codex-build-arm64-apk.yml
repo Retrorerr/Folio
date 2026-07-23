@@ -66,6 +66,20 @@ jobs:
           & backend\.venv\Scripts\python.exe -m pip install --disable-pip-version-check espeakng-loader==0.2.4
           if ($LASTEXITCODE -ne 0) { throw "Pinned eSpeak data install failed" }
 
+      - name: Prepare pinned eSpeak source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:RUNNER_TEMP "folio-espeak-ng"
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          git -C $source init --quiet
+          git -C $source remote add origin https://github.com/espeak-ng/espeak-ng.git
+          git -C $source fetch --depth 1 origin 4870adfa25b1a32b4361592f1be8a40337c58d6c
+          if ($LASTEXITCODE -ne 0) { throw "Pinned eSpeak source fetch failed" }
+          git -C $source checkout --detach --force 4870adfa25b1a32b4361592f1be8a40337c58d6c
+          if ($LASTEXITCODE -ne 0) { throw "Pinned eSpeak source checkout failed" }
+          "FOLIO_ESPEAK_SOURCE=$source" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Frontend checks
         shell: powershell
         run: |
