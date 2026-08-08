@@ -225,19 +225,22 @@ function coverImageStyle(book: BookState): React.CSSProperties | undefined {
     : undefined
 }
 
-function BookCover({ book, index = 0, className = '' }: { book: BookState; index?: number; className?: string }) {
+function BookCover({ book, index = 0, className = '', adaptive = false }: { book: BookState; index?: number; className?: string; adaptive?: boolean }) {
   const hasCover = Boolean(book.cover_url)
+  const coverUrl = book.cover_url ? apiResourceUrl(book.cover_url) : undefined
   return (
     <div
-      className={`dash-book-cover ${COVERS[index % COVERS.length]} ${hasCover ? 'has-real-cover' : ''} ${className}`}
-      style={coverImageStyle(book)}
+      className={`dash-book-cover ${COVERS[index % COVERS.length]} ${hasCover ? 'has-real-cover' : ''} ${adaptive ? 'is-adaptive' : ''} ${className}`}
+      style={adaptive ? undefined : coverImageStyle(book)}
     >
-      {!hasCover && (
+      {hasCover && adaptive ? (
+        <img className="dash-book-cover-image" src={coverUrl} alt="" draggable={false} />
+      ) : !hasCover ? (
         <>
           <span className="dash-cover-author">{(book.author || 'Unknown').split(' ').pop()?.toUpperCase()}</span>
           <span className="dash-cover-title">{book.title}</span>
         </>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -320,7 +323,7 @@ function BookCard({
         whileTap={buttonTap}
       >
         <div className="dash-book-cover-wrap">
-          <BookCover book={book} index={index} />
+          <BookCover book={book} index={index} adaptive />
         </div>
         <div className="dash-book-meta">
           <h3>{book.title}</h3>

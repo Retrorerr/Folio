@@ -1739,6 +1739,18 @@
   background-repeat: no-repeat;
 }
 
+.dash-book-cover.is-adaptive.has-real-cover {
+  aspect-ratio: auto;
+  height: auto;
+  background-image: none;
+}
+
+.dash-book-cover-image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .dash-book-cover.has-real-cover::before {
   inset: 0;
   border-color: rgba(255, 255, 255, 0.12);

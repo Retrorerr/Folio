@@ -109,8 +109,17 @@
 }
 .rail-btn:hover { background: var(--paper-3); color: var(--ink); transform: translateY(-1px); }
 .rail-btn.active { background: transparent; color: var(--paper); }
+html:not([data-platform='android']) .rail-reader-home {
+  /* The rail brand already returns desktop users to the library. */
+  display: none;
+}
+.android-nav-label {
+  /* Labels are reserved for the compact Android phone navigation. */
+  display: none;
+}
 .rail-btn > svg {
   position: relative;
+  flex: 0 0 auto;
   z-index: 1;
 }
 .rail-active-bg {

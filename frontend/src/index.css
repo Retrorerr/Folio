@@ -28,6 +28,21 @@
   --surface-line: color-mix(in srgb, var(--rule) 84%, transparent);
 }
 
+/* Keep the desktop library menu and reader sidebar on one theme surface. */
+html:not([data-platform='android']) :is(.dash-sidebar, .icon-rail, .sidebar-panel) {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--paper-2) 84%, transparent),
+      color-mix(in srgb, var(--paper) 92%, transparent)
+    ),
+    var(--paper-2);
+}
+
+html:not([data-platform='android']) .theme-blackleaf :is(.dash-sidebar, .icon-rail, .sidebar-panel) {
+  background: #000000;
+}
+
 .settings-overlay {
   --control-radius: 10px;
   --panel-radius: 12px;
