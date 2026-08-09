@@ -48,14 +48,23 @@ export function applyAndroidPlatformMetrics(metrics?: AndroidPlatformMetrics | n
   if (!isAndroidDocument() || !metrics) return
   const root = document.documentElement
   const insets = metrics.windowInsets || {}
+  let changed = false
   const setPixels = (name: string, value: unknown) => {
     const parsed = Number(value)
-    root.style.setProperty(name, `${Number.isFinite(parsed) ? Math.max(0, parsed) : 0}px`)
+    const next = `${Number.isFinite(parsed) ? Math.max(0, parsed) : 0}px`
+    if (root.style.getPropertyValue(name) === next) return
+    root.style.setProperty(name, next)
+    changed = true
   }
   setPixels('--android-ime-bottom', insets.imeBottom)
   if (Number.isFinite(Number(metrics.refreshRate))) {
-    root.style.setProperty('--android-refresh-rate', String(metrics.refreshRate))
+    const refreshRate = String(metrics.refreshRate)
+    if (root.style.getPropertyValue('--android-refresh-rate') !== refreshRate) {
+      root.style.setProperty('--android-refresh-rate', refreshRate)
+      changed = true
+    }
   }
+  if (changed) window.dispatchEvent(new CustomEvent('folio:android-insets-change'))
 }
 
 export async function syncAndroidSystemBars(theme: string): Promise<void> {
@@ -106,6 +115,10 @@ const ANDROID_SCROLL_FADE_SELECTOR = '[data-android-scroll-fade]'
 type AndroidScrollFadeOverlay = {
   top: HTMLDivElement
   bottom: HTMLDivElement
+  acceptsVerticalScroll: boolean
+  topIsFrontmost: boolean
+  bottomIsFrontmost: boolean
+  geometryReady: boolean
 }
 
 /**
@@ -119,6 +132,7 @@ export function installAndroidScrollFades(): () => void {
 
   const tracked = new Set<HTMLElement>()
   const pending = new Set<HTMLElement>()
+  const geometryPending = new Set<HTMLElement>()
   const overlays = new Map<HTMLElement, AndroidScrollFadeOverlay>()
   const overlayLayer = document.createElement('div')
   overlayLayer.className = 'android-scroll-fade-layer'
@@ -127,6 +141,7 @@ export function installAndroidScrollFades(): () => void {
 
   let animationFrame = 0
   let pendingAll = false
+  let pendingAllGeometry = false
   let disposed = false
   let resizeObserver: ResizeObserver | null = null
 
@@ -138,7 +153,14 @@ export function installAndroidScrollFades(): () => void {
     top.hidden = true
     bottom.hidden = true
     overlayLayer.append(top, bottom)
-    return { top, bottom }
+    return {
+      top,
+      bottom,
+      acceptsVerticalScroll: false,
+      topIsFrontmost: false,
+      bottomIsFrontmost: false,
+      geometryReady: false,
+    }
   }
 
   const setStyle = (element: HTMLElement, property: string, value: string) => {
@@ -159,54 +181,60 @@ export function installAndroidScrollFades(): () => void {
     overlays.delete(element)
     tracked.delete(element)
     pending.delete(element)
+    geometryPending.delete(element)
   }
 
-  const updateFadeState = (element: HTMLElement) => {
+  const updateFadeState = (element: HTMLElement, refreshGeometry: boolean) => {
     if (!element.isConnected || !element.matches(ANDROID_SCROLL_FADE_SELECTOR)) {
       untrack(element)
       return
     }
 
-    const style = window.getComputedStyle(element)
-    const overflowY = style.overflowY
-    const acceptsVerticalScroll = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
-    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
-    const hasOverflow = acceptsVerticalScroll && maxScrollTop > 2
-    const canScrollUp = hasOverflow && element.scrollTop > 1
-    const canScrollDown = hasOverflow && element.scrollTop < maxScrollTop - 1
-    const rect = element.getBoundingClientRect()
-    const left = Math.max(0, rect.left)
-    const right = Math.min(window.innerWidth, rect.right)
-    const top = Math.max(0, rect.top)
-    const bottom = Math.min(window.innerHeight, rect.bottom)
-    const visible = style.display !== 'none' && style.visibility !== 'hidden' && right - left > 1 && bottom - top > 1
-    const ownsViewportPoint = (x: number, y: number) => {
-      const frontmost = document.elementFromPoint(x, y)
-      return frontmost?.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR) === element
-    }
-    const sampleX = left + ((right - left) / 2)
-    const sampleDepth = Math.min(24, Math.max(1, (bottom - top) / 4))
-    const topIsFrontmost = visible && ownsViewportPoint(sampleX, Math.min(bottom - 1, top + sampleDepth))
-    const bottomIsFrontmost = visible && ownsViewportPoint(sampleX, Math.max(top + 1, bottom - sampleDepth))
-    const showTop = canScrollUp && topIsFrontmost
-    const showBottom = canScrollDown && bottomIsFrontmost
-    const fadeColor = style.getPropertyValue('--android-scroll-fade-color').trim()
-      || (style.backgroundColor !== 'rgba(0, 0, 0, 0)' ? style.backgroundColor : window.getComputedStyle(document.body).backgroundColor)
     const overlay = overlays.get(element) || createOverlay()
     overlays.set(element, overlay)
 
-    const geometry: Array<[string, string]> = [
-      ['left', `${left}px`],
-      ['width', `${Math.max(0, right - left)}px`],
-      ['max-height', `${Math.max(0, (bottom - top) / 2)}px`],
-      ['--android-scroll-fade-color', fadeColor],
-    ]
-    geometry.forEach(([property, value]) => {
-      setStyle(overlay.top, property, value)
-      setStyle(overlay.bottom, property, value)
-    })
-    setStyle(overlay.top, 'top', `${top}px`)
-    setStyle(overlay.bottom, 'bottom', `${Math.max(0, window.innerHeight - bottom)}px`)
+    if (refreshGeometry || !overlay.geometryReady) {
+      const style = window.getComputedStyle(element)
+      const overflowY = style.overflowY
+      overlay.acceptsVerticalScroll = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
+      const rect = element.getBoundingClientRect()
+      const left = Math.max(0, rect.left)
+      const right = Math.min(window.innerWidth, rect.right)
+      const top = Math.max(0, rect.top)
+      const bottom = Math.min(window.innerHeight, rect.bottom)
+      const visible = style.display !== 'none' && style.visibility !== 'hidden' && right - left > 1 && bottom - top > 1
+      const ownsViewportPoint = (x: number, y: number) => {
+        const frontmost = document.elementFromPoint(x, y)
+        return frontmost?.closest<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR) === element
+      }
+      const sampleX = left + ((right - left) / 2)
+      const sampleDepth = Math.min(24, Math.max(1, (bottom - top) / 4))
+      overlay.topIsFrontmost = visible && ownsViewportPoint(sampleX, Math.min(bottom - 1, top + sampleDepth))
+      overlay.bottomIsFrontmost = visible && ownsViewportPoint(sampleX, Math.max(top + 1, bottom - sampleDepth))
+      const fadeColor = style.getPropertyValue('--android-scroll-fade-color').trim()
+        || (style.backgroundColor !== 'rgba(0, 0, 0, 0)' ? style.backgroundColor : window.getComputedStyle(document.body).backgroundColor)
+
+      const geometry: Array<[string, string]> = [
+        ['left', `${left}px`],
+        ['width', `${Math.max(0, right - left)}px`],
+        ['max-height', `${Math.max(0, (bottom - top) / 2)}px`],
+        ['--android-scroll-fade-color', fadeColor],
+      ]
+      geometry.forEach(([property, value]) => {
+        setStyle(overlay.top, property, value)
+        setStyle(overlay.bottom, property, value)
+      })
+      setStyle(overlay.top, 'top', `${top}px`)
+      setStyle(overlay.bottom, 'bottom', `${Math.max(0, window.innerHeight - bottom)}px`)
+      overlay.geometryReady = true
+    }
+
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
+    const hasOverflow = overlay.acceptsVerticalScroll && maxScrollTop > 2
+    const canScrollUp = hasOverflow && element.scrollTop > 1
+    const canScrollDown = hasOverflow && element.scrollTop < maxScrollTop - 1
+    const showTop = canScrollUp && overlay.topIsFrontmost
+    const showBottom = canScrollDown && overlay.bottomIsFrontmost
     overlay.top.hidden = !showTop
     overlay.bottom.hidden = !showBottom
 
@@ -219,15 +247,23 @@ export function installAndroidScrollFades(): () => void {
   const flush = () => {
     animationFrame = 0
     const elements = pendingAll ? Array.from(tracked) : Array.from(pending)
+    const refreshAllGeometry = pendingAllGeometry
     pendingAll = false
+    pendingAllGeometry = false
     pending.clear()
-    elements.forEach(updateFadeState)
+    elements.forEach((element) => updateFadeState(element, refreshAllGeometry || geometryPending.has(element)))
+    geometryPending.clear()
   }
 
-  const schedule = (element?: HTMLElement | null) => {
+  const schedule = (element?: HTMLElement | null, refreshGeometry = true) => {
     if (disposed) return
-    if (element) pending.add(element)
-    else pendingAll = true
+    if (element) {
+      pending.add(element)
+      if (refreshGeometry) geometryPending.add(element)
+    } else {
+      pendingAll = true
+      pendingAllGeometry ||= refreshGeometry
+    }
     if (!animationFrame) animationFrame = window.requestAnimationFrame(flush)
   }
 
@@ -239,7 +275,7 @@ export function installAndroidScrollFades(): () => void {
     if (tracked.has(element)) return
     tracked.add(element)
     resizeObserver?.observe(element)
-    schedule(element)
+    schedule(element, true)
   }
 
   const discover = (root: ParentNode) => {
@@ -290,14 +326,18 @@ export function installAndroidScrollFades(): () => void {
     childList: true,
     characterData: true,
     attributes: true,
-    attributeFilter: ['class', 'style', 'data-android-scroll-fade', 'data-folio-theme'],
+    // Motion updates inline styles on every animation frame. Observing `style`
+    // here would turn those compositor animations into repeated layout reads.
+    attributeFilter: ['class', 'data-android-scroll-fade', 'data-folio-theme'],
   })
 
   const onScroll = (event: Event) => {
     const element = event.target instanceof HTMLElement ? event.target : null
     if (!element?.matches(ANDROID_SCROLL_FADE_SELECTOR)) return
-    schedule(element)
-    element.querySelectorAll<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR).forEach(schedule)
+    schedule(element, false)
+    // Nested viewports move when their parent scrolls, so only their overlay
+    // geometry needs refreshing. The active viewport itself stays put.
+    element.querySelectorAll<HTMLElement>(ANDROID_SCROLL_FADE_SELECTOR).forEach((nested) => schedule(nested, true))
   }
   const scheduleAll = () => schedule()
   const scheduleClosest = (event: Event) => {
@@ -313,6 +353,7 @@ export function installAndroidScrollFades(): () => void {
   window.addEventListener('resize', scheduleAll, { passive: true })
   window.addEventListener('orientationchange', scheduleAll, { passive: true })
   window.addEventListener('folio:android-shell-change', scheduleAll)
+  window.addEventListener('folio:android-insets-change', scheduleAll)
   void document.fonts?.ready.then(scheduleAll)
 
   return () => {
@@ -327,12 +368,15 @@ export function installAndroidScrollFades(): () => void {
     window.removeEventListener('resize', scheduleAll)
     window.removeEventListener('orientationchange', scheduleAll)
     window.removeEventListener('folio:android-shell-change', scheduleAll)
+    window.removeEventListener('folio:android-insets-change', scheduleAll)
     tracked.forEach(clearFadeState)
     tracked.clear()
     pending.clear()
+    geometryPending.clear()
     overlays.clear()
     overlayLayer.remove()
     pendingAll = false
+    pendingAllGeometry = false
   }
 }
 

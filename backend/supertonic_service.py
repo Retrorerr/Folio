@@ -23,10 +23,14 @@ from model_manager import (
     user_install_info,
 )
 from paths import AUDIO_CACHE_DIR, MODELS_DIR
-from tts_defaults import DEFAULT_SUPERTONIC_VOICE, DEFAULT_TTS_SPEED, SUPERTONIC_ENGINE_ID
+from tts_defaults import (
+    DEFAULT_SUPERTONIC_VOICE,
+    DEFAULT_TTS_SPEED,
+    SUPERTONIC_ENGINE_ID,
+)
 
 try:
-    from text_chunker import HARD_MAX_TOKENS, CHUNKER_VERSION
+    from text_chunker import CHUNKER_VERSION, HARD_MAX_TOKENS
 except Exception:
     HARD_MAX_TOKENS = 280
     CHUNKER_VERSION = "tts-v1"
@@ -382,8 +386,8 @@ def validate_speed(speed: float | str | None) -> float:
         speed = DEFAULT_SPEED
     try:
         value = float(speed)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid speed: {speed!r}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid speed: {speed!r}") from exc
     if not math.isfinite(value) or value < MIN_SPEED or value > MAX_SPEED:
         raise ValueError(f"Speed must be between {MIN_SPEED} and {MAX_SPEED}")
     return round(value, 3)

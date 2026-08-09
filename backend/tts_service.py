@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import glob
 import gc
+import glob
 import hashlib
 import math
 import os
 import re
 import sys
-import threading
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -56,16 +56,17 @@ for _candidate in _site_package_candidates:
 ort = LazyModule("onnxruntime")
 Kokoro = LazyAttribute("kokoro_onnx", "Kokoro")
 
+from misaki_g2p import REVISION as MISAKI_G2P_REVISION
+from misaki_g2p import STRATEGY as MISAKI_G2P_STRATEGY
+from misaki_g2p import MisakiEnglishG2P
 from model_manager import (
     ModelInstallRequired,
-    default_state,
     load_state,
     set_state,
     update_progress,
     user_install_info,
 )
 from paths import AUDIO_CACHE_DIR, MODELS_DIR
-from misaki_g2p import MisakiEnglishG2P, REVISION as MISAKI_G2P_REVISION, STRATEGY as MISAKI_G2P_STRATEGY
 from tts_defaults import DEFAULT_KOKORO_VOICE, DEFAULT_TTS_SPEED, KOKORO_ENGINE_ID
 
 try:
@@ -188,7 +189,7 @@ def _install_kokoro_espeak_compat() -> None:
             library_path = self._shared_library_path(espeak)
             del espeak
         except OSError as error:
-            raise RuntimeError(f"failed to load espeak library: {str(error)}") from None
+            raise RuntimeError(f"failed to load espeak library: {error!s}") from None
 
         self._tempdir = tempfile.mkdtemp()
         if sys.platform == "win32":
@@ -235,8 +236,8 @@ def validate_speed(speed: float | str | None) -> float:
         speed = DEFAULT_SPEED
     try:
         value = float(speed)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid speed: {speed!r}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid speed: {speed!r}") from exc
     if not math.isfinite(value) or value < MIN_SPEED or value > MAX_SPEED:
         raise ValueError(f"Speed must be between {MIN_SPEED} and {MAX_SPEED}")
     return round(value, 3)
@@ -754,7 +755,7 @@ def _load_cuda_with_adaptive_limit(model_path: str) -> tuple[Kokoro, int]:
             errors.append(f"{mem_limit_mb}MB: {exc}")
             print(f"Kokoro CUDA smoke failed at gpu_mem_limit={mem_limit_mb}MB: {exc}")
             try:
-                kokoro = None  # noqa: F841
+                kokoro = None
             except Exception:
                 pass
             _cleanup_failed_cuda_attempt()

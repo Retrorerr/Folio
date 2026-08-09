@@ -14,8 +14,7 @@ initials. The chunker only decides how to group already-split sentences.
 from __future__ import annotations
 
 import math
-import re
-from typing import Iterable
+from collections.abc import Iterable
 
 # Bumping this invalidates the audio cache by changing _cache_key in
 # tts_service. Old WAVs become orphaned (different hash prefix) and new
@@ -65,10 +64,8 @@ def _looks_like_dialogue(text: str) -> bool:
         return True
     # Whole sentence wrapped in quotes somewhere — count quotes.
     quote_chars = sum(1 for c in s if c in _OPEN_QUOTES + _CLOSE_QUOTES)
-    if quote_chars >= 2 and len(s) < 200:
-        # Looks like a short utterance with attribution.
-        return True
-    return False
+    # A short utterance with attribution usually has a balanced quote pair.
+    return quote_chars >= 2 and len(s) < 200
 
 
 # ----- core chunker -----
@@ -76,7 +73,7 @@ def _looks_like_dialogue(text: str) -> bool:
 class _Pending:
     """Mutable accumulator for the current chunk being built."""
 
-    __slots__ = ("texts", "source_sentences", "kind")
+    __slots__ = ("kind", "source_sentences", "texts")
 
     def __init__(self) -> None:
         self.texts: list[str] = []
@@ -278,15 +275,12 @@ def chunk_blocks(blocks: Iterable[dict]) -> list[dict]:
             # budget already, close the chunk so we don't drift past
             # TARGET_MAX cleanly.
             projected = pending.total_tokens()
-            if projected >= TARGET_MIN_TOKENS:
-                # If adding the next would clearly overshoot, close now.
-                # We approximate "next sentence" as the average remaining
-                # sentence size for the paragraph; if total already past
-                # SOFT_OVER_BUDGET, flush.
-                if projected >= SOFT_OVER_BUDGET:
-                    _flush(chunks, pending)
-                elif projected >= TARGET_MAX_TOKENS:
-                    _flush(chunks, pending)
+            # If adding the next would clearly overshoot, close now. We
+            # approximate the next sentence from the current token budget.
+            if projected >= TARGET_MIN_TOKENS and (
+                projected >= SOFT_OVER_BUDGET or projected >= TARGET_MAX_TOKENS
+            ):
+                _flush(chunks, pending)
 
         # End-of-paragraph behavior.
         if pending.empty():

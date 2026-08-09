@@ -15,7 +15,7 @@ if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 import main
-from models import BookState, Bookmark, Position
+from models import Bookmark, BookState, Position
 
 
 class FakeRequest:

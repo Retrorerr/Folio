@@ -1,0 +1,21 @@
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "PIE", "RUF", "SIM", "UP"]
+ignore = [
+  # IPA symbols, smart quotes, and dashes are data in the text pipeline.
+  "RUF001",
+  "RUF005",
+  # Existing cleanup paths intentionally keep optional fsync/model cleanup best-effort.
+  "SIM105",
+]
+
+[lint.per-file-ignores]
+# FastAPI uses dependency marker calls in endpoint defaults by design.
+"backend/main.py" = ["B008"]
+# These modules install lazy optional dependencies before importing consumers.
+"backend/supertonic_service.py" = ["E402"]
+"backend/tts_service.py" = ["E402"]
+# Tests add the backend directory to sys.path before importing application modules.
+"backend/tests/*.py" = ["E402"]

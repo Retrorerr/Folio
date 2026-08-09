@@ -132,12 +132,14 @@ class TtsArchitectureTests(unittest.TestCase):
         main.BOOKS[state.id] = {"state": state, "filepath": state.filepath}
 
         try:
-            with mock.patch.object(main, "_activate_tts_engine"):
-                with mock.patch.object(main, "_save_state"):
-                    response = self.client.post(
-                        f"/api/book/{state.id}/settings?tts_engine=kokoro&voice=af_bella&speed=1",
-                        headers=self.headers,
-                    )
+            with (
+                mock.patch.object(main, "_activate_tts_engine"),
+                mock.patch.object(main, "_save_state"),
+            ):
+                response = self.client.post(
+                    f"/api/book/{state.id}/settings?tts_engine=kokoro&voice=af_bella&speed=1",
+                    headers=self.headers,
+                )
         finally:
             main.BOOKS.pop(state.id, None)
 
@@ -188,16 +190,18 @@ class TtsArchitectureTests(unittest.TestCase):
         main._active_tts_engine = "supertonic"
 
         try:
-            with mock.patch.object(main, "_engine_service", return_value=service):
-                with self.assertRaisesRegex(RuntimeError, "supertonic is now the active TTS engine"):
-                    main._generate_audio(
-                        "Text",
-                        "kokoro",
-                        "af_heart",
-                        1.0,
-                        "book",
-                        allow_engine_switch=False,
-                    )
+            with (
+                mock.patch.object(main, "_engine_service", return_value=service),
+                self.assertRaisesRegex(RuntimeError, "supertonic is now the active TTS engine"),
+            ):
+                main._generate_audio(
+                    "Text",
+                    "kokoro",
+                    "af_heart",
+                    1.0,
+                    "book",
+                    allow_engine_switch=False,
+                )
         finally:
             main._active_tts_engine = previous_engine
 
@@ -217,6 +221,21 @@ class TtsArchitectureTests(unittest.TestCase):
 
 
 class ReflowNarrationTests(unittest.TestCase):
+    def test_toc_follows_rendered_chapter_boundaries(self):
+        toc = reflow_service.reflow_toc({
+            "chapters": [
+                {"number": "I", "title": "Arrival", "blocks": []},
+                {"number": None, "title": "Interlude", "blocks": []},
+                {"number": "2", "title": "Chapter 2", "blocks": []},
+            ],
+        })
+
+        self.assertEqual(toc, [
+            {"title": "I - Arrival", "page": 0},
+            {"title": "Interlude", "page": 1},
+            {"title": "Chapter 2", "page": 2},
+        ])
+
     def test_structure_and_body_follow_visual_order(self):
         chapter = {
             "number": "4",

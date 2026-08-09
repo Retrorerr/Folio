@@ -10,6 +10,9 @@ if (Test-Path $cargoBin) {
 }
 
 & (Join-Path $PSScriptRoot "build-backend.ps1")
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
 
 $releaseResources = Join-Path $root "src-tauri\target\release\resources"
 if (Test-Path $releaseResources) {
@@ -21,8 +24,11 @@ if (Test-Path $signingKeyPath) {
   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $signingKeyPath
 }
 
-& $nodeTools.NodeExe $nodeTools.NpmCli --prefix $root install
-& $nodeTools.NodeExe $nodeTools.NpmCli --prefix (Join-Path $root "frontend") install
+$installCommand = if ($env:CI) { "ci" } else { "install" }
+& $nodeTools.NodeExe $nodeTools.NpmCli --prefix $root $installCommand
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $nodeTools.NodeExe $nodeTools.NpmCli --prefix (Join-Path $root "frontend") $installCommand
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $tauriArgs = @("--prefix", $root, "exec", "tauri", "--", "build")
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
   # Local validation builds should still produce usable installers. Release

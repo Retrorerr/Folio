@@ -119,20 +119,77 @@ export const appViewTransition: Variants = {
   },
 }
 
-// Android keeps fixed navigation and playback surfaces inside each view. A
-// clip/opacity handoff gives those surfaces a clear transition without turning
-// the entire view into a transformed containing block or forcing a full layout
-// pass over the reader tree.
+// Android keeps fixed navigation and playback surfaces inside each view. Keep
+// this handoff opacity-only: animating a viewport-sized clip path makes WebView
+// repaint the full reader surface on every frame, while a transformed wrapper
+// would change the containing block for fixed navigation.
 export const androidAppViewTransition: Variants = {
-  initial: { opacity: 0, clipPath: 'inset(0 0 2.5% 0 round 14px)' },
+  initial: { opacity: 0 },
   animate: {
     opacity: 1,
-    clipPath: 'inset(0 0 0% 0 round 0px)',
+    transition: { duration: 0.18, ease: motionEase },
+  },
+  exit: {
+    opacity: 0,
+    transition: { duration: 0.1, ease: motionEase },
+  },
+}
+
+// Android surface transitions use short, non-overshooting Material-style
+// motion. They animate only compositor-friendly properties and avoid layout
+// springs over large dashboard and reader trees.
+export const androidPageTransition: Variants = {
+  initial: { opacity: 0, x: 10 },
+  animate: {
+    opacity: 1,
+    x: 0,
+    transition: { duration: 0.18, ease: motionEase },
+  },
+  exit: {
+    opacity: 0,
+    x: -6,
+    transition: { duration: 0.1, ease: motionEase },
+  },
+}
+
+export const androidSideSheet: Variants = {
+  initial: { opacity: 0, x: -14 },
+  animate: {
+    opacity: 1,
+    x: 0,
     transition: { duration: 0.2, ease: motionEase },
   },
   exit: {
     opacity: 0,
-    clipPath: 'inset(0 0 1.5% 0 round 10px)',
+    x: -10,
+    transition: { duration: 0.12, ease: motionEase },
+  },
+}
+
+export const androidBottomSheet: Variants = {
+  initial: { opacity: 0, y: 20 },
+  animate: {
+    opacity: 1,
+    y: 0,
+    transition: { duration: 0.22, ease: motionEase },
+  },
+  exit: {
+    opacity: 0,
+    y: 12,
+    transition: { duration: 0.14, ease: motionEase },
+  },
+}
+
+export const androidSettingsTransition: Variants = {
+  initial: { opacity: 0, y: 10 },
+  animate: {
+    opacity: 1,
+    y: 0,
+    transition: { duration: 0.2, ease: motionEase },
+  },
+  exit: {
+    opacity: 0,
+    y: 6,
     transition: { duration: 0.12, ease: motionEase },
   },
 }

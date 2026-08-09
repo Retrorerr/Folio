@@ -1,9 +1,10 @@
+import os
 import sys
 import tempfile
 import types
 import unittest
-import os
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,8 +50,8 @@ class FakeSession:
 
 
 class FakeKokoro:
-    failing_providers: set[str] = set()
-    create_calls: list[tuple[tuple, dict]] = []
+    failing_providers: ClassVar[set[str]] = set()
+    create_calls: ClassVar[list[tuple[tuple, dict]]] = []
 
     def __init__(self, provider: str):
         self.provider = provider
@@ -258,14 +259,16 @@ class TTSServiceTests(unittest.TestCase):
         cached = Path(tts_service.audio_cache_path("book", "Cached text.", "af_heart", 0.95))
         tts_service.sf.write(str(cached), [0.0] * 240, 24000)
 
-        with mock.patch.object(tts_service, "get_kokoro", side_effect=AssertionError("should not load")):
-            with mock.patch.object(tts_service, "_cached_duration_ms", return_value=10.0):
-                filename, duration_ms = tts_service.generate_sentence_audio(
-                    "Cached text.",
-                    voice="af_heart",
-                    speed=0.95,
-                    book_id="book",
-                )
+        with (
+            mock.patch.object(tts_service, "get_kokoro", side_effect=AssertionError("should not load")),
+            mock.patch.object(tts_service, "_cached_duration_ms", return_value=10.0),
+        ):
+            filename, duration_ms = tts_service.generate_sentence_audio(
+                "Cached text.",
+                voice="af_heart",
+                speed=0.95,
+                book_id="book",
+            )
 
         self.assertEqual(filename, cached.name)
         self.assertGreater(duration_ms, 0)

@@ -21,6 +21,7 @@ logger = logging.getLogger("uvicorn.error")
 
 EXTRACTOR_VERSION = 1
 THUMBNAIL_MAX_SIZE = (420, 640)
+MAX_COVER_MEMBER_BYTES = 8 * 1024 * 1024
 IMAGE_MEDIA_PREFIX = "image/"
 FALLBACK_COVER_NAMES = {
     "cover.jpg",
@@ -111,13 +112,13 @@ def _extract_cover_bytes(epub_path: str) -> tuple[bytes, str, str] | None:
     with zipfile.ZipFile(epub_path) as zf:
         opf_path = _find_opf_path(zf)
         if not opf_path:
-            return _filename_fallback(zf)
+            return _zip_filename_fallback(zf)
 
         try:
             opf_root = ET.fromstring(zf.read(opf_path))
         except Exception:
             logger.exception("Failed to parse EPUB OPF path=%s epub=%s", opf_path, epub_path)
-            return _filename_fallback(zf)
+            return _zip_filename_fallback(zf)
 
         manifest = _manifest_items(opf_root)
         opf_dir = posixpath.dirname(opf_path)
@@ -142,11 +143,14 @@ def _extract_cover_bytes(epub_path: str) -> tuple[bytes, str, str] | None:
         if found:
             return found[0], "titlepage-fallback", found[1]
 
-        found = _filename_fallback(zf)
-        if found:
-            return found[0], "zip-filename-fallback", found[1]
+        return _zip_filename_fallback(zf)
 
-    return None
+
+def _zip_filename_fallback(zf: zipfile.ZipFile) -> tuple[bytes, str, str] | None:
+    found = _filename_fallback(zf)
+    if not found:
+        return None
+    return found[0], "zip-filename-fallback", found[1]
 
 
 def _write_cached_source(meta_path: Path, source: str, zip_path: str) -> None:
@@ -318,10 +322,31 @@ def _resolve_zip_path(base_dir: str, href: str) -> str:
 
 def _safe_read(zf: zipfile.ZipFile, path: str) -> bytes | None:
     path = path.lstrip("/")
-    if path not in zf.namelist():
+    try:
+        info = zf.getinfo(path)
+    except KeyError:
+        return None
+    if info.is_dir() or info.file_size <= 0:
+        return None
+    if info.file_size > MAX_COVER_MEMBER_BYTES:
+        logger.warning(
+            "Skipping oversized EPUB cover member path=%s bytes=%s limit=%s",
+            path,
+            info.file_size,
+            MAX_COVER_MEMBER_BYTES,
+        )
         return None
     try:
-        return zf.read(path)
+        with zf.open(info) as member:
+            data = member.read(MAX_COVER_MEMBER_BYTES + 1)
+        if len(data) > MAX_COVER_MEMBER_BYTES:
+            logger.warning(
+                "Skipping EPUB cover member that exceeded its read limit path=%s limit=%s",
+                path,
+                MAX_COVER_MEMBER_BYTES,
+            )
+            return None
+        return data
     except Exception:
         logger.exception("Failed to read EPUB ZIP member path=%s", path)
         return None

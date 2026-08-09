@@ -92,7 +92,10 @@ impl<R: Runtime> MobileRuntime<R> {
         Err(crate::Error::Unsupported)
     }
 
-    pub fn prune_artwork_cache(&self, _payload: PruneArtworkCacheRequest) -> crate::Result<PlaybackStatus> {
+    pub fn prune_artwork_cache(
+        &self,
+        _payload: PruneArtworkCacheRequest,
+    ) -> crate::Result<PlaybackStatus> {
         Err(crate::Error::Unsupported)
     }
 

@@ -1,33 +1,41 @@
+import asyncio
+import hashlib
+import io
 import json
+import logging
 import math
 import os
 import re
 import secrets
-import signal
-import logging
-import hashlib
 import shutil
+import signal
 import subprocess
 import threading
 import time
+import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from pathlib import Path, PurePosixPath
+
+import cover_service
+import psutil
+import reflow_service
+import supertonic_service
+import tts_service
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from contextlib import asynccontextmanager
-
-import reflow_service
-import cover_service
-import supertonic_service
-import tts_service
-import psutil
 from model_manager import ModelInstallRequired
-from models import BookState, Position, Bookmark, PageText, SentenceInfo
+from models import Bookmark, BookState, PageText, Position, SentenceInfo
 from paths import AUDIO_CACHE_DIR, DATA_DIR, FRONTEND_DIR, MODELS_DIR, UPLOAD_DIR
-from tts_defaults import DEFAULT_TTS_ENGINE, DEFAULT_TTS_SPEED, DEFAULT_TTS_VOICE, KOKORO_ENGINE_ID
+from tts_defaults import (
+    DEFAULT_TTS_ENGINE,
+    DEFAULT_TTS_SPEED,
+    DEFAULT_TTS_VOICE,
+    KOKORO_ENGINE_ID,
+)
 from tts_queue import TTSQueue
 from user_profile import normalize_reader_name, system_reader_name
 
@@ -73,6 +81,11 @@ _PREVIEW_HEARTBEAT_FILE = os.environ.get("FOLIO_PREVIEW_HEARTBEAT_FILE", "").str
 _PREVIEW_DISCONNECT_FILE = os.environ.get("FOLIO_PREVIEW_DISCONNECT_FILE", "").strip()
 _LIBRARY_SCAN_INTERVAL_SECONDS = max(15, int(os.environ.get("FOLIO_LIBRARY_SCAN_INTERVAL_SECONDS", "90") or "90"))
 _LIBRARY_SCAN_MAX_FILES = max(1, int(os.environ.get("FOLIO_LIBRARY_SCAN_MAX_FILES", "5000") or "5000"))
+_MAX_UPLOAD_BYTES = max(1, int(os.environ.get("FOLIO_MAX_UPLOAD_BYTES", str(64 * 1024 * 1024)) or "1"))
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+_MAX_EPUB_ARCHIVE_MEMBERS = 10_000
+_MAX_EPUB_MEMBER_BYTES = 64 * 1024 * 1024
+_MAX_EPUB_EXPANDED_BYTES = 256 * 1024 * 1024
 _APP_IDLE_TIMEOUT_SECONDS = max(60, int(os.environ.get("FOLIO_APP_IDLE_TIMEOUT_SECONDS", "600") or "600"))
 _APP_IDLE_CHECK_SECONDS = max(15, int(os.environ.get("FOLIO_APP_IDLE_CHECK_SECONDS", "30") or "30"))
 _APP_IDLE_WATCHDOG_ENABLED = os.environ.get("FOLIO_APP_IDLE_WATCHDOG", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -380,7 +393,7 @@ def _read_text_lenient(path) -> str:
     if head.startswith(b"\x00\x00\xfe\xff"):
         with open(path, encoding="utf-32") as f:
             return f.read()
-    if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
         with open(path, encoding="utf-16") as f:
             return f.read()
     try:
@@ -405,6 +418,35 @@ def _atomic_write_text(path: str, text: str):
             f.flush()
             try:
                 os.fsync(f.fileno())
+            except OSError:
+                pass
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def _atomic_write_bytes(path: str, data: bytes) -> None:
+    """Durably replace a binary file without exposing a partial upload."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
+    try:
+        with open(tmp_path, "xb") as file_handle:
+            file_handle.write(data)
+            file_handle.flush()
+            try:
+                os.fsync(file_handle.fileno())
             except OSError:
                 pass
         for attempt in range(5):
@@ -487,8 +529,7 @@ def _clamp_position(position: Position, page_count: int) -> Position:
         position.page = 0
     elif position.page > last_page:
         position.page = last_page
-    if position.sentence_idx < 0:
-        position.sentence_idx = 0
+    position.sentence_idx = max(position.sentence_idx, 0)
     return position
 
 
@@ -616,7 +657,7 @@ def _now_ms() -> float:
     return time.time() * 1000
 
 
-def _date_key_from_ms(timestamp_ms: float | int | None = None) -> str:
+def _date_key_from_ms(timestamp_ms: float | None = None) -> str:
     if timestamp_ms is None:
         timestamp_ms = _now_ms()
     try:
@@ -997,6 +1038,53 @@ def _safe_upload_filename(filename: str | None, content: bytes) -> str:
         stem = "upload"
     digest = hashlib.sha256(content).hexdigest()[:12]
     return f"{stem[:80]}-{digest}.epub"
+
+
+async def _read_upload_bounded(file: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        remaining = _MAX_UPLOAD_BYTES - total
+        chunk = await file.read(min(_UPLOAD_READ_CHUNK_BYTES, remaining + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                413,
+                f"EPUB is too large. Folio accepts uploads up to {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _validate_epub_upload(content: bytes) -> None:
+    if not content or not zipfile.is_zipfile(io.BytesIO(content)):
+        raise HTTPException(400, "That file is not a valid EPUB archive.")
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            members = archive.infolist()
+            if len(members) > _MAX_EPUB_ARCHIVE_MEMBERS:
+                raise HTTPException(413, "That EPUB contains too many archive entries.")
+            names = {member.filename.replace("\\", "/") for member in members}
+            if "META-INF/container.xml" not in names:
+                raise HTTPException(400, "That EPUB is missing META-INF/container.xml.")
+
+            expanded_bytes = 0
+            for member in members:
+                normalized = member.filename.replace("\\", "/")
+                parts = PurePosixPath(normalized).parts
+                if normalized.startswith("/") or ".." in parts or re.match(r"^[A-Za-z]:", normalized):
+                    raise HTTPException(400, "That EPUB contains an unsafe archive path.")
+                if member.flag_bits & 0x1:
+                    raise HTTPException(400, "Encrypted EPUB entries are not supported.")
+                if member.file_size > _MAX_EPUB_MEMBER_BYTES:
+                    raise HTTPException(413, "That EPUB contains an oversized archive entry.")
+                expanded_bytes += max(0, member.file_size)
+                if expanded_bytes > _MAX_EPUB_EXPANDED_BYTES:
+                    raise HTTPException(413, "That EPUB expands beyond Folio's safety limit.")
+    except (zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise HTTPException(400, "That file is not a valid EPUB archive.") from exc
 
 
 def _normalize_scan_folder(path: str | None) -> str:
@@ -1580,7 +1668,7 @@ async def create_dashboard_note(request: Request):
         sentence_idx = 0
     now_ms = _now_ms()
     record = {
-        "id": hashlib.sha1(f"{book_id}:{page}:{sentence_idx}:{text}:{now_ms}".encode("utf-8")).hexdigest()[:12],
+        "id": hashlib.sha1(f"{book_id}:{page}:{sentence_idx}:{text}:{now_ms}".encode()).hexdigest()[:12],
         "book_id": book_id,
         "page": page,
         "sentence_idx": sentence_idx,
@@ -1669,6 +1757,7 @@ def open_book(filepath: str = Query(...)):
     # Build reflow now so page_count reflects real (post-frontmatter-filter) chapters.
     reflow = reflow_service.get_or_build_reflow(resolved, DATA_DIR)
     meta["page_count"] = max(1, len(reflow.get("chapters", [])))
+    meta["toc"] = reflow_service.reflow_toc(reflow)
     book_id = meta["id"]
     _flush_debounced_saves()
     saved = _load_state(book_id)
@@ -1680,6 +1769,7 @@ def open_book(filepath: str = Query(...)):
         except OSError:
             state.imported_at = now_ms
     state.page_count = meta["page_count"]
+    state.toc = meta["toc"]
     state.last_position = _clamp_position(state.last_position, state.page_count)
     if saved:
         _migrate_saved_narration_indices(state, reflow)
@@ -1753,14 +1843,14 @@ async def open_book_upload(file: UploadFile = File(...)):
     upload_dir = UPLOAD_DIR
     os.makedirs(upload_dir, exist_ok=True)
     logger.info("Receiving upload filename=%s content_type=%s", file.filename, file.content_type)
-    content = await file.read()
+    content = await _read_upload_bounded(file)
+    _validate_epub_upload(content)
     safe_name = _safe_upload_filename(file.filename, content)
     filepath = os.path.join(upload_dir, safe_name)
     logger.info("Upload read complete filename=%s bytes=%s", file.filename, len(content))
-    with open(filepath, "wb") as f:
-        f.write(content)
+    await asyncio.to_thread(_atomic_write_bytes, filepath, content)
     logger.info("Upload saved target=%s size_bytes=%s", filepath, os.path.getsize(filepath))
-    return open_book(filepath)
+    return await asyncio.to_thread(open_book, filepath)
 
 
 @app.get("/api/book/{book_id}/reflow")
@@ -1926,14 +2016,12 @@ def _job_key_matches_scope(
     try:
         key_speed = float(parts[5])
     except ValueError:
-      return False
+        return False
     normalized_engine = _normalize_tts_engine(engine)
     normalized_voice = _normalize_voice_for_engine(normalized_engine, voice)
     if parts[0] != normalized_engine or parts[1] != book_id or parts[4] != normalized_voice:
         return False
-    if abs(key_speed - _validate_speed_for_engine(normalized_engine, speed)) > 0.0001:
-        return False
-    return True
+    return abs(key_speed - _validate_speed_for_engine(normalized_engine, speed)) <= 0.0001
 
 
 def _cancel_pending_tts_buffer(
@@ -2057,8 +2145,7 @@ def _iter_sentence_window(book_id: str, page: int, sentence: int, count: int, in
     page_num = page
     sentence_idx = sentence if include_current else sentence + 1
     while page_num < total_pages and len(refs) < count:
-        if sentence_idx < 0:
-            sentence_idx = 0
+        sentence_idx = max(sentence_idx, 0)
         n = sentence_count(page_num)
         while sentence_idx < n and len(refs) < count:
             refs.append((page_num, sentence_idx))
@@ -2354,8 +2441,8 @@ def get_voices(engine: str = Query(DEFAULT_TTS_ENGINE)):
     try:
         engine = _normalize_tts_engine(engine)
         return _engine_service(engine).get_available_voices()
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/api/tts/options")

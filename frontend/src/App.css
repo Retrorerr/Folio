@@ -25,6 +25,30 @@
     linear-gradient(135deg, var(--paper) 0%, var(--paper-2) 48%, var(--paper-3) 100%);
 }
 
+.dashboard-route-loading {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  letter-spacing: .02em;
+}
+
+.reader-nav-route-loading {
+  width: 60px;
+  flex: 0 0 60px;
+}
+
+.reader-document-loading {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
 .app-transition-stage.theme-blackleaf,
 .theme-blackleaf .surface-fallback {
   background: #000000;

@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.1.12",
   "scripts": {
+    "backend:lint": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-backend.ps1 -LintOnly",
     "backend:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-backend.ps1",
+    "frontend:check": "npm --prefix frontend run typecheck && npm --prefix frontend run lint && npm --prefix frontend test && npm --prefix frontend run build",
     "frontend:test": "npm --prefix frontend test",
     "preview:codex": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-codex-preview.ps1",
     "preview:codex:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\start-codex-preview.ps1 -Restart",
@@ -21,9 +23,5 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0"
-  },
-  "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-updater": "^2.10.1"
   }
 }

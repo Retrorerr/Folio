@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { AnimatePresence, MotionConfig, motion as m } from 'motion/react'
 import type {
@@ -17,11 +17,8 @@ import type { ReaderPageNavigationState } from './readerNavigation'
 import useBookState from './hooks/useBookState'
 import useAudioPlayback from './hooks/useAudioPlayback'
 import LoadingScreen from './components/LoadingScreen'
-import Welcome from './components/Welcome'
 import ReflowViewer from './components/ReflowViewer'
-import PdfViewer from './components/PdfViewer'
 import Pill from './components/Pill'
-import Sidebar from './components/Sidebar'
 import { Icons } from './components/icons'
 import {
   apiFetch,
@@ -42,7 +39,7 @@ import { androidAppViewTransition, appViewTransition, fadeIn, spring } from './m
 import { isFolioTheme, resolveInitialTheme } from './systemTheme'
 import { performAndroidHaptic, syncAndroidSystemBars } from './androidShell'
 import './App.css'
-import { mobileAudioStatus, mobileControlAudio } from './mobileApi'
+import { mobileAudioStatus, mobileControlAudio } from './mobilePlaybackBridge'
 import {
   initialNativeResumeState,
   NativeBookOpenRegistry,
@@ -53,6 +50,9 @@ import {
 } from './nativeResumeCoordinator'
 
 const PAGE_TOTAL_DEBOUNCE_MS = 500
+const Welcome = lazy(() => import('./components/Welcome'))
+const Sidebar = lazy(() => import('./components/Sidebar'))
+const PdfViewer = lazy(() => import('./components/PdfViewer'))
 const PAGE_TOTAL_STABILITY_MS = 6000
 const STATUS_POLL_FAST_MS = 1000
 const STATUS_POLL_IDLE_MS = 2500
@@ -991,7 +991,12 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <m.div className="reader-shell" layout={!isAndroidRuntime()} transition={spring.layout}>
+          <m.div
+            className={`reader-shell ${sidebarTab && sidebarTab !== 'settings' ? 'is-sidebar-panel-open' : ''}`}
+            layout={!isAndroidRuntime()}
+            transition={spring.layout}
+          >
+            <Suspense fallback={<div className="reader-nav-route-loading" aria-hidden="true" />}>
               <Sidebar
                 book={book}
                 reflow={reflow}
@@ -1020,6 +1025,7 @@ export default function App() {
                 onHome={onHome}
                 hidden={followAlongMode}
               />
+            </Suspense>
 
               <m.main
                 className={`reader-main ${followAlongMode ? 'follow-along' : ''}`}
@@ -1031,22 +1037,24 @@ export default function App() {
                 onPointerCancel={() => { readerSwipeRef.current.pointerId = -1 }}
               >
                 {book.format === 'pdf' ? (
-                  <PdfViewer
-                    bookId={book.id}
-                    pageIdx={currentPage}
-                    pageCount={book.page_count}
-                    setPageIdx={goToPageFromViewer}
-                    pageText={pageData}
-                    currentSentence={audio.currentSentence}
-                    activePageIdx={audio.readingPage ?? currentPage}
-                    isPlaying={audio.isPlaying}
-                    onProgress={handleReflowProgress}
-                    onNavigationState={handlePageNavigationState}
-                    navRef={reflowNavRef}
-                    searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
-                    onSentenceSelect={seekToSentenceFromUser}
-                    onVisualPositionChange={handleVisualPositionChange}
-                  />
+                  <Suspense fallback={<div className="reader-document-loading" role="status">Preparing PDF…</div>}>
+                    <PdfViewer
+                      bookId={book.id}
+                      pageIdx={currentPage}
+                      pageCount={book.page_count}
+                      setPageIdx={goToPageFromViewer}
+                      pageText={pageData}
+                      currentSentence={audio.currentSentence}
+                      activePageIdx={audio.readingPage ?? currentPage}
+                      isPlaying={audio.isPlaying}
+                      onProgress={handleReflowProgress}
+                      onNavigationState={handlePageNavigationState}
+                      navRef={reflowNavRef}
+                      searchTarget={searchTarget?.bookId === book?.id ? searchTarget : null}
+                      onSentenceSelect={seekToSentenceFromUser}
+                      onVisualPositionChange={handleVisualPositionChange}
+                    />
+                  </Suspense>
                 ) : (
                   <ReflowViewer
                     bookId={book.id}
@@ -1210,27 +1218,29 @@ export default function App() {
       <div className={`app-shell app-enter theme-${theme} grain`}>
         <TitleBar />
         <CursorHalo motion={motion} />
-        <Welcome
-            theme={theme}
-            setTheme={setThemeFromUi}
-            motion={motion}
-            setMotion={setMotion}
-            onUpload={uploadBook}
-            recentBooks={recentBooks}
-            onOpenRecent={openBook}
-            onDeleteRecent={deleteBook}
-            settingsPanelProps={{
-              wheelPaging,
-              setWheelPaging,
-              voice: audio.voice,
-              setVoice: audio.setVoice,
-              ttsEngine: audio.ttsEngine,
-              setTtsEngine: audio.setTtsEngine,
-              modelStatus,
-              installPromptEngine,
-              clearInstallPrompt: () => setInstallPromptEngine(null),
-            }}
-        />
+        <Suspense fallback={<div className="dashboard-route-loading" role="status">Opening your library…</div>}>
+          <Welcome
+              theme={theme}
+              setTheme={setThemeFromUi}
+              motion={motion}
+              setMotion={setMotion}
+              onUpload={uploadBook}
+              recentBooks={recentBooks}
+              onOpenRecent={openBook}
+              onDeleteRecent={deleteBook}
+              settingsPanelProps={{
+                wheelPaging,
+                setWheelPaging,
+                voice: audio.voice,
+                setVoice: audio.setVoice,
+                ttsEngine: audio.ttsEngine,
+                setTtsEngine: audio.setTtsEngine,
+                modelStatus,
+                installPromptEngine,
+                clearInstallPrompt: () => setInstallPromptEngine(null),
+              }}
+          />
+        </Suspense>
       </div>
     </m.div>
   ) : renderReader()
