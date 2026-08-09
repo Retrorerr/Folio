@@ -17,10 +17,9 @@ import urllib.parse
 import zipfile
 from xml.etree import ElementTree as ET
 
-from bs4 import BeautifulSoup
-from ebooklib import epub, ITEM_DOCUMENT
-
 import text_chunker
+from bs4 import BeautifulSoup
+from ebooklib import ITEM_DOCUMENT, epub
 
 logger = logging.getLogger(__name__)
 REFLOW_VERSION = f"reflow-v2.3-2026-05-12|chunker:{text_chunker.CHUNKER_VERSION}"
@@ -218,7 +217,7 @@ def _chapter_number_from_title(title: str) -> tuple[str | None, str]:
     """Try to split 'Chapter VII — The Races' into ('VII', 'The Races')."""
     if not title:
         return None, ""
-    m = re.match(r"^\s*(?:chapter|ch\.?|part|book)\s+([ivxlcdm\d]+)\b[\s\.—–:\-]*(.*)$", title, re.I)
+    m = re.match(r"^\s*(?:chapter|ch\.?|part|book)\s+([ivxlcdm\d]+)\b[\s\.—–:\-]*(.*)$", title, re.IGNORECASE)
     if m:
         return m.group(1).upper(), m.group(2).strip() or title.strip()
     m = re.match(r"^\s*(\d{1,3})[.\s]\s*(.+?)\s*\.?\s*$", title)
@@ -332,7 +331,7 @@ def _extract_flat_blocks(soup: BeautifulSoup) -> list[dict]:
 _CHAPTER_MARKER_RE = re.compile(
     r"^\s*(?:(?:chapter|part|book|prologue|epilogue|introduction|preface|foreword|afterword)\b"
     r"|(?:\d{1,2})[.\s]\s*[A-Z])",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -405,7 +404,7 @@ _FRONTMATTER_PATTERNS = re.compile(
     r"printed in|library of congress|penguin books|random house|"
     r"this edition|scanned by|converted to epub|retail epub|version\s*\d|"
     r"table of contents|contents)\b",
-    re.I,
+    re.IGNORECASE,
 )
 
 def _looks_like_frontmatter(blocks: list[dict], chapter_title: str | None) -> bool:
@@ -421,9 +420,7 @@ def _looks_like_frontmatter(blocks: list[dict], chapter_title: str | None) -> bo
         return True
     if _FRONTMATTER_PATTERNS.search(body_text):
         return True
-    if chapter_title and _FRONTMATTER_PATTERNS.search(chapter_title):
-        return True
-    return False
+    return bool(chapter_title and _FRONTMATTER_PATTERNS.search(chapter_title))
 
 
 def _chunk_chapter_blocks(blocks: list[dict], start_chunk_idx: int) -> tuple[list[dict], int]:
@@ -556,6 +553,19 @@ def chapter_narration_units(chapter: dict) -> list[dict]:
             )
 
     return units
+
+
+def reflow_toc(reflow: dict) -> list[dict]:
+    """Build the canonical chapter list from the rendered chapter structure."""
+    toc: list[dict] = []
+    for page, chapter in enumerate(reflow.get("chapters", [])):
+        title = str(chapter.get("title") or f"Chapter {page + 1}").strip()
+        number = str(chapter.get("number") or "").strip()
+        chapter_label = f"Chapter {number}" if number else ""
+        if number and title.casefold().rstrip(".") != chapter_label.casefold():
+            title = f"{number} - {title}"
+        toc.append({"title": title, "page": page})
+    return toc
 
 
 def migrate_legacy_sentence_index(chapter: dict, sentence_idx: int) -> int:
@@ -696,17 +706,11 @@ def get_metadata(filepath: str, data_dir: str | None = None) -> dict:
         if os.path.exists(cache_path):
             try:
                 source = _source_fingerprint(filepath)
-                with open(cache_path, "r", encoding="utf-8") as f:
+                with open(cache_path, encoding="utf-8") as f:
                     cached = json.load(f)
                 if cached.get("version") == REFLOW_VERSION and cached.get("source") == source:
                     meta = cached.get("metadata", {})
-                    # Reconstruct TOC from cached chapters
-                    toc = []
-                    for idx, ch in enumerate(cached.get("chapters", [])):
-                        toc.append({
-                            "title": ch.get("title") or f"Chapter {idx + 1}",
-                            "page": idx
-                        })
+                    toc = reflow_toc(cached)
                     logger.info("EPUB metadata loaded from cached reflow book_id=%s path=%s", book_id, cache_path)
                     return {
                         "id": book_id,
@@ -725,12 +729,14 @@ def get_metadata(filepath: str, data_dir: str | None = None) -> dict:
     author = ""
     try:
         t = book.get_metadata("DC", "title")
-        if t: title = t[0][0] or ""
+        if t:
+            title = t[0][0] or ""
     except Exception:
         logger.exception("Failed to read EPUB title metadata from %s", filepath)
     try:
         a = book.get_metadata("DC", "creator")
-        if a: author = a[0][0] or ""
+        if a:
+            author = a[0][0] or ""
     except Exception:
         logger.exception("Failed to read EPUB author metadata from %s", filepath)
     if not title:
@@ -768,7 +774,7 @@ def get_metadata(filepath: str, data_dir: str | None = None) -> dict:
         for idx, doc_name in enumerate(norm_docs):
             doc_parts = doc_name.split("/")
             match_count = 0
-            for h_p, d_p in zip(reversed(href_parts), reversed(doc_parts)):
+            for h_p, d_p in zip(reversed(href_parts), reversed(doc_parts), strict=False):
                 if h_p == d_p:
                     match_count += 1
                 else:
@@ -821,7 +827,7 @@ def get_or_build_reflow(filepath: str, data_dir: str) -> dict:
     source = _source_fingerprint(filepath)
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 cached = json.load(f)
             # Reuse only if the cache was written by the current reflow schema
             # and chunker. A missing or mismatched `version` means cached

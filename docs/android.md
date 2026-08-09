@@ -80,6 +80,22 @@ FOLIO_ANDROID_KEY_PASSWORD
 
 `FOLIO_ANDROID_KEYSTORE_TYPE` is optional (`PKCS12` or `JKS`). The build stops before compilation and lists missing variable names if the configuration is incomplete.
 
+### GitHub release signing
+
+The `Release installers` workflow uses the same signing contract for tagged
+GitHub releases. Configure these repository Actions secrets before publishing:
+
+- `FOLIO_ANDROID_KEYSTORE_BASE64`: base64-encoded production upload keystore
+- `FOLIO_ANDROID_KEYSTORE_PASSWORD`
+- `FOLIO_ANDROID_KEY_ALIAS`
+- `FOLIO_ANDROID_KEY_PASSWORD`
+- `FOLIO_ANDROID_KEYSTORE_TYPE` (optional)
+
+The decoded keystore exists only in the hosted runner's temporary directory.
+The workflow will not fall back to a debug or one-off signing identity. That
+keeps sideloaded updates installable over earlier releases and prevents an
+accidental debug-signed APK from being published.
+
 For a local QA-only key, create the keystore outside the repository and let `keytool` prompt for its password:
 
 ```powershell

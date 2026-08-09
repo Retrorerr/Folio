@@ -1,7 +1,8 @@
 package com.folio.reader
-import android.content.Intent
 
+import android.animation.ValueAnimator
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -10,6 +11,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateInterpolator
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -168,7 +170,22 @@ open class MainActivity : TauriActivity(), FolioSystemBarHost {
     val overlay = launchOverlay ?: return
     launchOverlay = null
     launchOverlayLogo = null
-    (overlay.parent as? ViewGroup)?.removeView(overlay)
+    val parent = overlay.parent as? ViewGroup ?: return
+    val animationsEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || ValueAnimator.areAnimatorsEnabled()
+    if (!animationsEnabled) {
+      parent.removeView(overlay)
+      return
+    }
+    // The WebView has already painted the persisted theme at this point. A
+    // short compositor fade removes the last cold-start flash without holding
+    // the launch surface long enough to make the app feel unresponsive.
+    overlay.animate()
+      .alpha(0f)
+      .setDuration(LAUNCH_HANDOFF_DURATION_MS)
+      .setInterpolator(AccelerateInterpolator())
+      .withLayer()
+      .withEndAction { parent.removeView(overlay) }
+      .start()
   }
 
   private fun installInsetOwner() {
@@ -329,6 +346,7 @@ open class MainActivity : TauriActivity(), FolioSystemBarHost {
     const val FAST_PROBE_ATTEMPTS = 140
     const val INSET_PUBLISH_ATTEMPTS = 180
     const val INSET_SETTLE_DELAY_MS = 160L
+    const val LAUNCH_HANDOFF_DURATION_MS = 140L
     val SAFE_INSET_TYPES =
       WindowInsetsCompat.Type.systemBars() or
         WindowInsetsCompat.Type.displayCutout() or

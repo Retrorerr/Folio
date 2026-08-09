@@ -130,7 +130,10 @@ impl<R: Runtime> MobileRuntime<R> {
             .map_err(Into::into)
     }
 
-    pub fn prune_artwork_cache(&self, payload: PruneArtworkCacheRequest) -> crate::Result<PlaybackStatus> {
+    pub fn prune_artwork_cache(
+        &self,
+        payload: PruneArtworkCacheRequest,
+    ) -> crate::Result<PlaybackStatus> {
         self.0
             .run_mobile_plugin("pruneArtworkCache", payload)
             .map_err(Into::into)

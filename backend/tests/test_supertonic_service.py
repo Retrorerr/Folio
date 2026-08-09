@@ -127,10 +127,12 @@ class SupertonicServiceTests(unittest.TestCase):
             def __init__(self, **kwargs):
                 created.append(kwargs)
 
-        with mock.patch.object(supertonic_service, "require_ready_for_generation", return_value=None):
-            with mock.patch.object(supertonic_service, "_load_sdk_tts", return_value=FakeTTS):
-                first = supertonic_service.get_model()
-                second = supertonic_service.get_model()
+        with (
+            mock.patch.object(supertonic_service, "require_ready_for_generation", return_value=None),
+            mock.patch.object(supertonic_service, "_load_sdk_tts", return_value=FakeTTS),
+        ):
+            first = supertonic_service.get_model()
+            second = supertonic_service.get_model()
 
         self.assertIs(first, second)
         self.assertEqual(len(created), 1)
@@ -174,7 +176,10 @@ class SupertonicServiceTests(unittest.TestCase):
 
     def test_assets_resolve_under_folio_models_dir(self):
         self.assertEqual(Path(supertonic_service.model_dir()), self.models_dir / "supertonic-3")
-        self.assertTrue(supertonic_service._required_path("onnx/vocoder.onnx").endswith("supertonic-3\\onnx\\vocoder.onnx"))
+        self.assertEqual(
+            Path(supertonic_service._required_path("onnx/vocoder.onnx")),
+            self.models_dir / "supertonic-3" / "onnx" / "vocoder.onnx",
+        )
 
 
 if __name__ == "__main__":

@@ -10,7 +10,21 @@ import {
   isAndroidPhoneMode,
   performAndroidHaptic,
 } from '../androidShell'
-import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, panelReveal, scaleIn, slideUp, spring } from '../motion'
+import {
+  androidBottomSheet,
+  androidSettingsTransition,
+  androidSideSheet,
+  buttonHover,
+  buttonTap,
+  listItem,
+  listStagger,
+  modalPanel,
+  overlayFade,
+  panelReveal,
+  scaleIn,
+  slideUp,
+  spring,
+} from '../motion'
 import {
   engineDisplayName,
   ttsEngines,
@@ -110,6 +124,11 @@ function spawnThemeRipple(event: React.MouseEvent, theme: string) {
 
 function runThemeTransition(event: React.MouseEvent, nextTheme: string, currentTheme: string, setTheme: (theme: string) => void) {
   if (nextTheme === currentTheme) return
+  if (isAndroidRuntime()) {
+    setTheme(nextTheme)
+    void performAndroidHaptic('selection')
+    return
+  }
   if (typeof document === 'undefined' || prefersReducedMotion()) {
     setTheme(nextTheme)
     return
@@ -188,7 +207,9 @@ export default memo(function Sidebar({
   const panelSelected = Boolean(tab && tab !== 'settings')
   const panelOpen = panelSelected
   const sidebarExpanded = panelSelected && (!androidTablet || androidDrawerOpen)
-  const androidOverlayOpen = androidTablet && panelSelected && !androidDrawerOpen
+  // Keep the overlay geometry alive for its short exit transition. `panelTab`
+  // intentionally remains rendered until the animation cleanup timer fires.
+  const androidOverlayRendered = androidTablet && Boolean(panelTab) && !androidDrawerOpen
   const settingsOpen = tab === 'settings'
   const useGoldLogo = theme === 'light' || theme === 'sepia'
   const logoSrc = useGoldLogo ? '/folio-icon.png' : '/folio-monochrome-icon.png'
@@ -290,7 +311,7 @@ export default memo(function Sidebar({
 
   return (
     <>
-      <m.div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${sidebarExpanded ? 'is-open' : ''} ${androidOverlayOpen ? 'is-android-overlay' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''} ${androidPhone ? 'is-android-phone' : ''}`} layout={!androidRuntime} transition={spring.layout}>
+      <m.div className={`sidebar-wrap ${hidden ? 'is-hidden' : ''} ${sidebarExpanded ? 'is-open' : ''} ${androidOverlayRendered ? 'is-android-overlay' : ''} ${panelTab && !panelOpen ? 'is-closing' : ''} ${androidPhone ? 'is-android-phone' : ''}`} layout={!androidRuntime} transition={spring.layout}>
       <m.div className="icon-rail" ref={railRef} layout={!androidRuntime}>
         <m.button className="rail-brand" onClick={onHome} title="Back to library" aria-label="Back to library" whileHover={androidRuntime ? undefined : buttonHover} whileTap={buttonTap}>
           <img className="rail-brand-logo" src={logoSrc} alt="" draggable={false} />
@@ -307,14 +328,14 @@ export default memo(function Sidebar({
         {railBtn('settings', Icons.Settings, 'Settings')}
       </m.div>
 
-      <AnimatePresence initial={false} mode="wait">
+      <AnimatePresence initial={false} mode={androidRuntime ? 'popLayout' : 'wait'}>
         {panelTab && (
           <m.div
             key={panelTab}
             className={`sidebar-panel ${panelOpen ? 'is-open' : 'is-closing'}`}
             ref={panelRef}
             aria-hidden={!panelOpen}
-            variants={panelReveal}
+            variants={androidPhone ? androidBottomSheet : androidRuntime ? androidSideSheet : panelReveal}
             initial="initial"
             animate={panelOpen ? 'animate' : 'exit'}
             exit="exit"
@@ -1035,7 +1056,7 @@ export function SettingsPanel({
       <m.div
         className="settings-shell"
         onMouseDown={(event) => event.stopPropagation()}
-        variants={modalPanel}
+        variants={androidRuntime ? androidSettingsTransition : modalPanel}
         layout={!androidRuntime}
         transition={spring.panel}
       >
@@ -1173,7 +1194,7 @@ export function SettingsPanel({
               </div>
               <AnimatePresence>
                 {!engineReady && (
-                <m.div className="model-install-card" role="status" variants={slideUp} initial="initial" animate="animate" exit="exit" layout>
+                <m.div className="model-install-card" role="status" variants={slideUp} initial="initial" animate="animate" exit="exit" layout={!androidRuntime}>
                   <div className="model-install-copy">
                     <div className="label">Model install</div>
                     <h4>{activeInstall?.installed ? `${activeEngineName} is installed but not ready` : `${activeEngineName} is not installed yet`}</h4>
@@ -1304,7 +1325,7 @@ export function SettingsPanel({
             aria-labelledby="model-install-title"
             aria-describedby="model-install-description"
             onMouseDown={(event) => event.stopPropagation()}
-            variants={modalPanel}
+            variants={androidRuntime ? androidBottomSheet : modalPanel}
           >
             <div className="model-install-orbit" aria-hidden="true" />
             <div className="model-install-head">

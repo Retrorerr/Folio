@@ -10,10 +10,9 @@ from __future__ import annotations
 import gzip
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
-
 
 REVISION = "fba1236595f2d2bf21d414ba6e57d25256afada3"
 STRATEGY = f"misaki-en@{REVISION} + espeak-ng-ood"
@@ -95,9 +94,9 @@ class LexiconEntry:
             parent = "VERB"
         elif tag and tag.startswith("NN"):
             parent = "NOUN"
-        elif tag and (tag.startswith("RB") or tag.startswith("ADV")):
+        elif tag and tag.startswith(("RB", "ADV")):
             parent = "ADV"
-        elif tag and (tag.startswith("JJ") or tag.startswith("ADJ")):
+        elif tag and tag.startswith(("JJ", "ADJ")):
             parent = "ADJ"
         else:
             parent = tag

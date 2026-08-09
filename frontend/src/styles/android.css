@@ -223,6 +223,16 @@ html[data-platform='android'] .reader-stage {
   min-width: 0;
 }
 
+html[data-platform='android'][data-android-shell^='tablet-'] .reader-nav-route-loading {
+  width: var(--android-rail-width);
+  flex-basis: var(--android-rail-width);
+}
+
+html[data-platform='android'][data-android-shell^='phone-'] .reader-nav-route-loading {
+  width: 0;
+  flex-basis: 0;
+}
+
 html[data-platform='android'] .reader-page,
 html[data-platform='android'] .reader-page-inner {
   width: 100%;
@@ -528,7 +538,9 @@ html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-sideba
   box-sizing: border-box;
   contain: none;
   will-change: auto;
-  transition: box-shadow 120ms ease-out;
+  transition:
+    width 200ms cubic-bezier(.16, 1, .3, 1),
+    box-shadow 140ms ease-out;
   display: flex;
   grid-template-columns: none;
   flex-direction: column;
@@ -564,21 +576,33 @@ html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-settin
   justify-content: center;
 }
 
-html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-brand > span,
-html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-brand > span,
-html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-add-label,
-html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-add-label,
 html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-add-btn kbd,
 html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-add-btn kbd,
-html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-nav button > span:not(.dash-nav-active-bg),
-html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-nav button > span:not(.dash-nav-active-bg),
-html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-settings-btn > span,
-html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-settings-btn > span,
 html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-goal-expanded,
 html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-goal-expanded,
 html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-sidebar-footer,
 html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-sidebar-footer {
   display: none;
+}
+
+html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-brand > span,
+html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-brand > span,
+html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-add-label,
+html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-add-label,
+html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-nav button > span:not(.dash-nav-active-bg),
+html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-nav button > span:not(.dash-nav-active-bg),
+html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-settings-btn > span,
+html[data-platform='android'][data-android-shell='tablet-portrait'] .dash-settings-btn > span {
+  display: block;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+  transform: translateX(-6px);
+  transition:
+    opacity 110ms ease-out,
+    transform 160ms cubic-bezier(.16, 1, .3, 1),
+    visibility 110ms ease-out;
 }
 
 html[data-platform='android'][data-android-shell='tablet-landscape'] .dash-nav,
@@ -712,6 +736,7 @@ html[data-platform='android'][data-android-shell='tablet-portrait'] .dashboard-h
   visibility: visible;
   pointer-events: auto;
   transform: none;
+  transition-delay: 45ms;
 }
 
 /* Android uses a short, predictable surface animation. The old desktop
@@ -1067,7 +1092,7 @@ html[data-platform='android'][data-android-shell^='phone-'] .sidebar-panel {
 
 html[data-platform='android'][data-android-shell^='phone-'] .chapter-item,
 html[data-platform='android'][data-android-shell^='phone-'] .add-bookmark {
-  min-height: 44px;
+  min-height: 48px;
 }
 
 html[data-platform='android'][data-android-shell^='phone-'] .bookmark-item {
@@ -1079,8 +1104,8 @@ html[data-platform='android'][data-android-shell^='phone-'] .bookmark-item .bm-h
   position: absolute;
   top: 6px;
   right: 6px;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
@@ -1093,13 +1118,13 @@ html[data-platform='android'][data-android-shell^='phone-'] .search-box {
 
 html[data-platform='android'][data-android-shell^='phone-'] .search-box input {
   min-width: 0;
-  height: 44px;
+  height: 48px;
 }
 
 html[data-platform='android'][data-android-shell^='phone-'] .search-clear {
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
 }
 
 html[data-platform='android'][data-android-shell^='phone-'] .sidebar-wrap:not(.is-open) .sidebar-panel,
@@ -1110,12 +1135,22 @@ html[data-platform='android'][data-android-shell^='phone-'] .sidebar-panel.is-cl
   transform: translateY(12px);
 }
 
+html[data-platform='android'][data-android-shell^='phone-'] .sidebar-wrap.is-closing .sidebar-panel.is-closing {
+  max-height: min(64dvh, 620px);
+  border-color: color-mix(in srgb, var(--rule) 82%, transparent);
+  pointer-events: none;
+}
+
 html[data-platform='android'][data-android-shell^='phone-'] .pill-wrap {
   left: calc(var(--android-safe-left) + 8px);
   right: calc(var(--android-safe-right) + 8px);
   bottom: calc(var(--android-safe-bottom) + var(--android-nav-height) + 8px);
   width: auto;
   transform: none;
+  transition:
+    transform 160ms cubic-bezier(.16, 1, .3, 1),
+    opacity 120ms ease-out,
+    bottom 200ms cubic-bezier(.16, 1, .3, 1);
 }
 
 html[data-platform='android'][data-android-shell^='phone-'] .pill {
@@ -1128,8 +1163,9 @@ html[data-platform='android'][data-android-shell^='phone-'] .page-nav {
   display: none;
 }
 
-html[data-platform='android'][data-android-shell^='phone-']:has(.sidebar-panel.is-open) .pill-wrap {
+html[data-platform='android'][data-android-shell^='phone-'] .reader-shell.is-sidebar-panel-open .pill-wrap {
   opacity: 0;
+  transform: translateY(8px);
   pointer-events: none;
 }
 

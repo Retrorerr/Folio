@@ -82,9 +82,7 @@ pub(crate) async fn set_system_bars<R: Runtime>(
 }
 
 #[command]
-pub(crate) async fn background_app<R: Runtime>(
-    app: AppHandle<R>,
-) -> Result<BackgroundAppResponse> {
+pub(crate) async fn background_app<R: Runtime>(app: AppHandle<R>) -> Result<BackgroundAppResponse> {
     app.mobile_runtime().background_app()
 }
 

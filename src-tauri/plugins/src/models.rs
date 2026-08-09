@@ -333,7 +333,10 @@ mod tests {
         assert_eq!(status.queue_size, 3);
         assert_eq!(status.book_id.as_deref(), Some("book-1"));
         assert_eq!(status.chapter_title.as_deref(), Some("Chapter one"));
-        assert_eq!(status.location_uri.as_deref(), Some("android://book-1/chapter-3"));
+        assert_eq!(
+            status.location_uri.as_deref(),
+            Some("android://book-1/chapter-3")
+        );
     }
 
     #[test]
@@ -346,13 +349,17 @@ mod tests {
             { "sessionId": 8, "bookId": "book-1", "chapterIndex": 3, "sentenceIndex": 0 }
           ],
           "currentIndex": 0, "queueSize": 2, "error": null
-        })).unwrap();
-        assert_eq!(status.queue_locations[1], PlaybackQueueLocation {
-            session_id: 8,
-            book_id: "book-1".into(),
-            chapter_index: 3,
-            sentence_index: 0,
-        });
+        }))
+        .unwrap();
+        assert_eq!(
+            status.queue_locations[1],
+            PlaybackQueueLocation {
+                session_id: 8,
+                book_id: "book-1".into(),
+                chapter_index: 3,
+                sentence_index: 0,
+            }
+        );
     }
 
     #[test]

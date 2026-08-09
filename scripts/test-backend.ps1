@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [switch]$LintOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,6 +59,9 @@ if (!(Test-Path -LiteralPath $python -PathType Leaf)) {
 if (!$SkipInstall) {
     & $python -m pip install -r (Join-Path $backend "requirements-dev.txt")
 }
+
+& $python -m ruff check $backend
+if ($LASTEXITCODE -ne 0 -or $LintOnly) { exit $LASTEXITCODE }
 
 & $python -m pytest (Join-Path $backend "tests")
 exit $LASTEXITCODE

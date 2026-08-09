@@ -114,11 +114,9 @@ npm run dev
 ### Validate
 
 ```powershell
-npm --prefix frontend run typecheck
-npm --prefix frontend run lint
-npm --prefix frontend run test
-npm --prefix frontend run build
+npm run frontend:check
 npm run backend:test -- --SkipInstall
+npm run android:check
 ```
 
 ## Build The Installer
@@ -171,7 +169,11 @@ Before publishing a release, update versions in:
 - `src-tauri/Cargo.toml`
 - `src-tauri/tauri.conf.json`
 
-Then build and attach the installer from the NSIS bundle folder to a GitHub Release.
+Pushing a commit with a new version to `main` runs the release workflow. It
+builds and verifies the Windows NSIS/MSI installers and the signed universal
+Android APK/AAB, then creates the matching `v<version>` GitHub Release with
+SHA-256 checksums. See `docs/android.md` for the required Android signing
+secrets.
 
 ## License
 

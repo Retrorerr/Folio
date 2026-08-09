@@ -1,8 +1,9 @@
 import itertools
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -42,9 +43,7 @@ class TTSQueue:
             if job is None:
                 job = QueueJob(key=key, fn=fn)
                 self._jobs[key] = job
-            elif job.status == "done":
-                return job
-            elif job.status == "running":
+            elif job.status == "done" or job.status == "running":
                 return job
             elif job.status == "error":
                 # Keep the failed submission immutable for any callers that

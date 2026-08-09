@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
-
 from tts_defaults import DEFAULT_TTS_ENGINE, DEFAULT_TTS_SPEED, DEFAULT_TTS_VOICE
+
 
 class BookMeta(BaseModel):
     id: str

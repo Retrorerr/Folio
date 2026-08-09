@@ -1,9 +1,8 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion as m } from 'motion/react'
 import { Icons } from './icons'
-import { SettingsPanel } from './Sidebar'
 import { apiFetch, apiJson, apiResourceUrl, isAndroidRuntime } from '../api'
 import {
   androidShellMode,
@@ -13,7 +12,19 @@ import {
   performAndroidHaptic,
 } from '../androidShell'
 import { buildDashboardGreeting } from '../dashboardGreeting'
-import { buttonHover, buttonTap, listItem, listStagger, modalPanel, overlayFade, pageTransition, scaleIn, slideUp, spring } from '../motion'
+import {
+  androidBottomSheet,
+  androidPageTransition,
+  buttonHover,
+  buttonTap,
+  listItem,
+  listStagger,
+  overlayFade,
+  pageTransition,
+  scaleIn,
+  slideUp,
+  spring,
+} from '../motion'
 import type { BookState, DashboardHighlight, DashboardPayload, LibrarySearchResponse, WeeklyStat } from '../types'
 
 async function currentWindow() {
@@ -47,6 +58,7 @@ const DASHBOARD_PAGE_TOTAL_PREFIX = 'folio:dashboard-page-total:'
 const PAGINATION_CACHE_PREFIX = 'folio:pagination:'
 const READER_NAME_KEY = 'folio:reader-name'
 const EMPTY_SHELF_SPINES = ['tall', 'short', 'lean', 'gold', 'wide', 'slim', 'dark']
+const SettingsPanel = lazy(() => import('./Sidebar').then((module) => ({ default: module.SettingsPanel })))
 const EMPTY_DASHBOARD: DashboardPayload = {
   books: [],
   recent_books: [],
@@ -248,7 +260,7 @@ function BookCover({ book, index = 0, className = '', adaptive = false }: { book
 function ContinuePanel({ book, onOpen }: { book: BookState | null; onOpen: (book: BookState) => void }) {
   if (!book) {
     return (
-      <m.section className="dash-panel dash-continue-empty" layout variants={scaleIn}>
+      <m.section className="dash-panel dash-continue-empty" layout={!isAndroidRuntime()} variants={scaleIn}>
         <div className="dash-empty-mark"><Icons.Book size={22} /></div>
         <h2>No book in progress</h2>
         <p>Add an EPUB or PDF, or open a library book to make it your next read.</p>
@@ -261,7 +273,7 @@ function ContinuePanel({ book, onOpen }: { book: BookState | null; onOpen: (book
     <m.button
       type="button"
       className={`dash-panel dash-continue ${book.exists === false ? 'is-missing' : ''}`}
-      layout
+      layout={!isAndroidRuntime()}
       variants={scaleIn}
       transition={spring.layout}
       aria-label={`Resume ${book.title} at ${Math.round(progress * 100)}%`}
@@ -310,7 +322,7 @@ function BookCard({
   return (
     <m.article
       className={`dash-book-card ${book.exists === false ? 'is-missing' : ''}`}
-      layout
+      layout={!isAndroidRuntime()}
       variants={listItem}
       transition={spring.layout}
     >
@@ -319,7 +331,7 @@ function BookCard({
         className="dash-book-open"
         aria-label={`Open ${book.title} by ${book.author || 'Unknown author'}`}
         onClick={() => onOpen(book)}
-        whileHover={buttonHover}
+        whileHover={isAndroidRuntime() ? undefined : buttonHover}
         whileTap={buttonTap}
       >
         <div className="dash-book-cover-wrap">
@@ -392,13 +404,13 @@ function HistoryList({
             {group.books.map((book, index) => {
               const progress = bookProgress(book)
               return (
-                <m.article className={`dash-history-list-row ${book.exists === false ? 'is-missing' : ''}`} key={book.id} layout variants={listItem} transition={spring.layout}>
+                <m.article className={`dash-history-list-row ${book.exists === false ? 'is-missing' : ''}`} key={book.id} layout={!isAndroidRuntime()} variants={listItem} transition={spring.layout}>
                   <m.button
                     type="button"
                     className="dash-history-list-open"
                     aria-label={`Open ${book.title} by ${book.author || 'Unknown author'}`}
                     onClick={() => onOpen(book)}
-                    whileHover={buttonHover}
+                    whileHover={isAndroidRuntime() ? undefined : buttonHover}
                     whileTap={buttonTap}
                   >
                     <div className="dash-history-list-cover"><BookCover book={book} index={index} /></div>
@@ -489,7 +501,7 @@ function ReaderNameControl({
 function StatCard({ label, value, detail, icon }: { label: string; value: string | number; detail?: string; icon: keyof typeof Icons }) {
   const Icon = Icons[icon]
   return (
-    <m.div className="dash-stat" layout variants={listItem}>
+    <m.div className="dash-stat" layout={!isAndroidRuntime()} variants={listItem}>
       <div className="dash-stat-icon"><Icon size={17} /></div>
       <div>
         <strong>{value}</strong>
@@ -525,7 +537,7 @@ function HighlightList({ items, emptyTitle, emptyCopy }: { items: DashboardHighl
   return (
     <m.div className="dash-highlight-list" variants={listStagger} initial="initial" animate="animate" exit="exit">
       {items.map((item) => (
-        <m.article className="dash-highlight" key={item.id} layout variants={listItem}>
+        <m.article className="dash-highlight" key={item.id} layout={!isAndroidRuntime()} variants={listItem}>
           <div className="dash-highlight-icon">
             {item.type === 'note' ? <Icons.Note size={16} /> : item.type === 'bookmark' ? <Icons.Bookmark size={16} /> : <Icons.Highlight size={16} />}
           </div>
@@ -600,8 +612,8 @@ function NotesPanel({
   }
 
   return (
-    <m.div className="dash-notes-layout" layout variants={listStagger} initial="initial" animate="animate" exit="exit">
-      <m.section className="dash-panel dash-note-composer" layout variants={listItem}>
+    <m.div className="dash-notes-layout" layout={!isAndroidRuntime()} variants={listStagger} initial="initial" animate="animate" exit="exit">
+      <m.section className="dash-panel dash-note-composer" layout={!isAndroidRuntime()} variants={listItem}>
         <div className="dash-section-head compact">
           <div>
             <h2>Notes</h2>
@@ -644,7 +656,7 @@ function NotesPanel({
         </form>
       </m.section>
 
-      <m.section className="dash-section" layout variants={listItem}>
+      <m.section className="dash-section" layout={!isAndroidRuntime()} variants={listItem}>
         <div className="dash-section-head">
           <div>
             <h2>Saved notes</h2>
@@ -660,7 +672,7 @@ function NotesPanel({
 function EmptyState({ icon, title, copy }: { icon: keyof typeof Icons; title: string; copy: string }) {
   const Icon = Icons[icon]
   return (
-    <m.div className="dash-empty" layout variants={scaleIn} initial="initial" animate="animate" exit="exit">
+    <m.div className="dash-empty" layout={!isAndroidRuntime()} variants={scaleIn} initial="initial" animate="animate" exit="exit">
       <div className="dash-empty-mark"><Icon size={22} /></div>
       <h2>{title}</h2>
       <p>{copy}</p>
@@ -693,7 +705,7 @@ function EmptyLibraryWelcome({
 }) {
   return (
     <>
-      <m.section className="dash-empty-welcome" layout variants={slideUp}>
+      <m.section className="dash-empty-welcome" layout={!isAndroidRuntime()} variants={slideUp}>
         <div className="dash-empty-welcome-copy">
           <h1>{greetingTitle}</h1>
           <p>{greetingMessage} Add an EPUB or PDF and Folio will remember your place while keeping the shelf local.</p>
@@ -784,7 +796,7 @@ function MetadataAssignment({
   if (!books.length) return null
 
   return (
-    <m.section className="dash-panel dash-metadata-editor" layout variants={slideUp}>
+    <m.section className="dash-panel dash-metadata-editor" layout={!isAndroidRuntime()} variants={slideUp}>
       <div className="dash-section-head">
         <div>
           <h2>Add genres</h2>
@@ -795,7 +807,7 @@ function MetadataAssignment({
         {books.map((book) => {
           const tags = book[kind] || []
           return (
-            <m.div className="dash-metadata-row" key={book.id} layout variants={listItem}>
+            <m.div className="dash-metadata-row" key={book.id} layout={!isAndroidRuntime()} variants={listItem}>
               <div>
                 <strong>{book.title}</strong>
                 <span>{tags.length ? tags.join(', ') : `No ${label}s`}</span>
@@ -835,7 +847,7 @@ function BookGrid({
     return <EmptyState icon="Library" title={emptyTitle} copy={emptyCopy} />
   }
   return (
-    <m.div className="dash-book-grid" layout variants={listStagger} initial="initial" animate="animate" exit="exit">
+    <m.div className="dash-book-grid" layout={!isAndroidRuntime()} variants={listStagger} initial="initial" animate="animate" exit="exit">
       <AnimatePresence mode="popLayout" initial={false}>
         {books.map((book, index) => (
           <BookCard key={book.id} book={book} index={index} onOpen={onOpen} onDelete={onDelete} />
@@ -1395,11 +1407,11 @@ export default memo(function Welcome({
           <m.div
             key={historyMode}
             className="dash-history-mode-content"
-            variants={pageTransition}
+            variants={androidRuntime ? androidPageTransition : pageTransition}
             initial="initial"
             animate="animate"
             exit="exit"
-            layout
+            layout={!androidRuntime}
             transition={spring.layout}
           >
             {historyMode === 'list'
@@ -1534,15 +1546,15 @@ export default memo(function Welcome({
         </header>
 
         <div className="dash-content" data-android-scroll-fade>
-          <AnimatePresence mode="wait" initial={false}>
+          <AnimatePresence mode={androidRuntime ? 'popLayout' : 'wait'} initial={false}>
             <m.div
               className="dash-view-body"
               key={view}
-              variants={pageTransition}
+              variants={androidRuntime ? androidPageTransition : pageTransition}
               initial="initial"
               animate="animate"
               exit="exit"
-              layout
+              layout={!androidRuntime}
               transition={spring.layout}
             >
               {renderView()}
@@ -1567,7 +1579,7 @@ export default memo(function Welcome({
                   className="android-more-sheet"
                   data-android-scroll-fade
                   aria-label="More destinations"
-                  variants={modalPanel}
+                  variants={androidBottomSheet}
                   onPointerDown={(event) => event.stopPropagation()}
                 >
                   <div className="android-sheet-handle" aria-hidden="true" />
@@ -1683,20 +1695,22 @@ export default memo(function Welcome({
       )}
 
       {typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          {settingsOpen && (
-            <SettingsPanel
-              key="dashboard-settings"
-              theme={theme}
-              setTheme={setTheme}
-              motion={motion}
-              setMotion={setMotion}
-              {...settingsPanelProps}
-              onLibraryFolderChanged={refreshDashboard}
-              onClose={closeSettings}
-            />
-          )}
-        </AnimatePresence>,
+        <Suspense fallback={null}>
+          <AnimatePresence>
+            {settingsOpen && (
+              <SettingsPanel
+                key="dashboard-settings"
+                theme={theme}
+                setTheme={setTheme}
+                motion={motion}
+                setMotion={setMotion}
+                {...settingsPanelProps}
+                onLibraryFolderChanged={refreshDashboard}
+                onClose={closeSettings}
+              />
+            )}
+          </AnimatePresence>
+        </Suspense>,
         document.body,
       )}
     </div>

@@ -9,7 +9,7 @@ exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
 links = "tauri-plugin-mobile-runtime"
 
 [dependencies]
-tauri = { version = "2.10.3" }
+tauri = { version = "2.10.3", default-features = false }
 serde = "1.0"
 serde_json = "1.0"
 thiserror = "2"

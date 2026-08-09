@@ -813,7 +813,7 @@ export default memo(function Pill({
               {/* Transport cluster — fixed-width and never reflows so the
                   play button stays put when prep buttons morph. */}
               <div className="pill-controls-transport">
-                <m.button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)" aria-label="Previous sentence" whileHover={buttonHover} whileTap={buttonTap}>
+                <m.button className="pill-btn" onClick={() => skipSentence(-1)} title="Previous sentence (Left arrow)" aria-label="Previous sentence" whileHover={androidRuntime ? undefined : buttonHover} whileTap={buttonTap}>
                   <Icons.Rewind size={16} />
                 </m.button>
                 <m.button
@@ -825,7 +825,7 @@ export default memo(function Pill({
                 >
                   {isPlaying ? <Icons.Pause size={18} /> : <Icons.Play size={18} />}
                 </m.button>
-                <m.button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)" aria-label="Next sentence" whileHover={buttonHover} whileTap={buttonTap}>
+                <m.button className="pill-btn" onClick={() => skipSentence(1)} title="Next sentence (Right arrow)" aria-label="Next sentence" whileHover={androidRuntime ? undefined : buttonHover} whileTap={buttonTap}>
                   <Icons.Forward size={16} />
                 </m.button>
               </div>
@@ -851,7 +851,7 @@ export default memo(function Pill({
                   style={{ '--preload-progress': preloadProgress } as React.CSSProperties}
                   layout={androidRuntime ? false : 'position'}
                   transition={spring.pillControl}
-                  whileHover={pillControlHover}
+                  whileHover={androidRuntime ? undefined : pillControlHover}
                   whileTap={pillControlTap}
                 >
                   <span className="preload-icon" aria-hidden="true">
@@ -875,7 +875,7 @@ export default memo(function Pill({
                   tabIndex={!showFollowAlong ? -1 : 0}
                   layout={androidRuntime ? false : 'position'}
                   transition={spring.pillControl}
-                  whileHover={pillControlHover}
+                  whileHover={androidRuntime ? undefined : pillControlHover}
                   whileTap={pillControlTap}
                 >
                   <span className="follow-status-mark" aria-hidden="true">
@@ -1017,7 +1017,7 @@ export default memo(function Pill({
                       exit="exit"
                       layout={!androidRuntime}
                       transition={spring.pillControl}
-                      whileHover={pillControlHover}
+                      whileHover={androidRuntime ? undefined : pillControlHover}
                       whileTap={pillControlTap}
                     >
                       <span className="follow-status-mark" aria-hidden="true">

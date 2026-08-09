@@ -3,8 +3,8 @@
 PyInstaller builds this file into the sidecar executable that Tauri launches.
 """
 
-import os
 import logging
+import os
 import sys
 
 import uvicorn

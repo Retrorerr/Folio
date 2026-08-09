@@ -2,6 +2,7 @@ import { unzipSync } from 'fflate'
 import { clampSpeedForEngine, normalizeTtsEngine, normalizeVoiceForEngine } from './ttsVoices'
 import { applyAndroidPlatformMetrics, type AndroidPlatformMetrics } from './androidShell'
 import { chooseEpubCoverCandidate, metadataRepairEligible, normalizeCoverMediaType, safeDecodeURIComponent, safeRepairedToc, type EpubCoverCandidate, type EpubCoverSource } from './mobileMetadata'
+import { remapMobileReadingPosition, structureMobileSpineDocuments, type MobileRawBlock } from './mobileChapterStructure'
 import { readResponseBytesBounded, recentArtworkBookIds } from './artworkPayload'
 import {
   NARRATION_INDEX_VERSION,
@@ -21,11 +22,12 @@ type MobileRecord = {
   book: BookState
   reflow: ReflowDocument
   pages: PageText[]
+  contentRevision?: string
   source?: Blob
   mimeType?: string
 }
 
-type MobileContentRecord = Pick<MobileRecord, 'reflow' | 'pages'> & { bookId: string }
+type MobileContentRecord = Pick<MobileRecord, 'reflow' | 'pages' | 'contentRevision'> & { bookId: string }
 type MobileSourceRecord = { bookId: string; source: Blob; mimeType?: string }
 type MobileAudioRecord = {
   key: string
@@ -108,7 +110,8 @@ const MAX_PRELOAD_SENTENCES = 128
 const MAX_BUFFER_SENTENCES = 24
 const MAX_TRACKED_PRELOAD_JOBS = 32
 const INTER_CHUNK_PAUSE_MS = 500
-const MOBILE_TTS_CACHE_REVISION = 'android-native-misaki-fba1236595f2-v4-narration-pauses'
+const MOBILE_CONTENT_REVISION = 'android-epub-chapters-v2'
+const MOBILE_TTS_CACHE_REVISION = 'android-native-misaki-fba1236595f2-v4-narration-pauses-v5-logical-chapters'
 const MOBILE_METADATA_REVISION = 'android-book-metadata-v3'
 const resourceCache = new Map<string, string>()
 const resourceCacheSizes = new Map<string, number>()
@@ -120,6 +123,7 @@ let dbPromise: Promise<IDBDatabase> | null = null
 let booksCache: BookState[] | null = null
 let booksLoadPromise: Promise<BookState[]> | null = null
 const contentCache = new Map<string, MobileContentRecord>()
+const contentUpgradeJobs = new Map<string, Promise<MobileRecord | null>>()
 const audioGenerationJobs = new Map<string, Promise<MobileAudioRecord>>()
 const preloadJobs = new Map<string, MobilePreloadJob>()
 const bufferWindows = new Map<string, MobileBufferWindow>()
@@ -261,7 +265,11 @@ async function getRecord(bookId: string): Promise<MobileRecord | null> {
     if (!content) return null
     cacheContent(content)
   }
-  return { book, reflow: content.reflow, pages: content.pages }
+  const record: MobileRecord = { book, ...content }
+  if (book.format === 'epub' && content.contentRevision !== MOBILE_CONTENT_REVISION) {
+    return await upgradeMobileEpubRecord(record) || record
+  }
+  return record
 }
 
 async function getSourceRecord(bookId: string): Promise<MobileSourceRecord | null> {
@@ -292,7 +300,12 @@ async function putImportedRecord(record: MobileRecord): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const transaction = db.transaction(stores, 'readwrite')
     transaction.objectStore(BOOKS_STORE).put(record.book)
-    transaction.objectStore(CONTENT_STORE).put({ bookId: record.book.id, reflow: record.reflow, pages: record.pages } satisfies MobileContentRecord)
+    transaction.objectStore(CONTENT_STORE).put({
+      bookId: record.book.id,
+      reflow: record.reflow,
+      pages: record.pages,
+      contentRevision: record.contentRevision,
+    } satisfies MobileContentRecord)
     if (record.source) {
       transaction.objectStore(SOURCES_STORE).put({ bookId: record.book.id, source: record.source, mimeType: record.mimeType } satisfies MobileSourceRecord)
     }
@@ -301,7 +314,12 @@ async function putImportedRecord(record: MobileRecord): Promise<void> {
     transaction.onabort = () => reject(transaction.error || new Error('Could not save imported book'))
   })
   await putBookStateCache(record.book)
-  cacheContent({ bookId: record.book.id, reflow: record.reflow, pages: record.pages })
+  cacheContent({
+    bookId: record.book.id,
+    reflow: record.reflow,
+    pages: record.pages,
+    contentRevision: record.contentRevision,
+  })
 }
 
 async function putBookStateCache(book: BookState): Promise<void> {
@@ -1127,26 +1145,37 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
     })
   })
   const spine = elementByLocalName(opf, 'itemref')
-  const chapters: ReflowDocument['chapters'] = []
-  let sentenceIndex = 0
-  spine.forEach((item, chapterIndex) => {
+  const spineDocuments: MobileRawBlock[][] = []
+  spine.forEach((item) => {
     const entry = manifest.get(attributeByLocalName(item, 'idref'))
     if (!entry || !files[entry.path]) return
     const document = new DOMParser().parseFromString(bytesToText(files[entry.path]), 'text/html')
     const body = document.body || document.documentElement
-    const rawBlocks = collectBlocks(body)
+    const blocks = collectBlocks(body) as MobileRawBlock[]
+    if (blocks.length) spineDocuments.push(blocks)
+  })
+
+  const chapters: ReflowDocument['chapters'] = []
+  let sentenceIndex = 0
+  structureMobileSpineDocuments(spineDocuments).forEach((sourceChapter) => {
     const blocks: ReflowDocument['chapters'][number]['blocks'] = []
-    const firstHeading = rawBlocks.find((raw) => raw.type === 'heading' && raw.text)
-    const chapterTitle = firstHeading?.text || `Chapter ${chapterIndex + 1}`
-    const chapterTitleIdx = sentenceIndex
-    sentenceIndex += 1
-    let consumedChapterHeading = false
-    rawBlocks.forEach((raw) => {
+    const chapterTitle = sourceChapter.title || `Chapter ${chapters.length + 1}`
+    const chapterNumber = sourceChapter.number
+    const chapterLabel = chapterNumber ? `Chapter ${chapterNumber}` : ''
+    let chapterNumberIdx: number | null = null
+    let chapterTitleIdx: number | null = null
+    if (chapterLabel) {
+      chapterNumberIdx = sentenceIndex
+      sentenceIndex += 1
+    }
+    if (!chapterLabel || chapterTitle.toLowerCase().replace(/\.$/, '') !== chapterLabel.toLowerCase()) {
+      chapterTitleIdx = sentenceIndex
+      sentenceIndex += 1
+    } else {
+      chapterTitleIdx = chapterNumberIdx
+    }
+    sourceChapter.blocks.forEach((raw) => {
       if (raw.type === 'heading') {
-        if (!consumedChapterHeading && raw === firstHeading) {
-          consumedChapterHeading = true
-          return
-        }
         blocks.push({ type: 'heading', level: raw.level || 1, text: raw.text || '', idx: sentenceIndex, kind: 'heading' })
         sentenceIndex += 1
         return
@@ -1158,7 +1187,16 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
       })
       if (sentences.length) blocks.push({ type: 'paragraph', sentences })
     })
-    if (blocks.length) chapters.push({ id: chapters.length, title: chapterTitle, title_idx: chapterTitleIdx, number: null, blocks })
+    if (blocks.length) {
+      chapters.push({
+        id: chapters.length,
+        title: chapterTitle,
+        title_idx: chapterTitleIdx,
+        number: chapterNumber,
+        number_idx: chapterNumberIdx,
+        blocks,
+      })
+    }
   })
   if (!chapters.length) throw new Error('This EPUB contains no readable chapters.')
   const coverCandidate = discoverEpubCoverCandidate(opf, metadata, manifest, files, opfDir)
@@ -1170,7 +1208,7 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
   const reflow: ReflowDocument = {
     format: 'epub',
     version: 1,
-    chunker_version: 'android-v1',
+    chunker_version: MOBILE_CONTENT_REVISION,
     metadata: { title, author, running_head: title },
     chapters,
     sentence_count: sentenceIndex,
@@ -1204,8 +1242,102 @@ function parseEpub(bytes: Uint8Array, filename: string, id: string): MobileRecor
     book,
     reflow,
     pages: buildPages(chapters),
+    contentRevision: MOBILE_CONTENT_REVISION,
     source: new Blob([bytes.slice()], { type: 'application/epub+zip' }),
     mimeType: 'application/epub+zip',
+  }
+}
+
+async function nativePlaybackReferencesBook(bookId: string): Promise<boolean> {
+  try {
+    const status = await nativeInvoke<MobilePlaybackStatus>('audio_status')
+    const hasQueuedLocation = (status.queueLocations || []).some((location) => location.bookId === bookId)
+    const active = !['idle', 'finished', 'stopped', 'error'].includes(String(status.state || '').toLowerCase())
+    return active && (hasQueuedLocation || status.bookId === bookId)
+  } catch {
+    // Fail closed: changing chapter indices while Android owns an unknown
+    // native queue would make notification/process-death restoration unsafe.
+    return true
+  }
+}
+
+function mergeUpgradedEpubBook(
+  existing: BookState,
+  oldPages: PageText[],
+  parsed: MobileRecord,
+): BookState {
+  const parsedBook = parsed.book
+  const lastPosition = remapMobileReadingPosition(existing.last_position, oldPages, parsed.pages)
+  const bookmarks = (existing.bookmarks || []).map((bookmark) => (
+    remapMobileReadingPosition(bookmark, oldPages, parsed.pages)
+  ))
+  const existingSource = String(existing.cover_source || '').toLowerCase()
+  const useParsedCover = Boolean(parsedBook.cover_url) && (
+    !existing.cover_url || !existingSource || /fallback|cover-page/.test(existingSource)
+  )
+  const pageCount = Math.max(1, parsedBook.page_count)
+  const sentenceCount = parsed.pages[lastPosition.page]?.sentences.length || 1
+  const chapterProgress = Math.max(0, Math.min(1, Number(lastPosition.sentence_idx || 0) / sentenceCount))
+  const progress = existing.has_reading_progress
+    ? Math.max(0, Math.min(1, (lastPosition.page + chapterProgress) / pageCount))
+    : Number(existing.progress || 0)
+
+  return {
+    ...parsedBook,
+    ...existing,
+    title: metadataTitleIsInferior(existing, existing.filepath.split('/').pop() || '') ? parsedBook.title : existing.title,
+    author: !normalizeText(existing.author || '') || /^unknown$/i.test(existing.author) ? parsedBook.author : existing.author,
+    page_count: pageCount,
+    toc: parsedBook.toc,
+    cover_url: useParsedCover ? parsedBook.cover_url : existing.cover_url,
+    cover_source: useParsedCover ? parsedBook.cover_source : existing.cover_source,
+    metadata_revision: MOBILE_METADATA_REVISION,
+    metadata_repair_attempted_revision: null,
+    last_position: lastPosition,
+    bookmarks,
+    visual_page_count: pageCount,
+    progress,
+    // A background schema repair is not a reading event and must not reorder
+    // the user's recent/history shelves.
+    updated_at: existing.updated_at ?? parsedBook.updated_at ?? Date.now(),
+  }
+}
+
+async function upgradeMobileEpubRecord(
+  record: MobileRecord,
+  supplied?: { bytes: Uint8Array; filename: string },
+): Promise<MobileRecord | null> {
+  if (record.book.format !== 'epub' || record.contentRevision === MOBILE_CONTENT_REVISION) return record
+  const existingJob = contentUpgradeJobs.get(record.book.id)
+  if (existingJob) return existingJob
+
+  const job = (async (): Promise<MobileRecord | null> => {
+    if (await nativePlaybackReferencesBook(record.book.id)) return null
+    let bytes = supplied?.bytes
+    let filename = supplied?.filename || record.book.filepath.split('/').pop() || `${record.book.id}.epub`
+    if (!bytes) {
+      const source = await getSourceRecord(record.book.id)
+      if (!source?.source || source.source.size > MAX_EPUB_BYTES) return null
+      bytes = new Uint8Array(await source.source.arrayBuffer())
+      filename = record.book.filepath.split('/').pop() || `${record.book.id}.epub`
+    }
+    const parsed = parseEpub(bytes, filename, record.book.id)
+    const upgraded: MobileRecord = {
+      ...parsed,
+      book: mergeUpgradedEpubBook(record.book, record.pages, parsed),
+    }
+    await putImportedRecord(upgraded)
+    return upgraded
+  })().catch((error) => {
+    console.warn('Could not migrate Android EPUB chapter structure', error)
+    return null
+  })
+
+  contentUpgradeJobs.set(record.book.id, job)
+  try {
+    return await job
+  } finally {
+    if (contentUpgradeJobs.get(record.book.id) === job) contentUpgradeJobs.delete(record.book.id)
   }
 }
 
@@ -1742,7 +1874,12 @@ async function importBookBytes(
   const books = await getAllBooks()
   const existing = books.find((entry) => entry.id === id)
   if (existing) {
-    const repaired = await repairBookMetadata(existing, bytes, filename, { explicit: true })
+    let repaired = await repairBookMetadata(existing, bytes, filename, { explicit: true })
+    const current = await getRecord(id)
+    if (current?.contentRevision !== MOBILE_CONTENT_REVISION) {
+      const upgraded = await upgradeMobileEpubRecord(current, { bytes, filename })
+      if (upgraded) repaired = upgraded.book
+    }
     if (options.touchExisting) {
       repaired.last_opened_at = Date.now()
       await putBookState(repaired)
