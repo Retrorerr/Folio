@@ -74,7 +74,10 @@ $ndk = if ($env:NDK_HOME) { $env:NDK_HOME } else {
   $roots = Get-ChildItem (Join-Path $sdk 'ndk') -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending
   if ($roots) { $roots[0].FullName } else { $null }
 }
-$cmakeRoot = Get-ChildItem (Join-Path $sdk 'cmake') -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+$cmakeRoot = Get-ChildItem (Join-Path $sdk 'cmake') -Directory -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match '^3\.' } |
+  Sort-Object { [version]$_.Name } -Descending |
+  Select-Object -First 1
 $cmakeBin = if ($cmakeRoot) { Join-Path $cmakeRoot.FullName 'bin' } else { $null }
 $cmake = if ($cmakeBin) { Join-Path $cmakeBin 'cmake.exe' } else { $null }
 $ninja = if ($cmakeBin) { Join-Path $cmakeBin 'ninja.exe' } else { $null }
