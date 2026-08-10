@@ -136,6 +136,44 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Tauri Android project initialization failed' }
   }
 
+  # The Tauri CLI normally exports these values before invoking Cargo. Folio
+  # builds each ABI directly, so reproduce that contract from the checked-in
+  # app metadata instead of baking package details into the build command.
+  $androidConfigPath = Join-Path $repoRoot 'src-tauri\tauri.android.conf.json'
+  $androidConfig = Get-Content -LiteralPath $androidConfigPath -Raw | ConvertFrom-Json
+  $androidIdentifier = ([string]$androidConfig.identifier).Trim()
+  if ($androidIdentifier -notmatch '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$') {
+    throw "Android identifier is missing or cannot be mapped to a Kotlin package: '$androidIdentifier'"
+  }
+
+  $cargoManifestPath = Join-Path $repoRoot 'src-tauri\Cargo.toml'
+  $inLibSection = $false
+  $rustLibraryName = $null
+  foreach ($manifestLine in (Get-Content -LiteralPath $cargoManifestPath)) {
+    $trimmedLine = $manifestLine.Trim()
+    if ($trimmedLine -match '^\[(?<section>[^]]+)\]$') {
+      $inLibSection = $Matches.section -eq 'lib'
+      continue
+    }
+    if ($inLibSection -and $trimmedLine -match '^name\s*=\s*["''](?<name>[A-Za-z_][A-Za-z0-9_]*)["'']\s*(?:#.*)?$') {
+      $rustLibraryName = $Matches.name
+      break
+    }
+  }
+  if (-not $rustLibraryName) { throw "Rust [lib] name is missing or invalid in $cargoManifestPath" }
+
+  $kotlinPackageRoot = Join-Path $androidRoot "app\src\main\java\$($androidIdentifier.Replace('.', '\'))"
+  if (-not (Test-Path -LiteralPath $kotlinPackageRoot -PathType Container)) {
+    throw "Generated Android package does not match identifier '$androidIdentifier': $kotlinPackageRoot"
+  }
+  $kotlinGeneratedRoot = Join-Path $kotlinPackageRoot 'generated'
+  New-Item -ItemType Directory -Force -Path $kotlinGeneratedRoot | Out-Null
+
+  $env:WRY_ANDROID_PACKAGE = $androidIdentifier
+  $env:TAURI_ANDROID_PACKAGE_UNESCAPED = $androidIdentifier
+  $env:WRY_ANDROID_LIBRARY = $rustLibraryName
+  $env:WRY_ANDROID_KOTLIN_FILES_OUT_DIR = $kotlinGeneratedRoot
+
   & (Join-Path $repoRoot 'scripts\sync-android-branding.ps1') -AndroidRoot $androidRoot
   if ($LASTEXITCODE -ne 0) { throw 'Android branding synchronization failed' }
 
