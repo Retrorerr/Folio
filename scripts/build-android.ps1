@@ -119,6 +119,10 @@ if (-not (Test-Path -LiteralPath $npm -PathType Leaf)) { throw "npm.cmd was not 
 $cargo = (Get-Command cargo -ErrorAction Stop).Source
 $androidRoot = Join-Path $repoRoot 'src-tauri\gen\android'
 $artifactOutputRoot = Join-Path $repoRoot 'dist\android'
+# Tauri's CLI normally supplies this to the Rust build script. Folio invokes
+# Cargo directly so it can verify and stage every ABI itself, therefore it must
+# preserve the same contract for generated Gradle plugin wiring.
+$env:TAURI_ANDROID_PROJECT_PATH = $androidRoot
 
 Push-Location $repoRoot
 try {
@@ -192,6 +196,15 @@ try {
     $sourceHash = Get-FileSha256 $library
     $copiedHash = Get-FileSha256 $jniLibrary
     if ($sourceHash -ne $copiedHash) { throw "JNI library copy verification failed for $target" }
+  }
+
+  foreach ($generatedGradleFile in @(
+    (Join-Path $androidRoot 'tauri.settings.gradle'),
+    (Join-Path $androidRoot 'app\tauri.build.gradle.kts')
+  )) {
+    if (-not (Test-NonEmptyRegularFile $generatedGradleFile)) {
+      throw "Tauri Gradle plugin wiring was not generated: $generatedGradleFile"
+    }
   }
 
   $gradleTasks = @()
