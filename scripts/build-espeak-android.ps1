@@ -144,8 +144,9 @@ if ($sourceStatus.Count -gt 0) {
   }
 }
 
-$head = (& $git -C $sourceRoot rev-parse HEAD 2>$null).Trim()
-if ($LASTEXITCODE -ne 0 -or $head -ne $EspeakRevision) {
+$headRefs = @(& $git -C $sourceRoot show-ref --head --hash HEAD)
+$head = if ($LASTEXITCODE -eq 0 -and $headRefs.Count -gt 0) { $headRefs[0].Trim() } else { '' }
+if ($head -ne $EspeakRevision) {
   Invoke-Checked "fetching pinned eSpeak NG $EspeakVersion" { & $git -C $sourceRoot fetch --depth 1 origin $EspeakRevision }
   Invoke-Checked "checking out pinned eSpeak NG $EspeakVersion" { & $git -C $sourceRoot checkout --detach --force $EspeakRevision }
 }
