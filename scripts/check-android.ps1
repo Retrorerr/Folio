@@ -55,6 +55,33 @@ function Get-FileSha256([string]$Path) {
   }
 }
 
+function Get-CanonicalTextSha256([string]$Text) {
+  $normalized = $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($normalized)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Get-FileCanonicalTextSha256([string]$Path) {
+  $encoding = [Text.UTF8Encoding]::new($false, $true)
+  return (Get-CanonicalTextSha256 ([IO.File]::ReadAllText($Path, $encoding)))
+}
+
+function Get-ZipEntryCanonicalTextSha256($Entry) {
+  $stream = $Entry.Open()
+  $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true), $true)
+  try {
+    return (Get-CanonicalTextSha256 ($reader.ReadToEnd()))
+  } finally {
+    $reader.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Get-GzipExpandedSha256([string]$Path) {
   $file = [IO.File]::OpenRead($Path)
   $gzip = [IO.Compression.GZipStream]::new($file, [IO.Compression.CompressionMode]::Decompress)
@@ -189,19 +216,32 @@ foreach ($asset in @(
   if (-not (Test-RegularNonEmptyFile $assetPath)) { throw "Required Android asset is missing or empty: $assetPath" }
 }
 $pinnedAssetHashes = @{
-  'notices/ESPEAK_NG_GPL-3.0.txt' = '0b383d5a63da644f628d99c33976ea6487ed89aaa59f0b3257992deac1171e6b'
-  'notices/ESPEAK_NG_APACHE-2.0.txt' = '3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5'
-  'notices/ESPEAK_NG_BSD-2-Clause.txt' = '2c87dc2ffd8879105739b003306c0d63b65a7d9e81e5a09becf7c3c20fdaf92c'
-  'notices/ESPEAK_NG_UNICODE-DFS-2015.txt' = 'e488fb4a2f0f2a113387f6a7e2deea56bf5eee6ca92596c623093907a560e051'
-  'misaki-en/LICENSE' = '1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6'
+  'notices/ESPEAK_NG_GPL-3.0.txt' = '8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903'
+  'notices/ESPEAK_NG_APACHE-2.0.txt' = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'
+  'notices/ESPEAK_NG_BSD-2-Clause.txt' = 'a8b0c1c7d7af6c0415c068be8cf373799d1a42b0707b79dc4ccfcaf593cd902d'
+  'notices/ESPEAK_NG_UNICODE-DFS-2015.txt' = 'be029c50df83105a810e391778b6edcb522d6cb4b4e142332aca54437a499bf7'
+  'misaki-en/LICENSE' = 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
   'misaki-en/NOTICE' = '4019b637c2229fbeda72c956c69c685862313093b5964892d2ffd713b1ff3092'
   'misaki-en/SOURCE.json' = '7bcf29e3a84d721af1762bf5453e84f29f14ae00a6b0ea89d5a94d4458cd067c'
   'misaki-en/us.lex.gz' = '0e59e4085aff821089bd015ed436d07f69716ea914a02960a7511ecec48a67d8'
   'misaki-en/gb.lex.gz' = '760714acdb23f5eb2a09e4313c4f9c7d688ea4e2a7af3d266a54f8024743ea8b'
 }
+$pinnedTextAssets = @(
+  'notices/ESPEAK_NG_GPL-3.0.txt',
+  'notices/ESPEAK_NG_APACHE-2.0.txt',
+  'notices/ESPEAK_NG_BSD-2-Clause.txt',
+  'notices/ESPEAK_NG_UNICODE-DFS-2015.txt',
+  'misaki-en/LICENSE',
+  'misaki-en/NOTICE',
+  'misaki-en/SOURCE.json'
+)
 foreach ($relativeLicense in $pinnedAssetHashes.Keys) {
   $sourceLicense = Join-Path $repoRoot ("src-tauri\plugins\android\src\main\assets\" + $relativeLicense.Replace('/', '\'))
-  $actualHash = Get-FileSha256 $sourceLicense
+  $actualHash = if ($pinnedTextAssets -contains $relativeLicense) {
+    Get-FileCanonicalTextSha256 $sourceLicense
+  } else {
+    Get-FileSha256 $sourceLicense
+  }
   if ($actualHash -ne $pinnedAssetHashes[$relativeLicense]) { throw "Pinned asset hash mismatch: $sourceLicense" }
 }
 $expandedMisakiHashes = @{}
@@ -366,7 +406,11 @@ try {
           throw "Required license/provenance asset is absent or empty in $artifactPath`: $noticeAssetName"
         }
         if ($pinnedAssetHashes.ContainsKey($noticeAsset)) {
-          $packagedHash = Get-ZipEntrySha256 $requiredNoticeEntry
+          $packagedHash = if ($pinnedTextAssets -contains $noticeAsset) {
+            Get-ZipEntryCanonicalTextSha256 $requiredNoticeEntry
+          } else {
+            Get-ZipEntrySha256 $requiredNoticeEntry
+          }
           if ($packagedHash -ne $pinnedAssetHashes[$noticeAsset]) {
             throw "Pinned license/provenance asset hash mismatch in $artifactPath`: $noticeAssetName"
           }
