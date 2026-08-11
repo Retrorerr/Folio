@@ -1,0 +1,18 @@
+{
+  "artifacts": [
+    {
+      "bytes": 103687621,
+      "name": "Folio-0.1.13-1.x86_64.rpm",
+      "sha256": "77ba1841a2e9212529078d53cafa011c1305a8d28b165f23101a88aa3230a8c2"
+    },
+    {
+      "bytes": 169904632,
+      "name": "Folio_0.1.13_amd64.AppImage",
+      "sha256": "001e5247aa4e314189dba7e61ee463d483a104ff3a1477669c087c7d20fc3580"
+    }
+  ],
+  "formatVersion": 1,
+  "sourceCommit": "fe82e3771a4e9f84517986e2a48ff5494c885c7d",
+  "sourceDateEpoch": 1786325185,
+  "sourceDirty": false
+}
