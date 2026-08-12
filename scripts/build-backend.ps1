@@ -10,7 +10,6 @@ $pythonExe = $env:FOLIO_PYTHON
 if (-not $pythonExe) {
   $pythonCandidates = @(
     (Join-Path $backend ".venv\Scripts\python.exe"),
-    (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"),
     (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
     "python"
   )

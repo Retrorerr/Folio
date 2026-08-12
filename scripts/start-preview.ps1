@@ -9,7 +9,7 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $backendDir = Join-Path $root "backend"
 $frontendDir = Join-Path $root "frontend"
 $backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
-$pidDir = Join-Path $backendDir "codex-preview-pids"
+$pidDir = Join-Path $backendDir "preview-pids"
 $sessionId = [guid]::NewGuid().ToString("N")
 $heartbeatFile = Join-Path $pidDir "preview-heartbeat-$sessionId.txt"
 $disconnectFile = Join-Path $pidDir "preview-disconnect-$sessionId.txt"
@@ -199,8 +199,6 @@ function Resolve-BackendPython {
         $candidates += $env:FOLIO_PYTHON
     }
     $candidates += (Join-Path $backendDir ".venv\Scripts\python.exe")
-    $candidates += (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe")
-
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCommand -and (Test-ExistingFile $pythonCommand.Source)) {
         $candidates += $pythonCommand.Source
@@ -221,15 +219,6 @@ function Resolve-NodeCommand {
         $nodeCandidates += $env:FOLIO_NODE
     }
 
-    $nodeCandidates += (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
-    $nodeCandidates += (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\node.exe")
-
-    $codexDocuments = Join-Path $env:USERPROFILE "Documents\Codex"
-    if (Test-Path -LiteralPath $codexDocuments) {
-        $nodeCandidates += Get-ChildItem -Path $codexDocuments -Recurse -Filter "node.exe" -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName
-    }
-
     $node = Get-Command node -ErrorAction SilentlyContinue
     if ($node -and (Test-ExistingFile $node.Source)) {
         $nodeCandidates += $node.Source
@@ -244,11 +233,6 @@ function Resolve-NodeCommand {
         $npmCliCandidates += (Join-Path $nodeDir "node_modules\npm\bin\npm-cli.js")
         $npmCliCandidates += (Join-Path $env:ProgramFiles "nodejs\node_modules\npm\bin\npm-cli.js")
         $npmCliCandidates += (Join-Path ${env:ProgramFiles(x86)} "nodejs\node_modules\npm\bin\npm-cli.js")
-
-        if (Test-Path -LiteralPath $codexDocuments) {
-            $npmCliCandidates += Get-ChildItem -Path $codexDocuments -Recurse -Filter "npm-cli.js" -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName
-        }
 
         foreach ($candidate in ($npmCliCandidates | Where-Object { Test-ExistingFile $_ } | Select-Object -Unique)) {
             return [pscustomobject]@{
@@ -303,8 +287,8 @@ if ((!$Restart) -and (!$initialBackendReady -or !$initialFrontendReady)) {
 $backendPython = Resolve-BackendPython
 
 if (!(Test-BackendReady $localBackendUrl)) {
-    $backendOut = Join-Path $backendDir "codex-preview-backend.out.log"
-    $backendErr = Join-Path $backendDir "codex-preview-backend.err.log"
+    $backendOut = Join-Path $backendDir "preview-backend.out.log"
+    $backendErr = Join-Path $backendDir "preview-backend.err.log"
     Reset-LogFile $backendOut
     Reset-LogFile $backendErr
     $backendCommand = "cd /d $(Quote-CmdArg $backendDir) && set ""FOLIO_API_TOKEN=$apiToken"" && set ""FOLIO_ALLOWED_HOSTS=127.0.0.1,localhost,::1"" && set ""FOLIO_PREVIEW_HEARTBEAT_FILE=$heartbeatFile"" && set ""FOLIO_PREVIEW_DISCONNECT_FILE=$disconnectFile"" && $(Quote-CmdArg $backendPython) -m uvicorn main:app --host 127.0.0.1 --port 8000 >> $(Quote-CmdArg $backendOut) 2>> $(Quote-CmdArg $backendErr)"
@@ -312,8 +296,8 @@ if (!(Test-BackendReady $localBackendUrl)) {
 }
 
 if (!(Test-HttpOk $localFrontendUrl)) {
-    $frontendOut = Join-Path $frontendDir "codex-preview-vite.out.log"
-    $frontendErr = Join-Path $frontendDir "codex-preview-vite.err.log"
+    $frontendOut = Join-Path $frontendDir "preview-vite.out.log"
+    $frontendErr = Join-Path $frontendDir "preview-vite.err.log"
     Reset-LogFile $frontendOut
     Reset-LogFile $frontendErr
     $nodeCommand = Resolve-NodeCommand
@@ -324,25 +308,25 @@ if (!(Test-HttpOk $localFrontendUrl)) {
     Start-DetachedCmd "frontend" $frontendCommand
 }
 
-$watchdogCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-CmdArg (Join-Path $PSScriptRoot 'codex-preview-watchdog.ps1')) -PidDir $(Quote-CmdArg $pidDir) -HeartbeatFile $(Quote-CmdArg $heartbeatFile) -DisconnectFile $(Quote-CmdArg $disconnectFile) -FrontendPort 5173 -BackendPort 8000 -HeartbeatTimeoutSeconds 180"
+$watchdogCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $(Quote-CmdArg (Join-Path $PSScriptRoot 'preview-watchdog.ps1')) -PidDir $(Quote-CmdArg $pidDir) -HeartbeatFile $(Quote-CmdArg $heartbeatFile) -DisconnectFile $(Quote-CmdArg $disconnectFile) -FrontendPort 5173 -BackendPort 8000 -HeartbeatTimeoutSeconds 180"
 Start-DetachedCmd "watchdog" $watchdogCommand
 
 $backendReady = Wait-BackendReady $localBackendUrl 30
 $frontendReady = Wait-HttpOk $localFrontendUrl 30
 
 if (!$backendReady -or !$frontendReady) {
-    Write-Host "Codex preview did not become ready."
+    Write-Host "Preview did not become ready."
     Write-Host "Backend ready:  $backendReady"
     Write-Host "Frontend ready: $frontendReady"
-    Write-Host "Backend logs:   backend\codex-preview-backend.out.log / backend\codex-preview-backend.err.log"
-    Write-Host "Frontend logs:  frontend\codex-preview-vite.out.log / frontend\codex-preview-vite.err.log"
+    Write-Host "Backend logs:   backend\preview-backend.out.log / backend\preview-backend.err.log"
+    Write-Host "Frontend logs:  frontend\preview-vite.out.log / frontend\preview-vite.err.log"
     exit 1
 }
 
-Write-Host "Codex preview ready:"
+Write-Host "Preview ready:"
 Write-Host "  Frontend local:   $localFrontendUrl"
 Write-Host "  Frontend browser: $browserFrontendUrl"
 Write-Host "  Backend:          $localBackendUrl"
 Write-Host ""
-Write-Host "Open this in the Codex in-app browser:"
+Write-Host "Open this URL in a browser:"
 Write-Host $browserFrontendUrl

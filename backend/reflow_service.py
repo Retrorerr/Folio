@@ -4,7 +4,7 @@ Produces a chapter-by-chapter document tree the frontend can render with
 themed typography (running head, chapter eyebrow/display, drop cap, justified
 Cormorant body) matching the Folio design reference.
 
-No LLM, no OCR. Deterministic extraction + typographic regex cleanup.
+Deterministic extraction + typographic regex cleanup.
 """
 import hashlib
 import json

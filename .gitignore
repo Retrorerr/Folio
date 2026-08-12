@@ -11,10 +11,7 @@ Thumbs.db
 .browser-check-profile*/
 .playwright/
 .playwright-cli/
-.claude/
-.codex/
 .tauri/
-codex-preview-*.png
 
 # Python
 __pycache__/
@@ -66,7 +63,10 @@ dev/
 backend/audio_cache/
 backend/uploads/
 backend/data/
-backend/codex-preview-pids/
+backend/*preview-pids/
+
+# Local QA screenshots and emulator artifacts
+artifacts/
 
 # Benchmark / debug output (tts_benchmark.py)
 backend/tts_benchmark.py
