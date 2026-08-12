@@ -93,10 +93,10 @@ Tauri development mode:
 npm run tauri:dev
 ```
 
-Codex/browser preview mode:
+Authenticated browser preview mode:
 
 ```powershell
-npm run preview:codex:restart
+npm run preview:restart
 ```
 
 Manual frontend/backend debugging:

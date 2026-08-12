@@ -15,14 +15,6 @@ function Resolve-NodeTools {
     $nodeCandidates += $node.Source
   }
 
-  $nodeCandidates += (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\node.exe")
-
-  $codexDocuments = Join-Path $env:USERPROFILE "Documents\Codex"
-  if (Test-Path -LiteralPath $codexDocuments) {
-    $nodeCandidates += Get-ChildItem -Path $codexDocuments -Recurse -Filter "node.exe" -ErrorAction SilentlyContinue |
-      Select-Object -ExpandProperty FullName
-  }
-
   foreach ($nodeExe in ($nodeCandidates | Where-Object { Test-ExistingFile $_ } | Select-Object -Unique)) {
     $nodeDir = Split-Path -Parent $nodeExe
     $npmCliCandidates = @()
@@ -32,11 +24,6 @@ function Resolve-NodeTools {
     $npmCliCandidates += (Join-Path $nodeDir "node_modules\npm\bin\npm-cli.js")
     $npmCliCandidates += (Join-Path $env:ProgramFiles "nodejs\node_modules\npm\bin\npm-cli.js")
     $npmCliCandidates += (Join-Path ${env:ProgramFiles(x86)} "nodejs\node_modules\npm\bin\npm-cli.js")
-
-    if (Test-Path -LiteralPath $codexDocuments) {
-      $npmCliCandidates += Get-ChildItem -Path $codexDocuments -Recurse -Filter "npm-cli.js" -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty FullName
-    }
 
     foreach ($npmCli in ($npmCliCandidates | Where-Object { Test-ExistingFile $_ } | Select-Object -Unique)) {
       return [pscustomobject]@{

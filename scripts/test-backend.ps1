@@ -9,7 +9,6 @@ $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
 $venv = Join-Path $backend ".venv"
 $python = Join-Path $venv "Scripts\python.exe"
-$bundledPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 
 function Test-ExistingFile([string]$Path) {
     return $Path -and [System.IO.Path]::IsPathRooted($Path) -and (Test-Path -LiteralPath $Path -PathType Leaf)
@@ -30,9 +29,6 @@ function Test-CompatiblePython([string]$PythonExe) {
 }
 
 $seedPython = $env:FOLIO_PYTHON
-if (!(Test-ExistingFile $seedPython)) {
-    $seedPython = $bundledPython
-}
 if (!(Test-ExistingFile $seedPython)) {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCommand) {
