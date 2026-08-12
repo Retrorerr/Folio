@@ -8,6 +8,7 @@ import {
   type VisualLineMap,
   type WeightedToken,
 } from './playbackModel'
+import { buildTextNodeIndex, rangeForTextOffsets, type TextNodeIndex } from './textNodeIndex'
 
 type MeasuredFragment = {
   tokenIndex: number
@@ -49,41 +50,22 @@ const finitePositive = (value: number, fallback: number) => (
   Number.isFinite(value) && value > 0 ? value : fallback
 )
 
-function rangeForOffsets(element: Element, start: number, end: number) {
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
-  let consumed = 0
-  let startNode: Node | null = null
-  let endNode: Node | null = null
-  let startOffset = 0
-  let endOffset = 0
-  let node: Node | null
-
-  while ((node = walker.nextNode())) {
-    const length = node.nodeValue?.length || 0
-    if (!startNode && consumed + length >= start) {
-      startNode = node
-      startOffset = Math.max(0, start - consumed)
-    }
-    if (consumed + length >= end) {
-      endNode = node
-      endOffset = Math.max(0, end - consumed)
-      break
-    }
-    consumed += length
-  }
-
-  if (!startNode || !endNode) return null
-  try {
-    const range = document.createRange()
-    range.setStart(startNode, Math.min(startOffset, startNode.nodeValue?.length || 0))
-    range.setEnd(endNode, Math.min(endOffset, endNode.nodeValue?.length || 0))
-    return range
-  } catch {
-    return null
-  }
+type GeometryBuildMetrics = {
+  sentenceCount: number
+  tokenCount: number
+  textNodeCount: number
+  rangeCount: number
+  getClientRectsCount: number
 }
 
-function usefulRects(range: Range) {
+function rangeForOffsets(index: TextNodeIndex, start: number, end: number, metrics: GeometryBuildMetrics) {
+  const range = rangeForTextOffsets(index, start, end)
+  if (range) metrics.rangeCount += 1
+  return range
+}
+
+function usefulRects(range: Range, metrics: GeometryBuildMetrics) {
+  metrics.getClientRectsCount += 1
   const rects = Array.from(range.getClientRects()).filter(rect => (
     rect.width > 0.2 && rect.height > 0.2 &&
     Number.isFinite(rect.left) && Number.isFinite(rect.top)
@@ -97,19 +79,20 @@ function usefulRects(range: Range) {
 }
 
 function measureTokenFragments(
-  sentence: Element,
+  textNodeIndex: TextNodeIndex,
   tokens: WeightedToken[],
   flowRect: DOMRect,
   scaleX: number,
   scaleY: number,
   pageStride: number,
+  metrics: GeometryBuildMetrics,
 ) {
   const fragments: MeasuredFragment[] = []
 
   tokens.forEach((token, tokenIndex) => {
-    const range = rangeForOffsets(sentence, token.start, token.end)
+    const range = rangeForOffsets(textNodeIndex, token.start, token.end, metrics)
     if (!range) return
-    const rects = usefulRects(range)
+    const rects = usefulRects(range, metrics)
     range.detach?.()
     if (!rects.length) return
     const weightShare = token.weight / rects.length
@@ -205,11 +188,13 @@ function measureCanonicalParagraphLines(
   scaleX: number,
   scaleY: number,
   pageStride: number,
+  metrics: GeometryBuildMetrics,
 ) {
   const range = document.createRange()
   try {
     range.selectNodeContents(paragraph)
-    const rects = usefulRects(range)
+    metrics.rangeCount += 1
+    const rects = usefulRects(range, metrics)
     const fragments: MeasuredFragment[] = rects.map((rect, index) => {
       const localLeft = (rect.left - flowRect.left) / scaleX
       const localRight = (rect.right - flowRect.left) / scaleX
@@ -239,21 +224,23 @@ function measureCanonicalParagraphLines(
 }
 
 function applyLeadingGlyphGeometry(
-  sentence: Element,
+  textNodeIndex: TextNodeIndex,
   tokens: WeightedToken[],
   lines: MutableLine[],
   flowRect: DOMRect,
   scaleX: number,
   scaleY: number,
   pageStride: number,
+  metrics: GeometryBuildMetrics,
 ) {
   for (const line of lines) {
     const leadingFragment = [...line.fragments].sort((a, b) => a.left - b.left)[0]
     const token = leadingFragment ? tokens[leadingFragment.tokenIndex] : null
     if (!token) continue
 
-    const range = rangeForOffsets(sentence, token.start, token.end)
+    const range = rangeForOffsets(textNodeIndex, token.start, token.end, metrics)
     if (!range) continue
+    metrics.getClientRectsCount += 1
     const candidates = Array.from(range.getClientRects()).map(rect => {
       const localLeft = (rect.left - flowRect.left) / scaleX
       const localRight = (rect.right - flowRect.left) / scaleX
@@ -357,7 +344,32 @@ function computedLayoutKey(
   ].join('|')
 }
 
+/**
+ * Reads only the cheap layout identity fields used by a map. This lets
+ * foreground/font notifications prove that the existing map is still valid
+ * without rebuilding every token's geometry.
+ */
+export function currentVisualLineMapLayoutKey(options: BuildVisualLineMapOptions): string | null {
+  const viewport = options.root.querySelector<HTMLElement>('.reflow-viewport')
+  const flow = viewport?.querySelector<HTMLElement>('.reflow-flow:not(.reflow-measure)')
+  if (!viewport || !flow || !flow.isConnected) return null
+  const flowRect = flow.getBoundingClientRect()
+  const viewportRect = viewport.getBoundingClientRect()
+  if (!flowRect.width || !viewportRect.width) return null
+  const scaleX = finitePositive(flow.offsetWidth ? flowRect.width / flow.offsetWidth : 0, 1)
+  const scaleY = finitePositive(flow.offsetHeight ? flowRect.height / flow.offsetHeight : 0, scaleX)
+  return computedLayoutKey(flow, viewport, options, scaleX, scaleY)
+}
+
 export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLineMap | null {
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  const buildMetrics: GeometryBuildMetrics = {
+    sentenceCount: 0,
+    tokenCount: 0,
+    textNodeCount: 0,
+    rangeCount: 0,
+    getClientRectsCount: 0,
+  }
   const { root, pageStride, pagesPerView } = options
   const viewport = root.querySelector<HTMLElement>('.reflow-viewport')
   const flow = viewport?.querySelector<HTMLElement>('.reflow-flow:not(.reflow-measure)')
@@ -379,26 +391,30 @@ export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLi
   )
 
   for (const sentence of sentenceElements) {
+    buildMetrics.sentenceCount += 1
     const sentenceIndex = Number.parseInt(sentence.dataset.localSentIdx || '-1', 10)
     if (!Number.isFinite(sentenceIndex) || sentenceIndex < 0) continue
     const parsedGlobalIndex = Number.parseInt(sentence.dataset.sentIdx || '', 10)
     const globalSentenceIndex = Number.isFinite(parsedGlobalIndex) ? parsedGlobalIndex : null
     const tokens = tokenizeWeighted(sentence.textContent || '')
     if (!tokens.length) continue
+    buildMetrics.tokenCount += tokens.length
+    const textNodeIndex = buildTextNodeIndex(sentence)
+    buildMetrics.textNodeCount += textNodeIndex.segments.length
 
-    const fragments = measureTokenFragments(sentence, tokens, flowRect, scaleX, scaleY, pageStride)
+    const fragments = measureTokenFragments(textNodeIndex, tokens, flowRect, scaleX, scaleY, pageStride, buildMetrics)
     if (!fragments.length) continue
     let grouped = groupFragments(fragments)
     const paragraph = sentence.closest('.reflow-para')
     if (paragraph) {
       let canonicalLines = paragraphLineCache.get(paragraph)
       if (!canonicalLines) {
-        canonicalLines = measureCanonicalParagraphLines(paragraph, flowRect, scaleX, scaleY, pageStride)
+        canonicalLines = measureCanonicalParagraphLines(paragraph, flowRect, scaleX, scaleY, pageStride, buildMetrics)
         paragraphLineCache.set(paragraph, canonicalLines)
       }
       grouped = grouped.map(line => mergeWithCanonicalLineGeometry(line, canonicalLines || []))
     }
-    applyLeadingGlyphGeometry(sentence, tokens, grouped, flowRect, scaleX, scaleY, pageStride)
+    applyLeadingGlyphGeometry(textNodeIndex, tokens, grouped, flowRect, scaleX, scaleY, pageStride, buildMetrics)
     applyDropCapCursorGeometry(sentence, grouped, flowRect, scaleX, scaleY, pageStride)
 
     const weightedLines = assignVisualLineProgress(grouped.map(line => ({
@@ -456,6 +472,12 @@ export function buildVisualLineMap(options: BuildVisualLineMapOptions): VisualLi
       scaleY,
       pageStride,
       pagesPerView,
+      buildDurationMs: Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt),
+      sentenceCount: buildMetrics.sentenceCount,
+      tokenCount: buildMetrics.tokenCount,
+      textNodeCount: buildMetrics.textNodeCount,
+      rangeCount: buildMetrics.rangeCount,
+      getClientRectsCount: buildMetrics.getClientRectsCount,
     },
     createdAt: Date.now(),
   }

@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState, useLayoutEffect, useCallback, useMemo } from 'react'
 import type React from 'react'
 import { usePlaybackLineCursor } from '../followAlong/usePlaybackLineCursor'
+import { buildTextNodeIndex, rangeForTextOffsets, type TextNodeIndex } from '../followAlong/textNodeIndex'
 import { clampReaderViewTarget, readerPageNavigationState } from '../readerNavigation'
 import type { ReaderPageNavigationState } from '../readerNavigation'
 import type {
@@ -247,36 +248,28 @@ function writeReaderContentPage(
   }
 }
 
+const CHAR_OFFSET_INDEX = new WeakMap<Element, { text: string; index: TextNodeIndex }>()
+
+function textNodeIndexForElement(el: Element) {
+  const text = el.textContent || ''
+  const cached = CHAR_OFFSET_INDEX.get(el)
+  const cachedNodesStillMounted = cached && (
+    cached.index.segments.length === 0 || (
+      el.contains(cached.index.segments[0].node) &&
+      el.contains(cached.index.segments[cached.index.segments.length - 1].node)
+    )
+  )
+  if (cached?.text === text && cachedNodesStillMounted) return cached.index
+  const index = buildTextNodeIndex(el)
+  CHAR_OFFSET_INDEX.set(el, { text, index })
+  return index
+}
+
 // Build a Range covering [start, end) character offsets inside the element's
-// concatenated textContent. Walks text nodes so it works through nested spans
-// (e.g. drop-cap). Returns null if offsets are out of bounds.
+// concatenated textContent. The text-node index is retained per sentence so
+// repeated word/page lookups do not restart a TreeWalker at the element root.
 function rangeForCharOffsets(el: Element, start: number, end: number) {
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
-  let offset = 0
-  let startNode = null, startOff = 0, endNode = null, endOff = 0
-  let node: Node | null
-  while ((node = walker.nextNode())) {
-    const len = node.nodeValue?.length || 0
-    if (startNode == null && offset + len >= start) {
-      startNode = node
-      startOff = start - offset
-    }
-    if (offset + len >= end) {
-      endNode = node
-      endOff = end - offset
-      break
-    }
-    offset += len
-  }
-  if (!startNode || !endNode) return null
-  try {
-    const range = document.createRange()
-    range.setStart(startNode, startOff)
-    range.setEnd(endNode, endOff)
-    return range
-  } catch {
-    return null
-  }
+  return rangeForTextOffsets(textNodeIndexForElement(el), start, end)
 }
 
 function wordRect(active: Element, word: any) {
@@ -314,6 +307,72 @@ type WordCacheResult = { key: string; words: WeightedWord[]; totalWeight: number
 
 const EMPTY_WORD_CACHE: WordCacheResult = { key: '', words: [], totalWeight: 0 }
 const WORD_CACHE = new WeakMap<Element, { text: string; result: WordCacheResult }>()
+type MeasuredSentenceIndex = {
+  cacheKey: string
+  contentMarker: unknown
+  elements: Element[]
+  local: Map<number, Element>
+  global: Map<number, Element>
+}
+const MEASURED_SENTENCE_INDEX = new WeakMap<Element, MeasuredSentenceIndex>()
+type MeasuredSentencePageIndex = {
+  key: string
+  sentenceIndex: MeasuredSentenceIndex
+  byPage: Map<number, number>
+}
+const MEASURED_SENTENCE_PAGE_INDEX = new WeakMap<Element, MeasuredSentencePageIndex>()
+
+function measuredSentenceIndex(measure: Element, cacheKey: string, contentMarker: unknown): MeasuredSentenceIndex {
+  const cached = MEASURED_SENTENCE_INDEX.get(measure)
+  const cachedNodesStillMounted = cached && (
+    cached.elements.length === 0 || (
+      measure.contains(cached.elements[0]) &&
+      measure.contains(cached.elements[cached.elements.length - 1])
+    )
+  )
+  if (cached?.cacheKey === cacheKey && cached?.contentMarker === contentMarker && cachedNodesStillMounted) return cached
+  const elements = Array.from(measure.querySelectorAll<HTMLElement>('[data-local-sent-idx]'))
+  const local = new Map<number, Element>()
+  const global = new Map<number, Element>()
+  elements.forEach((element) => {
+    const localIndex = Number.parseInt(element.getAttribute('data-local-sent-idx') || '', 10)
+    if (Number.isFinite(localIndex) && localIndex >= 0) local.set(localIndex, element)
+    const globalIndex = Number.parseInt(element.getAttribute('data-sent-idx') || '', 10)
+    if (Number.isFinite(globalIndex) && globalIndex >= 0) global.set(globalIndex, element)
+  })
+  const index = { cacheKey, contentMarker, elements, local, global }
+  MEASURED_SENTENCE_INDEX.set(measure, index)
+  return index
+}
+
+function measuredSentencePageIndex(measure: Element, layoutKey: string, contentMarker: unknown) {
+  const sentenceIndex = measuredSentenceIndex(measure, layoutKey, contentMarker)
+  const cached = MEASURED_SENTENCE_PAGE_INDEX.get(measure)
+  // Reflow supplies a layout identity that changes with chapter content,
+  // theme, spread mode, and scale. Avoid even a bounding-rect read on the
+  // common page-turn path when that identity is unchanged.
+  if (cached?.key === layoutKey && cached.sentenceIndex === sentenceIndex) return cached.byPage
+
+  const rect = measure.getBoundingClientRect()
+
+  const byPage = new Map<number, number>()
+  sentenceIndex.elements.forEach((sentenceEl) => {
+    const sentenceIdx = Number.parseInt(sentenceEl.getAttribute('data-local-sent-idx') || '', 10)
+    if (!Number.isFinite(sentenceIdx) || sentenceIdx < 0) return
+    for (const sentenceRect of Array.from(sentenceEl.getClientRects())) {
+      if (!sentenceRect.width || !sentenceRect.height) continue
+      const top = sentenceRect.top - rect.top
+      const bottom = sentenceRect.bottom - rect.top
+      const firstPage = Math.max(0, Math.floor(top / TEXT_HEIGHT))
+      const lastPage = Math.max(firstPage, Math.floor(Math.max(top, bottom - 1) / TEXT_HEIGHT))
+      for (let page = firstPage; page <= lastPage; page += 1) {
+        if (!byPage.has(page)) byPage.set(page, sentenceIdx)
+      }
+    }
+  })
+  MEASURED_SENTENCE_PAGE_INDEX.set(measure, { key: layoutKey, sentenceIndex, byPage })
+  return byPage
+}
 
 function wordWeight(token: string) {
   const coreLength = token.replace(/[^A-Za-z0-9]/g, '').length || token.length
@@ -368,10 +427,18 @@ function predictedWordIndex(words: WeightedWord[], progress: number) {
   return { index: result, weightedPosition: target }
 }
 
-function measuredSentenceElement(measure: Element | null, sentenceIdx: number, indexType = 'local') {
+function measuredSentenceElement(
+  measure: Element | null,
+  sentenceIdx: number,
+  indexType = 'local',
+  cacheKey = '',
+  contentMarker: unknown = null,
+) {
   if (!measure || sentenceIdx == null || sentenceIdx < 0) return null
-  const attr = indexType === 'global' ? 'data-sent-idx' : 'data-local-sent-idx'
-  return measure.querySelector(`[${attr}="${sentenceIdx}"]`)
+  return (indexType === 'global'
+    ? measuredSentenceIndex(measure, cacheKey, contentMarker).global
+    : measuredSentenceIndex(measure, cacheKey, contentMarker).local
+  ).get(sentenceIdx) || null
 }
 
 function measuredSentenceView(
@@ -379,8 +446,10 @@ function measuredSentenceView(
   sentenceIdx: number,
   indexType: string,
   pagesPerView: number,
+  cacheKey: string,
+  contentMarker: unknown,
 ) {
-  const el = measuredSentenceElement(measure, sentenceIdx, indexType)
+  const el = measuredSentenceElement(measure, sentenceIdx, indexType, cacheKey, contentMarker)
   if (!el) return null
   const contentPage = Math.floor((el as HTMLElement).offsetTop / TEXT_HEIGHT)
   return Math.max(0, Math.floor(contentPage / pagesPerView))
@@ -392,8 +461,10 @@ function measuredReadingView(
   progress: number,
   indexType: string,
   pagesPerView: number,
+  cacheKey: string,
+  contentMarker: unknown,
 ) {
-  const el = measuredSentenceElement(measure, sentenceIdx, indexType)
+  const el = measuredSentenceElement(measure, sentenceIdx, indexType, cacheKey, contentMarker)
   if (!el) return null
   const { words } = wordCacheForElement(el)
   if (words.length) {
@@ -408,7 +479,7 @@ function measuredReadingView(
       }
     }
   }
-  return measuredSentenceView(measure, sentenceIdx, indexType, pagesPerView)
+  return measuredSentenceView(measure, sentenceIdx, indexType, pagesPerView, cacheKey, contentMarker)
 }
 
 interface ReflowViewerProps {
@@ -473,6 +544,17 @@ function ReflowViewer({
   const paginationKey = useMemo(
     () => paginationCacheKey({ bookId, reflow, pagesPerView, theme }),
     [bookId, reflow, pagesPerView, theme]
+  )
+  const sentenceIndexKey = useMemo(
+    () => [
+      bookId,
+      chapter?.id ?? chapterIdx,
+      paginationKey || 'no-layout',
+      pagesPerView,
+      Math.round(spreadScale * 10000) / 10000,
+      modeMeasured ? 'measured' : 'pending',
+    ].join('|'),
+    [bookId, chapter?.id, chapterIdx, modeMeasured, pagesPerView, paginationKey, spreadScale],
   )
   const setMeasuredChapterPages = useCallback((idx: number, pages: number) => {
     setChapterPageCounts(prev => {
@@ -857,33 +939,18 @@ function ReflowViewer({
   }, [updateMode, reflow])
 
   const viewForSentence = useCallback((sentenceIdx: number, indexType = 'local') => {
-    return measuredSentenceView(measureRef.current, sentenceIdx, indexType, pagesPerView)
-  }, [pagesPerView])
+    return measuredSentenceView(measureRef.current, sentenceIdx, indexType, pagesPerView, sentenceIndexKey, contentEls)
+  }, [contentEls, pagesPerView, sentenceIndexKey])
 
   const viewForReadingPosition = useCallback((sentenceIdx: number, progress = 0, indexType = 'local') => {
-    return measuredReadingView(measureRef.current, sentenceIdx, progress, indexType, pagesPerView)
-  }, [pagesPerView])
+    return measuredReadingView(measureRef.current, sentenceIdx, progress, indexType, pagesPerView, sentenceIndexKey, contentEls)
+  }, [contentEls, pagesPerView, sentenceIndexKey])
 
   const sentenceForContentPage = useCallback((contentPage: number) => {
     const measure = measureRef.current
     if (!measure) return 0
-    const pageTop = contentPage * TEXT_HEIGHT
-    const pageBottom = pageTop + TEXT_HEIGHT
-    const measureRect = measure.getBoundingClientRect()
-    const sentences = Array.from(measure.querySelectorAll('[data-local-sent-idx]'))
-    for (const sentenceEl of sentences) {
-      const rects = Array.from(sentenceEl.getClientRects())
-      if (rects.some(rect => {
-        const top = rect.top - measureRect.top
-        const bottom = rect.bottom - measureRect.top
-        return bottom > pageTop + 1 && top < pageBottom - 1
-      })) {
-        const idx = Number.parseInt(sentenceEl.getAttribute('data-local-sent-idx') || '0', 10)
-        return Number.isFinite(idx) ? idx : 0
-      }
-    }
-    return 0
-  }, [])
+    return measuredSentencePageIndex(measure, sentenceIndexKey, contentEls).get(contentPage) ?? 0
+  }, [contentEls, sentenceIndexKey])
 
   const handleViewportKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' || isPageTurning) return

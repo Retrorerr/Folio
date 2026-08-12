@@ -138,6 +138,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
   const bookId = book?.id
   const bookAudioSettings = useMemo(() => resolveBookAudioSettings(book), [book])
   const initialEngine = bookAudioSettings?.engine || defaultTtsEngine
+  const selectedBookEngine = bookAudioSettings?.engine || null
   const initialEngineVoices = bookAudioSettings?.voices || normalizeEngineVoices(undefined)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentSentence, setCurrentSentence] = useState(0)
@@ -242,14 +243,12 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     notifyAudioSpectrum()
   }, [notifyAudioSpectrum])
 
-  const subscribeAudioSpectrum = useCallback((subscriber: AudioSpectrumSubscriber) => {
-    audioSpectrumSubscribersRef.current.add(subscriber)
-    subscriber(audioGraphRef.current.levels)
-    return () => { audioSpectrumSubscribersRef.current.delete(subscriber) }
-  }, [])
-
   const activateAudioAnalysis = useCallback(() => {
-    if (typeof window === 'undefined') return null
+    // Native Android playback is owned by Media3 and never passes through the
+    // Web Audio graph. Creating an AudioContext there adds work without a
+    // visible consumer. Desktop/web analysis is likewise demand-driven: a
+    // hidden or unmounted spectrum must not sample every playback frame.
+    if (typeof window === 'undefined' || isAndroidRuntime() || audioSpectrumSubscribersRef.current.size === 0) return null
     const graph = audioGraphRef.current
     if (!graph.context) {
       const AudioContextConstructor = window.AudioContext || (window as any).webkitAudioContext
@@ -288,8 +287,17 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     }
   }, [activateAudioAnalysis])
 
+  const subscribeAudioSpectrum = useCallback((subscriber: AudioSpectrumSubscriber) => {
+    const wasEmpty = audioSpectrumSubscribersRef.current.size === 0
+    audioSpectrumSubscribersRef.current.add(subscriber)
+    subscriber(audioGraphRef.current.levels)
+    if (wasEmpty && audioRef.current) void attachAudioAnalysis(audioRef.current)
+    return () => { audioSpectrumSubscribersRef.current.delete(subscriber) }
+  }, [attachAudioAnalysis])
+
   const sampleAudioSpectrum = useCallback(() => {
     const graph = audioGraphRef.current
+    if (audioSpectrumSubscribersRef.current.size === 0) return
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
     if (!graph.analyser || !graph.bins || now - graph.lastSampleAt < AUDIO_SPECTRUM_INTERVAL_MS) return
     graph.lastSampleAt = now
@@ -424,6 +432,24 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
     publishChunkProgress(initialProgress, true)
     settingsHydratedRef.current = true
   }, [book, bookAudioSettings, bookId, publishChunkProgress])
+
+  useEffect(() => {
+    if (
+      !isAndroidRuntime() ||
+      !bookId ||
+      !settingsReady ||
+      !selectedBookEngine ||
+      ttsEngine !== selectedBookEngine
+    ) return
+    // Model session creation is intentionally non-blocking. Play still does a
+    // readiness check, while this request lets an already-installed selected
+    // engine load during the reader's idle time. The native manager serializes
+    // this with install and synthesis under the same engine lock.
+    void apiFetch(`/api/models/${encodeURIComponent(ttsEngine)}/warm`, {
+      method: 'POST',
+      cache: 'no-store',
+    }).catch(() => {})
+  }, [bookId, selectedBookEngine, settingsReady, ttsEngine])
 
   useEffect(() => {
     if (!bookId || !bookAudioSettings) {
@@ -1868,7 +1894,7 @@ export default function useAudioPlayback({ book, pageData, currentPage, goToPage
       })
       return
     }
-    activateAudioAnalysis()
+    if (!isAndroidRuntime()) activateAudioAnalysis()
     const startProgress = pendingStartProgressRef.current || chunkProgressPublishRef.current.value || 0
     pendingStartProgressRef.current = 0
     const startPage = readingPageRef.current ?? currentPageRef.current
