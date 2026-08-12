@@ -2124,11 +2124,15 @@ async function handleRequest(path: string, options?: RequestInit): Promise<Respo
       system: { ram: { used_bytes: 0, total_bytes: 0, percent: 0 }, gpu: null },
     })
   }
-  if (url.pathname === '/api/models' || /^\/api\/models\/(supertonic|kokoro)(?:\/(download|retry|cancel|import))?$/.test(url.pathname)) {
-    const modelAction = url.pathname.match(/^\/api\/models\/(supertonic|kokoro)(?:\/(download|retry|cancel|import))?$/)
+  if (url.pathname === '/api/models' || /^\/api\/models\/(supertonic|kokoro)(?:\/(download|retry|cancel|import|warm))?$/.test(url.pathname)) {
+    const modelAction = url.pathname.match(/^\/api\/models\/(supertonic|kokoro)(?:\/(download|retry|cancel|import|warm))?$/)
     if (modelAction && !modelAction[2]) {
       const platform = await nativePlatformStatus().catch(() => ({ nativeTtsAvailable: false, modelAssets: {} }))
       return jsonResponse(modelInstallInfo(modelAction[1] as 'supertonic' | 'kokoro', platform))
+    }
+    if (modelAction && modelAction[2] === 'warm') {
+      const result = await nativeInvoke<Record<string, unknown>>('warm_model', { engine: modelAction[1] })
+      return jsonResponse(result)
     }
     if (modelAction && modelAction[2] !== 'cancel') {
       const result = await nativeInvoke<{ installed?: boolean; started?: boolean; cancelled?: boolean; state?: string; error?: string | null }>('install_model_pack', {

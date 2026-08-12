@@ -59,6 +59,12 @@ export type VisualLineMapMetrics = {
   scaleY: number
   pageStride: number
   pagesPerView: number
+  buildDurationMs?: number
+  sentenceCount?: number
+  tokenCount?: number
+  textNodeCount?: number
+  rangeCount?: number
+  getClientRectsCount?: number
 }
 
 export type VisualLineMap = {

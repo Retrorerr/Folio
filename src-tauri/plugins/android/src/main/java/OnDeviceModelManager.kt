@@ -32,6 +32,80 @@ internal data class NativeRuntimeReadiness(
     val error: String? = null,
 )
 
+internal data class ModelFileStamp(val length: Long, val modifiedAt: Long)
+
+internal data class ModelValidationFingerprint(
+    val rootModifiedAt: Long,
+    val manifest: ModelFileStamp,
+    val files: Map<String, ModelFileStamp>,
+)
+
+/**
+ * Validation is protected by each engine's session lock in production. Keeping
+ * the cache as a small independent type makes its invalidation rules explicit
+ * and testable without constructing Android or ONNX Runtime objects.
+ */
+internal class GenerationValidationCache {
+    private var generation: Long? = null
+    private var fingerprint: ModelValidationFingerprint? = null
+
+    @Synchronized
+    fun isValid(currentGeneration: Long, currentFingerprint: ModelValidationFingerprint): Boolean =
+        generation == currentGeneration && fingerprint == currentFingerprint
+
+    @Synchronized
+    fun markValid(currentGeneration: Long, currentFingerprint: ModelValidationFingerprint) {
+        generation = currentGeneration
+        fingerprint = currentFingerprint
+    }
+
+    @Synchronized
+    fun invalidate() {
+        generation = null
+        fingerprint = null
+    }
+}
+
+internal enum class OnnxExecutionProvider(val runtimeName: String) {
+    CPU("CPUExecutionProvider"),
+    XNNPACK("XnnpackExecutionProvider"),
+    NNAPI("NnapiExecutionProvider"),
+}
+
+internal data class OnnxRuntimeConfig(
+    val provider: OnnxExecutionProvider,
+    val intraOpThreads: Int,
+    val interOpThreads: Int,
+)
+
+internal object OnnxRuntimeConfigSelector {
+    /**
+     * Keep the default conservative. A half-CPU budget, capped at four
+     * threads, is enough to avoid the old fixed policy on small devices while
+     * leaving cores for WebView, Media3, and the Android UI. Provider changes
+     * are opt-in until measured on the target device family.
+     */
+    fun select(
+        availableProviders: Set<String>,
+        availableProcessors: Int,
+        preferredProvider: OnnxExecutionProvider? = null,
+    ): OnnxRuntimeConfig {
+        val processors = availableProcessors.coerceAtLeast(1)
+        val provider = preferredProvider
+            ?.takeIf {
+                it == OnnxExecutionProvider.CPU ||
+                    it.name in availableProviders ||
+                    it.runtimeName in availableProviders
+            }
+            ?: OnnxExecutionProvider.CPU
+        return OnnxRuntimeConfig(
+            provider = provider,
+            intraOpThreads = (processors / 2).coerceIn(1, 4),
+            interOpThreads = 1,
+        )
+    }
+}
+
 internal object ModelPackSupport {
     private val SHA256_PATTERN = Regex("^[0-9a-f]{64}$")
 
@@ -199,6 +273,8 @@ class OnDeviceModelManager(private val activity: Activity) {
     private class EngineState {
         val lock = ReentrantLock()
 
+        val validationCache = GenerationValidationCache()
+
         @Volatile
         var sessions: List<OrtSession>? = null
 
@@ -207,6 +283,12 @@ class OnDeviceModelManager(private val activity: Activity) {
 
         @Volatile
         var lastError: String? = null
+
+        @Volatile
+        var lastValidationMs: Long? = null
+
+        @Volatile
+        var lastSessionOpenMs: Long? = null
     }
 
     private data class DownloadState(
@@ -218,6 +300,11 @@ class OnDeviceModelManager(private val activity: Activity) {
     )
 
     private val environment = OrtEnvironment.getEnvironment()
+    private val runtimeConfig = OnnxRuntimeConfigSelector.select(
+        availableProviders = runCatching { OrtEnvironment.getAvailableProviders().map { it.name }.toSet() }
+            .getOrDefault(setOf(OnnxExecutionProvider.CPU.name)),
+        availableProcessors = Runtime.getRuntime().availableProcessors(),
+    )
     private val states = DEFINITIONS.keys.associateWith { EngineState() }
     private val downloadStates = DEFINITIONS.keys.associateWith { DownloadState() }.toMutableMap()
     private val downloadStateLock = Any()
@@ -323,7 +410,9 @@ class OnDeviceModelManager(private val activity: Activity) {
     fun installed(engine: String): Boolean {
         val state = state(engine)
         return state.lock.withLock {
-            runCatching { validateManifest(modelRoot(engine), engine, verifyHashes = false) }.isSuccess
+            runCatching {
+                ensureValidatedLocked(state, engine, modelRoot(engine))
+            }.isSuccess
         }
     }
 
@@ -332,19 +421,25 @@ class OnDeviceModelManager(private val activity: Activity) {
     /** Runs [operation] while the engine sessions are guaranteed to stay open. */
     internal fun <T> withSessions(
         engine: String,
+        recordValidationError: Boolean = true,
         operation: (sessions: List<OrtSession>, root: File, generation: Long) -> T,
     ): T {
         val state = state(engine)
         return state.lock.withLock {
             val root = modelRoot(engine)
             val sessions = try {
-                validateManifest(root, engine, verifyHashes = false)
-                state.sessions ?: openSessions(engine, root).also {
-                    state.sessions = it
+                ensureValidatedLocked(state, engine, root)
+                state.sessions ?: run {
+                    val startedAt = System.nanoTime()
+                    openSessions(engine, root).also {
+                        state.sessions = it
+                        state.lastSessionOpenMs = elapsedMs(startedAt)
+                    }
                 }
             } catch (error: Throwable) {
-                state.lastError = actionableMessage(engine, error)
-                throw IllegalStateException(state.lastError, error)
+                val detail = actionableMessage(engine, error)
+                if (recordValidationError) state.lastError = detail
+                throw IllegalStateException(detail, error)
             }
             state.lastError = null
             try {
@@ -359,6 +454,37 @@ class OnDeviceModelManager(private val activity: Activity) {
     }
 
     /**
+     * Opens and retains an engine's sessions without performing inference.
+     * The plugin invokes this on a bounded background executor before Play;
+     * withSessions' lock makes concurrent warm and synthesis requests safe.
+     */
+    internal fun warmEngine(engine: String): Map<String, Any?> {
+        val startedAt = System.nanoTime()
+        return try {
+            withSessions(engine, recordValidationError = false) { _, _, _ -> Unit }
+            mapOf(
+                "engine" to engine,
+                "warmed" to true,
+                "warmMs" to elapsedMs(startedAt),
+                "sessionLoadMs" to state(engine).lastSessionOpenMs,
+                "provider" to runtimeConfig.provider.name,
+                "intraOpThreads" to runtimeConfig.intraOpThreads,
+                "interOpThreads" to runtimeConfig.interOpThreads,
+            )
+        } catch (error: Throwable) {
+            // A warm-up failure is request-local. The next Play or warm call
+            // can retry after an interrupted install or transient allocator
+            // failure; no persistent readiness flag is poisoned here.
+            mapOf(
+                "engine" to engine,
+                "warmed" to false,
+                "warmMs" to elapsedMs(startedAt),
+                "error" to (error.message ?: "Model session warm-up failed"),
+            )
+        }
+    }
+
+    /**
      * Fully validates [staging] and publishes it without deleting the current
      * pack first. A failed validation or rename restores the previous pack.
      */
@@ -367,6 +493,7 @@ class OnDeviceModelManager(private val activity: Activity) {
         state.lock.withLock {
             closeSessionsLocked(state)
             state.generation += 1
+            state.validationCache.invalidate()
             try {
                 validateManifest(staging, engine, verifyHashes = true)
                 when (engine) {
@@ -375,11 +502,15 @@ class OnDeviceModelManager(private val activity: Activity) {
                 }
                 validateSessionContracts(engine, staging)
                 publishPackLocked(engine, staging)
+                state.validationCache.markValid(
+                    state.generation,
+                    validationFingerprint(modelRoot(engine), engine),
+                )
                 state.lastError = null
             } catch (error: Throwable) {
                 val detail = actionableMessage(engine, error)
                 val existingPackIsValid = runCatching {
-                    validateManifest(modelRoot(engine), engine, verifyHashes = false)
+                    ensureValidatedLocked(state, engine, modelRoot(engine))
                 }.isSuccess
                 state.lastError = detail.takeUnless { existingPackIsValid }
                 throw IllegalStateException(detail, error)
@@ -393,6 +524,7 @@ class OnDeviceModelManager(private val activity: Activity) {
             val hadSessions = state.sessions != null
             closeSessionsLocked(state)
             state.generation += 1
+            state.validationCache.invalidate()
             hadSessions
         }
     }
@@ -459,6 +591,14 @@ class OnDeviceModelManager(private val activity: Activity) {
             "runner" to "onnxruntime-android",
             "runtimeVersion" to native.version,
             "runtimeProviders" to native.providers,
+            "runtimeConfig" to mapOf(
+                "provider" to runtimeConfig.provider.name,
+                "intraOpThreads" to runtimeConfig.intraOpThreads,
+                "interOpThreads" to runtimeConfig.interOpThreads,
+                "availableProcessors" to Runtime.getRuntime().availableProcessors(),
+            ),
+            "lastValidationMs" to state.lastValidationMs,
+            "lastSessionOpenMs" to state.lastSessionOpenMs,
             "phonemizer" to if (engine == "kokoro") g2p.strategy else "none",
             "primaryG2pReady" to if (engine == "kokoro") primaryG2p?.ready else null,
             "fallbackPhonemizerReady" to if (engine == "kokoro") fallback?.ready else null,
@@ -477,6 +617,34 @@ class OnDeviceModelManager(private val activity: Activity) {
             "approx_download_bytes" to download["approx_download_bytes"],
         )
     }
+
+    private fun ensureValidatedLocked(state: EngineState, engine: String, root: File) {
+        val fingerprint = validationFingerprint(root, engine)
+        if (state.validationCache.isValid(state.generation, fingerprint)) return
+        val startedAt = System.nanoTime()
+        validateManifest(root, engine, verifyHashes = false)
+        state.lastValidationMs = elapsedMs(startedAt)
+        state.validationCache.markValid(state.generation, validationFingerprint(root, engine))
+    }
+
+    private fun validationFingerprint(root: File, engine: String): ModelValidationFingerprint {
+        val files = definition(engine).assets.keys.associateWith { path ->
+            fileStamp(File(root, path))
+        }
+        return ModelValidationFingerprint(
+            rootModifiedAt = if (root.isDirectory) root.lastModified() else -1L,
+            manifest = fileStamp(File(root, "manifest.json")),
+            files = files,
+        )
+    }
+
+    private fun fileStamp(file: File): ModelFileStamp = ModelFileStamp(
+        length = if (file.isFile) file.length() else -1L,
+        modifiedAt = if (file.exists()) file.lastModified() else -1L,
+    )
+
+    private fun elapsedMs(startedAt: Long): Long =
+        ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
 
     private fun validateManifest(root: File, engine: String, verifyHashes: Boolean) {
         val definition = definition(engine)
@@ -555,7 +723,7 @@ class OnDeviceModelManager(private val activity: Activity) {
     private fun openSessions(engine: String, root: File): List<OrtSession> {
         val definition = definition(engine)
         val created = mutableListOf<OrtSession>()
-        val options = sessionOptions()
+        val options = sessionOptions(runtimeConfig)
         try {
             definition.sessionPaths.forEachIndexed { index, path ->
                 val session = environment.createSession(File(root, path).absolutePath, options)
@@ -573,7 +741,7 @@ class OnDeviceModelManager(private val activity: Activity) {
 
     private fun validateSessionContracts(engine: String, root: File) {
         val definition = definition(engine)
-        val options = sessionOptions()
+        val options = sessionOptions(runtimeConfig)
         try {
             definition.sessionPaths.forEachIndexed { index, path ->
                 environment.createSession(File(root, path).absolutePath, options).use { session ->
@@ -585,9 +753,27 @@ class OnDeviceModelManager(private val activity: Activity) {
         }
     }
 
-    private fun sessionOptions(): OrtSession.SessionOptions = OrtSession.SessionOptions().apply {
-        setIntraOpNumThreads(2)
-        setInterOpNumThreads(1)
+    private fun sessionOptions(config: OnnxRuntimeConfig): OrtSession.SessionOptions {
+        fun cpuOptions(): OrtSession.SessionOptions = OrtSession.SessionOptions().apply {
+            setIntraOpNumThreads(config.intraOpThreads)
+            setInterOpNumThreads(config.interOpThreads)
+        }
+
+        val options = cpuOptions()
+        return try {
+            when (config.provider) {
+                OnnxExecutionProvider.CPU -> Unit
+                OnnxExecutionProvider.NNAPI -> options.addNnapi()
+                OnnxExecutionProvider.XNNPACK -> options.addXnnpack(emptyMap())
+            }
+            options
+        } catch (_: Throwable) {
+            // Optional EPs are never allowed to make a valid CPU model
+            // unusable. Recreate the options object because an append failure
+            // may leave the failed provider attached to the original object.
+            runCatching { options.close() }
+            cpuOptions()
+        }
     }
 
     private fun validateSessionSchema(path: String, session: OrtSession, schema: SessionSchema) {

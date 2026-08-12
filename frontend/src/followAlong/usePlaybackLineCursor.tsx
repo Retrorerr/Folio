@@ -25,6 +25,7 @@ import {
 import {
   anchorForLine,
   buildVisualLineMap,
+  currentVisualLineMapLayoutKey,
   hitTestVisualLine,
 } from './visualLineMap'
 
@@ -196,6 +197,11 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
       layoutKey: map.layoutKey,
       lineCount: map.lines.length,
       sentenceCount: map.bySentence.size,
+      buildDurationMs: map.metrics.buildDurationMs ?? null,
+      tokenCount: map.metrics.tokenCount ?? null,
+      textNodeCount: map.metrics.textNodeCount ?? null,
+      rangeCount: map.metrics.rangeCount ?? null,
+      getClientRectsCount: map.metrics.getClientRectsCount ?? null,
     })
   }, [trace])
 
@@ -238,14 +244,35 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
   }, [bookId, chapterIndex, commitMap, layoutIdentity, pageStride, pagesPerView, rootRef, trace])
 
   const scheduleRebuild = useCallback((reason: string) => {
+    const root = rootRef.current
+    const existingMap = mapRef.current
+    if (
+      existingMap &&
+      root &&
+      (reason === 'foreground' || reason === 'font-loading-complete') &&
+      currentVisualLineMapLayoutKey({
+        root,
+        bookId,
+        chapterIndex,
+        generation: existingMap.generation,
+        pagesPerView,
+        pageStride,
+        layoutIdentity,
+      }) === existingMap.layoutKey
+    ) {
+      trace('layout-not-invalidated', { reason, layoutKey: existingMap.layoutKey })
+      return
+    }
+
+    const alreadyScheduled = rebuildFrameRef.current != null
     rebuildReasonRef.current = reason
+    if (alreadyScheduled) return
     rebuildAttemptRef.current = 0
     staleVisibleUntilRef.current = performance.now() + STALE_CURSOR_GRACE_MS
     dispatch({ type: 'LAYOUT_INVALIDATED', reason })
     trace('layout-invalidated', { reason })
-    if (rebuildFrameRef.current != null) cancelAnimationFrame(rebuildFrameRef.current)
     rebuildFrameRef.current = requestAnimationFrame(performRebuild)
-  }, [performRebuild, trace])
+  }, [bookId, chapterIndex, layoutIdentity, pageStride, pagesPerView, performRebuild, rootRef, trace])
 
   useLayoutEffect(() => {
     scheduleRebuild('layout-identity')

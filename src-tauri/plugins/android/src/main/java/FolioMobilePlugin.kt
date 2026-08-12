@@ -80,6 +80,11 @@ class SynthesizeArgs {
 }
 
 @InvokeArg
+class WarmModelArgs {
+    var engine: String? = null
+}
+
+@InvokeArg
 class InstallModelPackArgs {
     var engine: String? = null
     var download: Boolean? = null
@@ -193,6 +198,7 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
     private var pendingPickerKind: String? = null
     private val workerIds = AtomicInteger(0)
     private val synthesisExecutor = boundedExecutor("folio-local-tts", workers = 2, queueSize = 4)
+    private val warmupExecutor = boundedExecutor("folio-model-warm", workers = 1, queueSize = 2)
     private val statusExecutor = boundedExecutor("folio-native-status", workers = 1, queueSize = 1)
     private val modelImportExecutor = boundedExecutor("folio-model-import", workers = 1, queueSize = 1)
     private val modelDownloadExecutor = boundedExecutor("folio-model-download", workers = 1, queueSize = 1)
@@ -209,11 +215,16 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
     override fun onDestroy() {
         synchronized(pickerLock) { pendingPickerKind = null }
         synthesisExecutor.shutdownNow()
+        warmupExecutor.shutdownNow()
         statusExecutor.shutdownNow()
         modelImportExecutor.shutdownNow()
         modelDownloadExecutor.shutdownNow()
         documentExecutor.shutdownNow()
         playbackExecutor.shutdownNow()
+        // Release retained ONNX sessions after request executors are stopped.
+        // The manager takes each engine lock, so an in-flight synthesis either
+        // finishes its critical section or is safely closed before teardown.
+        modelManager.unloadAllAsync()
         synchronized(documentReads) {
             documentReads.values.forEach { runCatching { it.input.close() } }
             documentReads.clear()
@@ -300,6 +311,23 @@ class FolioMobilePlugin(private val activity: Activity) : Plugin(activity) {
             putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/octet-stream"))
         }
         launchPicker(invoke, "model:$engine", intent)
+    }
+
+    @Command
+    fun warmModel(invoke: Invoke) {
+        val args = invoke.parseArgs(WarmModelArgs::class.java)
+        val engine = args.engine?.trim()?.lowercase().orEmpty()
+        if (engine != "kokoro" && engine != "supertonic") {
+            invoke.reject("Unknown model engine")
+            return
+        }
+        try {
+            warmupExecutor.execute {
+                invoke.resolve(statusJsonObject(modelManager.warmEngine(engine)))
+            }
+        } catch (_: RejectedExecutionException) {
+            invoke.reject("Android model warm-up queue is busy")
+        }
     }
 
     private fun launchPicker(invoke: Invoke, kind: String, intent: Intent) {
