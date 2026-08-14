@@ -1,7 +1,6 @@
 import threading
 
 import pytest
-
 from tts_queue import TTSQueue
 
 

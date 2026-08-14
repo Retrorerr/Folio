@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import warnings
-import json
 import zipfile
 from pathlib import Path
 

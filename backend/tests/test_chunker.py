@@ -18,21 +18,18 @@ _BACKEND = os.path.normpath(os.path.join(_HERE, ".."))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
+# Import the EPUB reflow splitter to test the full path (split + chunk) the
+# way the production pipeline runs.
+import reflow_service
 import text_chunker
 from text_chunker import (
     CHUNKER_VERSION,
     HARD_MAX_TOKENS,
     MIN_NATURAL_TOKENS,
-    TARGET_MIN_TOKENS,
-    TARGET_MAX_TOKENS,
     chunk_blocks,
     chunk_paragraph_sentences,
     estimate_tokens,
 )
-
-# Import the EPUB reflow splitter to test the full path (split + chunk) the
-# way the production pipeline runs.
-import reflow_service
 
 
 def _para(*sentences: str) -> dict:
@@ -99,7 +96,7 @@ def test_short_sentences_merge_into_natural_chunk():
     ]
     chunks = chunk_blocks([_para(*sents)])
     assert len(chunks) >= 1
-    # We expect 1–2 chunks, each in target range.
+    # We expect 1-2 chunks, each in target range.
     for c in chunks:
         assert c["tokens"] <= HARD_MAX_TOKENS
         assert c["text"]
