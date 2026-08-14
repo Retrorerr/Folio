@@ -308,3 +308,12 @@ test('debug tracing reads live playback through refs without destabilising rebui
   assert.ok(traceBlock.includes('}, [])'))
   assert.doesNotMatch(traceBlock, /rawProgress, sessionId, viewPage/)
 })
+
+test('rebuild cleanup clears cancelled animation-frame handles', () => {
+  const cleanupStart = hookSource.lastIndexOf('useEffect(() => () => {')
+  const cleanupEnd = hookSource.indexOf('  }, [])', cleanupStart)
+  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart)
+  const cleanupBlock = hookSource.slice(cleanupStart, cleanupEnd)
+  assert.match(cleanupBlock, /cancelAnimationFrame\(rebuildFrameRef\.current\)/)
+  assert.match(cleanupBlock, /rebuildFrameRef\.current = null/)
+})

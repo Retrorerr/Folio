@@ -1570,7 +1570,7 @@ def retry_model_download(engine: str):
 
 @app.post("/api/shutdown")
 def shutdown():
-    """Shutdown the server (called by the launcher when the browser closes)."""
+    """Flush state and stop the backend when the desktop shell closes."""
     _flush_debounced_saves()
     for book_id in list(BOOKS):
         try:
@@ -1578,7 +1578,7 @@ def shutdown():
         except Exception:
             logger.exception("Failed to save state for book %s during shutdown", book_id)
         _close_book_entry(book_id)
-    _request_backend_exit("launcher requested shutdown", delay_seconds=0.15)
+    _request_backend_exit("desktop shell requested shutdown", delay_seconds=0.15)
     return {"ok": True}
 
 

@@ -765,7 +765,7 @@
   display: none;
 }
 .reflow-spread.pages-1 .page-sheet {
-  border-radius: 3px;
+  border-radius: 0;
   padding: 64px 56px 56px !important;
 }
 .reflow-spread.pages-1 .page-sheet::after {

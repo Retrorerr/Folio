@@ -327,7 +327,7 @@
 }
 .pill-meta .t {
   font-family: var(--font-display);
-  font-style: italic;
+  font-style: normal;
   font-size: 16px;
   line-height: 1.2;
   color: var(--pill-fg);

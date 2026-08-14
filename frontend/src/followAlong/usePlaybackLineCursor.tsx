@@ -311,7 +311,10 @@ export function usePlaybackLineCursor(options: UsePlaybackLineCursorOptions) {
   }, [rootRef, scheduleRebuild])
 
   useEffect(() => () => {
-    if (rebuildFrameRef.current != null) cancelAnimationFrame(rebuildFrameRef.current)
+    if (rebuildFrameRef.current != null) {
+      cancelAnimationFrame(rebuildFrameRef.current)
+      rebuildFrameRef.current = null
+    }
     if (hoverFrameRef.current != null) cancelAnimationFrame(hoverFrameRef.current)
   }, [])
 

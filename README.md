@@ -168,12 +168,14 @@ Before publishing a release, update versions in:
 - `package-lock.json`
 - `src-tauri/Cargo.toml`
 - `src-tauri/tauri.conf.json`
+- `src-tauri/tauri.android.conf.json`
+- `backend/windows-version-info.txt`
 
 Pushing a commit with a new version to `main` runs the release workflow. It
-builds and verifies the Windows NSIS/MSI installers and the signed universal
-Android APK/AAB, then creates the matching `v<version>` GitHub Release with
-SHA-256 checksums. See `docs/android.md` for the required Android signing
-secrets.
+builds and verifies one normal Windows x64 EXE installer and one signed
+universal Android APK, then creates the matching `v<version>` GitHub Release.
+MSI, AAB, source archives, manifests, and checksum files are not published.
+See `docs/android.md` for the required Android signing secrets.
 
 ## License
 

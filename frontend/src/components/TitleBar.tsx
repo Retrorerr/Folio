@@ -17,7 +17,6 @@ type TitleBarProps = {
 
 export default function TitleBar({
   bookTitle,
-  author,
   progress = null,
   gpuEnabled = null,
   followAlong = false,
@@ -97,10 +96,7 @@ export default function TitleBar({
       <div className="titlebar-main">
         {hasBook ? (
           <>
-            <div className="titlebar-book">
-              <span className="titlebar-book-title">{bookTitle}</span>
-              {author && <><span className="titlebar-dot" /><span className="titlebar-book-author">{author}</span></>}
-            </div>
+            <div className="titlebar-book" aria-hidden="true" />
             {progress && (
               <div className="titlebar-progress" aria-label={`Reading progress page ${progressCurrent} of ${progressTotal}`}>
                 <div className="titlebar-progress-bar"><div className="fill" style={{ width: `${progressPct}%` }} /></div>

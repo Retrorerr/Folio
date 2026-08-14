@@ -147,7 +147,9 @@ body {
   height: 100%;
   position: relative;
   overflow: hidden;
-  border-radius: 12px;
+  /* The host platform owns the outer window shape. Keeping the web surface
+     square prevents a second, mismatched corner from showing inside it. */
+  border-radius: 0;
   color: var(--ink);
   background: var(--paper);
 }

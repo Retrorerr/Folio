@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Folio'),
           StringStruct('FileDescription', 'Folio Local Narration Service'),
-          StringStruct('FileVersion', '0.1.12'),
+          StringStruct('FileVersion', '0.1.13'),
           StringStruct('InternalName', 'folio-backend'),
           StringStruct('LegalCopyright', 'Folio contributors'),
           StringStruct('OriginalFilename', 'folio-backend.exe'),
           StringStruct('ProductName', 'Folio'),
-          StringStruct('ProductVersion', '0.1.12')
+          StringStruct('ProductVersion', '0.1.13')
         ]
       )
     ]),

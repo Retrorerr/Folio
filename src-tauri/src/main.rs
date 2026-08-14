@@ -615,11 +615,46 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     Ok(None)
 }
 
+#[cfg(windows)]
+fn request_native_window_corners(window: &tauri::WebviewWindow) {
+    use std::{ffi::c_void, mem::size_of_val};
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let preference = DWMWCP_ROUND;
+
+    // Windows owns the physical window outline. This is only a preference:
+    // DWM still applies the correct square treatment when maximized or snapped.
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd.0,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &preference as *const _ as *const c_void,
+            size_of_val(&preference) as u32,
+        );
+    }
+}
+
 fn main() {
     set_windows_app_identity();
     let initial_open_file = first_epub_arg(std::env::args().skip(1), None);
 
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                request_native_window_corners(&window);
+            }
+
+            #[cfg(not(windows))]
+            let _ = app;
+
+            Ok(())
+        })
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             if let Some(filepath) = first_epub_arg(args, Some(cwd.as_str())) {
                 dispatch_open_file(app, filepath);
