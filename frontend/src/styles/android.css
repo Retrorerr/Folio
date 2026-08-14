@@ -171,6 +171,7 @@ html[data-platform='android'] .app-shell {
   height: 100%;
   width: 100%;
   overflow: hidden;
+  border-radius: 0;
 }
 
 html[data-platform='android'] .app-main,

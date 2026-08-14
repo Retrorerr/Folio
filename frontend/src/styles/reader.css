@@ -1704,11 +1704,11 @@ html:not([data-platform='android']) .rail-reader-home {
     0 54px 112px -28px rgba(20, 12, 6, 0.24);
 }
 .page-sheet.verso {
-  border-radius: 3px 0 0 3px;
+  border-radius: 0;
   padding-right: 56px;
 }
 .page-sheet.recto {
-  border-radius: 0 3px 3px 0;
+  border-radius: 0;
   padding-left: 56px;
 }
 .theme-dark .page-sheet,
@@ -1814,25 +1814,25 @@ html:not([data-platform='android']) .rail-reader-home {
 }
 .flipper-next .flip-front {
   /* the current recto being turned away */
-  border-radius: 0 3px 3px 0;
+  border-radius: 0;
   padding-left: 56px;
   transform: rotateY(0deg);
 }
 .flipper-next .flip-back {
   /* the new verso revealed after the turn */
-  border-radius: 3px 0 0 3px;
+  border-radius: 0;
   padding-right: 56px;
   transform: rotateY(180deg);
 }
 .flipper-prev .flip-front {
   /* the current verso being turned away */
-  border-radius: 3px 0 0 3px;
+  border-radius: 0;
   padding-right: 56px;
   transform: rotateY(0deg);
 }
 .flipper-prev .flip-back {
   /* the new recto revealed after the turn */
-  border-radius: 0 3px 3px 0;
+  border-radius: 0;
   padding-left: 56px;
   transform: rotateY(-180deg);
 }
@@ -1939,7 +1939,7 @@ html:not([data-platform='android']) .rail-reader-home {
   .spread:not(.reflow-spread)::before { display: none; }
   .spread:not(.reflow-spread) .page-sheet.verso,
   .spread:not(.reflow-spread) .page-sheet.recto {
-    border-radius: 3px;
+    border-radius: 0;
     padding: 72px 56px 64px;
   }
   .spread:not(.reflow-spread) .page-sheet.recto { display: none; }
