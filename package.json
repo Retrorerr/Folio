@@ -1,7 +1,7 @@
 {
   "name": "folio-desktop",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "scripts": {
     "backend:lint": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-backend.ps1 -LintOnly",
     "backend:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-backend.ps1",

@@ -39,10 +39,11 @@ jobs:
           desktop_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           android_version="$(node -p "require('./src-tauri/tauri.android.conf.json').version")"
           cargo_version="$(awk '/^\[package\]/{package=1; next} package && /^version = / {gsub(/version = |\"/, ""); print; exit}' src-tauri/Cargo.toml)"
+          backend_version="$(sed -n "s/.*StringStruct('ProductVersion', '\([^']*\)')/\1/p" backend/windows-version-info.txt)"
 
-          for version in "$desktop_version" "$android_version" "$cargo_version"; do
+          for version in "$desktop_version" "$android_version" "$cargo_version" "$backend_version"; do
             if [[ "$version" != "$package_version" ]]; then
-              echo "Release versions disagree: npm=$package_version desktop=$desktop_version android=$android_version cargo=$cargo_version" >&2
+              echo "Release versions disagree: npm=$package_version desktop=$desktop_version android=$android_version cargo=$cargo_version backend=$backend_version" >&2
               exit 1
             fi
           done
@@ -125,12 +126,9 @@ jobs:
 
           $output = Join-Path $PWD 'release-assets\windows'
           New-Item -ItemType Directory -Force -Path $output | Out-Null
-          $installers = @(
-            Get-ChildItem 'src-tauri\target\release\bundle\nsis' -File -Filter '*.exe' -ErrorAction SilentlyContinue
-            Get-ChildItem 'src-tauri\target\release\bundle\msi' -File -Filter '*.msi' -ErrorAction SilentlyContinue
-          )
-          if (($installers | Measure-Object).Count -lt 2) {
-            throw 'Expected both NSIS and MSI Windows installers.'
+          $installers = @(Get-ChildItem 'src-tauri\target\release\bundle\nsis' -File -Filter 'Folio_*_x64-setup.exe' -ErrorAction SilentlyContinue)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one normal x64 EXE installer, found $($installers.Count)."
           }
           $installers | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $output -Force }
 
@@ -265,19 +263,11 @@ jobs:
           $delivery = Join-Path $PWD 'dist\android\release'
           $output = Join-Path $PWD 'release-assets\android'
           New-Item -ItemType Directory -Force -Path $output | Out-Null
-          $required = @(
-            "Folio-$version-universal-release.apk",
-            "Folio-$version-universal-release.aab",
-            "Folio-$version-espeak-corresponding-source.zip",
-            'build-manifest.json'
-          )
-          foreach ($name in $required) {
-            $source = Join-Path $delivery $name
-            if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -eq 0) {
-              throw "Required Android release artifact is missing or empty: $source"
-            }
-            Copy-Item -LiteralPath $source -Destination $output -Force
+          $apk = Join-Path $delivery "Folio-$version-universal-release.apk"
+          if (-not (Test-Path -LiteralPath $apk -PathType Leaf) -or (Get-Item -LiteralPath $apk).Length -eq 0) {
+            throw "Required universal Android APK is missing or empty: $apk"
           }
+          Copy-Item -LiteralPath $apk -Destination $output -Force
 
       - name: Upload Android installer
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
@@ -304,7 +294,7 @@ jobs:
         with:
           path: release-assets
 
-      - name: Publish release and checksums
+      - name: Publish release assets
         shell: bash
         run: |
           set -euo pipefail
@@ -312,16 +302,24 @@ jobs:
           version='${{ needs.metadata.outputs.version }}'
           tag="v$version"
           mapfile -d '' assets < <(find release-assets -type f -print0 | sort -z)
-          if (( ${#assets[@]} < 6 )); then
-            echo "Expected Windows and Android release assets; found ${#assets[@]}." >&2
+          if (( ${#assets[@]} != 2 )); then
+            echo "Expected exactly one normal EXE and one universal APK; found ${#assets[@]} assets." >&2
             exit 1
           fi
 
-          (
-            cd release-assets
-            find . -type f -print0 | sort -z | xargs -0 sha256sum
-          ) > SHA256SUMS
-          assets+=(SHA256SUMS)
+          exe_count=0
+          apk_count=0
+          for asset in "${assets[@]}"; do
+            case "$(basename "$asset")" in
+              Folio_*_x64-setup.exe) exe_count=$((exe_count + 1)) ;;
+              Folio-*-universal-release.apk) apk_count=$((apk_count + 1)) ;;
+              *) echo "Unexpected release asset: $asset" >&2; exit 1 ;;
+            esac
+          done
+          if (( exe_count != 1 || apk_count != 1 )); then
+            echo "Expected one normal EXE and one universal APK; found exe=$exe_count apk=$apk_count." >&2
+            exit 1
+          fi
 
           gh release create "$tag" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
