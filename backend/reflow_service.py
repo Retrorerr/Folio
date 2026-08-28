@@ -20,6 +20,7 @@ from xml.etree import ElementTree as ET
 import text_chunker
 from bs4 import BeautifulSoup
 from ebooklib import ITEM_DOCUMENT, epub
+from paths import DATA_DIR
 
 logger = logging.getLogger(__name__)
 REFLOW_VERSION = f"reflow-v2.3-2026-05-12|chunker:{text_chunker.CHUNKER_VERSION}"
@@ -53,7 +54,11 @@ def _read_epub_without_broken_ncx(filepath: str):
     if patched is None:
         return epub.read_epub(filepath, options={"ignore_ncx": True})
 
-    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+    runtime_temp_dir = DATA_DIR.parent / "temp"
+    runtime_temp_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        suffix=".epub", delete=False, dir=str(runtime_temp_dir)
+    ) as tmp:
         tmp.write(patched)
         tmp_path = tmp.name
     try:

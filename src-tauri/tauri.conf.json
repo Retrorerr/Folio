@@ -54,10 +54,13 @@
     "resources": ["resources/**/*"],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "./windows/installer-hooks.nsh"
       },
       "wix": {
-        "upgradeCode": "44dd72fc-4aae-429b-8756-94f81138c90d"
+        "upgradeCode": "44dd72fc-4aae-429b-8756-94f81138c90d",
+        "fragmentPaths": ["./windows/fragments/cleanup.wxs"],
+        "componentRefs": ["FolioDataCleanup"]
       }
     }
   },

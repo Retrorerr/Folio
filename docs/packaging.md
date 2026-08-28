@@ -72,6 +72,12 @@ On first launch, Tauri creates:
 %APPDATA%\com.folio.reader\uploads
 %APPDATA%\com.folio.reader\audio-cache
 %APPDATA%\com.folio.reader\models
+%APPDATA%\com.folio.reader\temp
 ```
+
+The Windows uninstallers remove the complete Folio install directory and the
+complete `%APPDATA%\com.folio.reader` and `%LOCALAPPDATA%\com.folio.reader`
+trees. The NSIS hook applies this cleanup unconditionally for a real uninstall;
+the `/UPDATE` path is excluded so updates retain the app and its data.
 
 Users should not need to install Python, Node, Rust, or copy model files manually.

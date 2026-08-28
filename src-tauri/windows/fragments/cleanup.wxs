@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI cleanup for runtime-created data. The app creates these directories
+  after installation, so ordinary MSI file accounting cannot see them.
+  The paths are remembered in HKCU and loaded before RemoveFolderEx runs.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Fragment>
+    <Property Id="FOLIO_ROAMING_DATA_DIR" Secure="yes">
+      <RegistrySearch
+          Id="FolioRoamingDataDirSearch"
+          Root="HKCU"
+          Key="Software\Folio\Folio"
+          Name="RoamingDataDir"
+          Type="raw" />
+    </Property>
+    <Property Id="FOLIO_LOCAL_DATA_DIR" Secure="yes">
+      <RegistrySearch
+          Id="FolioLocalDataDirSearch"
+          Root="HKCU"
+          Key="Software\Folio\Folio"
+          Name="LocalDataDir"
+          Type="raw" />
+    </Property>
+    <Property Id="FOLIO_INSTALL_DIR" Secure="yes">
+      <RegistrySearch
+          Id="FolioInstallDirSearch"
+          Root="HKCU"
+          Key="Software\Folio\Folio"
+          Name="InstallDir"
+          Type="raw" />
+    </Property>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="FolioDataCleanup" Guid="{0548CD58-B4CC-4683-B086-5630F5A2EE09}">
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\Folio\Folio"
+            Name="RoamingDataDir"
+            Type="string"
+            Value="[AppDataFolder]com.folio.reader"
+            KeyPath="yes" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\Folio\Folio"
+            Name="LocalDataDir"
+            Type="string"
+            Value="[LocalAppDataFolder]com.folio.reader" />
+        <RemoveRegistryKey
+            Id="RemoveFolioInstallMetadata"
+            Root="HKCU"
+            Key="Software\Folio\Folio"
+            Action="removeOnUninstall" />
+        <util:RemoveFolderEx
+            Id="RemoveFolioRoamingData"
+            On="uninstall"
+            Property="FOLIO_ROAMING_DATA_DIR" />
+        <util:RemoveFolderEx
+            Id="RemoveFolioLocalData"
+            On="uninstall"
+            Property="FOLIO_LOCAL_DATA_DIR" />
+        <util:RemoveFolderEx
+            Id="RemoveFolioInstallDirectory"
+            On="uninstall"
+            Property="FOLIO_INSTALL_DIR" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

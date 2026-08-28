@@ -191,7 +191,11 @@ def _install_kokoro_espeak_compat() -> None:
         except OSError as error:
             raise RuntimeError(f"failed to load espeak library: {error!s}") from None
 
-        self._tempdir = tempfile.mkdtemp()
+        # Keep the native eSpeak copy under Folio's app-data root so a crash
+        # cannot leave an unowned runtime directory in the user's global temp.
+        runtime_temp_dir = MODELS_DIR.parent / "temp"
+        runtime_temp_dir.mkdir(parents=True, exist_ok=True)
+        self._tempdir = tempfile.mkdtemp(prefix="espeak-", dir=str(runtime_temp_dir))
         if sys.platform == "win32":
             atexit.register(self._delete_win32)
         else:
