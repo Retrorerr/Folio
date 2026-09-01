@@ -193,24 +193,60 @@ function Test-PythonModule([string]$PythonExe, [string]$ModuleName) {
     }
 }
 
+function Get-PythonMajorMinor([string]$PythonExe) {
+    try {
+        return (& $PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+    }
+    catch {
+        return ""
+    }
+}
+
+function Test-CompatiblePython([string]$PythonExe) {
+    return (Get-PythonMajorMinor $PythonExe) -match "^3\.(10|11|12|13)$"
+}
+
 function Resolve-BackendPython {
     $candidates = @()
     if ($env:FOLIO_PYTHON) {
         $candidates += $env:FOLIO_PYTHON
     }
     $candidates += (Join-Path $backendDir ".venv\Scripts\python.exe")
+    foreach ($version in @("313", "312", "311", "310")) {
+        $candidates += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$version\python.exe")
+    }
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCommand -and (Test-ExistingFile $pythonCommand.Source)) {
         $candidates += $pythonCommand.Source
     }
 
+    # A web server alone is not enough: the TTS services import these modules
+    # lazily, so an incomplete venv can otherwise start successfully and only
+    # fail when the user presses Play.
+    $requiredModules = @(
+        "fastapi",
+        "uvicorn",
+        "onnxruntime",
+        "kokoro_onnx",
+        "supertonic",
+        "huggingface_hub",
+        "soundfile"
+    )
+
     foreach ($candidate in $candidates) {
-        if ((Test-ExistingFile $candidate) -and (Test-PythonModule $candidate "uvicorn")) {
+        if (!(Test-ExistingFile $candidate) -or !(Test-CompatiblePython $candidate)) {
+            continue
+        }
+
+        $missingModules = @(
+            $requiredModules | Where-Object { !(Test-PythonModule $candidate $_) }
+        )
+        if ($missingModules.Count -eq 0) {
             return $candidate
         }
     }
 
-    throw "Unable to locate a Python runtime with uvicorn. Set FOLIO_PYTHON to a compatible python.exe."
+    throw "Unable to locate a complete backend Python runtime. Missing one or more required modules ($($requiredModules -join ', ')). Run scripts\install-backend.ps1 with a Python 3.10-3.13 interpreter, then retry."
 }
 
 function Resolve-NodeCommand {

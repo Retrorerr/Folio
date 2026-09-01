@@ -29,10 +29,25 @@ function Test-CompatiblePython([string]$PythonExe) {
 }
 
 $seedPython = $env:FOLIO_PYTHON
-if (!(Test-ExistingFile $seedPython)) {
+if ($seedPython) {
+    if (!(Test-ExistingFile $seedPython) -or !(Test-CompatiblePython $seedPython)) {
+        throw "Unable to locate a Python 3.10-3.13 interpreter. Set FOLIO_PYTHON to a compatible python.exe."
+    }
+}
+else {
+    $pythonCandidates = @()
+    foreach ($version in @("313", "312", "311", "310")) {
+        $pythonCandidates += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$version\python.exe")
+    }
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
     if ($pythonCommand) {
-        $seedPython = $pythonCommand.Source
+        $pythonCandidates += $pythonCommand.Source
+    }
+    foreach ($candidate in $pythonCandidates) {
+        if ((Test-ExistingFile $candidate) -and (Test-CompatiblePython $candidate)) {
+            $seedPython = $candidate
+            break
+        }
     }
 }
 if (!(Test-ExistingFile $seedPython) -or !(Test-CompatiblePython $seedPython)) {

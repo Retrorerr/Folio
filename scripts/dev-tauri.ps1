@@ -15,6 +15,43 @@ if ($isAndroid) {
   exit $LASTEXITCODE
 }
 
+function Get-PythonMajorMinor([string]$PythonExe) {
+  try {
+    return (& $PythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+  }
+  catch {
+    return ""
+  }
+}
+
+function Test-CompatiblePython([string]$PythonExe) {
+  return (Get-PythonMajorMinor $PythonExe) -match "^3\.(10|11|12|13)$"
+}
+
+$pythonCandidates = @()
+if ($env:FOLIO_PYTHON) {
+  $pythonCandidates += $env:FOLIO_PYTHON
+}
+$pythonCandidates += (Join-Path $backend ".venv\Scripts\python.exe")
+foreach ($version in @("313", "312", "311", "310")) {
+  $pythonCandidates += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python$version\python.exe")
+}
+$pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if ($pythonCommand -and (Test-ExistingFile $pythonCommand.Source)) {
+  $pythonCandidates += $pythonCommand.Source
+}
+
+$pythonExe = $null
+foreach ($candidate in $pythonCandidates) {
+  if ((Test-ExistingFile $candidate) -and (Test-CompatiblePython $candidate)) {
+    $pythonExe = $candidate
+    break
+  }
+}
+if (-not $pythonExe) {
+  throw "Unable to locate a Python 3.10-3.13 interpreter. Set FOLIO_PYTHON to a compatible python.exe."
+}
+
 $env:VITE_FOLIO_PLATFORM = 'desktop'
 $apiTokenBytes = [byte[]]::new(32)
 $apiTokenRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -32,7 +69,7 @@ $env:FOLIO_API_TOKEN = $apiToken
 $env:VITE_FOLIO_API_TOKEN = $apiToken
 $env:FOLIO_ALLOWED_HOSTS = "127.0.0.1,localhost,::1"
 
-Start-Process -WindowStyle Hidden -FilePath "python" -ArgumentList @(
+Start-Process -WindowStyle Hidden -FilePath $pythonExe -ArgumentList @(
   "-m", "uvicorn", "main:app",
   "--host", "127.0.0.1",
   "--port", "8000"
